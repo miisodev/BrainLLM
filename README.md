@@ -1,6 +1,12 @@
+<div align="center">
+
+<img src="./BrainLLM.png" alt="BrainLLM logo" width="150" />
+
 # BrainLLM
 
 An MCP (Model Context Protocol) server that turns [TriliumNext Notes](https://github.com/TriliumNext/Notes) into a persistent, graph-structured second brain for Claude and other LLM clients.
+
+</div>
 
 **v5: a six-area mind with a typed tool surface.** The brain is organised into six purpose-built areas (Master, LLM, Memory, Knowledge, Insights, Templates), each note type carries a **blueprint** that the tools enforce, and the model works through a clean surface: per-area read tools, single-word universal verbs, and a raw ETAPI escape hatch. Placement, format, lifecycle, dates and backups are server policy — the model supplies content, the server owns form.
 
