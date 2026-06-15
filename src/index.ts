@@ -50,8 +50,22 @@ const authToken = process.env.MCP_AUTH_TOKEN;
 // BRAINLLM_MODE=full: additionally registers the low-level/advanced surface.
 const mode: "core" | "full" = process.env.BRAINLLM_MODE === "full" ? "full" : "core";
 
+// Brand identity advertised in the MCP handshake (serverInfo.icons). Clients
+// that render server icons show the BrainLLM logo in their connector list and
+// alongside its tool calls. Assets are served raw from the public repo; the SVG
+// scales for any context, the PNG is a raster fallback.
+const BRANDING_ICONS = [
+  { src: "https://raw.githubusercontent.com/miisodev/BrainLLM/main/public/BrainLLM.svg", mimeType: "image/svg+xml", sizes: ["any"] },
+  { src: "https://raw.githubusercontent.com/miisodev/BrainLLM/main/public/BrainLLM.png", mimeType: "image/png" },
+];
+
 function createServer(): McpServer {
-  const s = new McpServer({ name: "BrainLLM", version: "5.0.0" });
+  const s = new McpServer({
+    name: "BrainLLM",
+    title: "BrainLLM",
+    version: "5.0.0",
+    icons: BRANDING_ICONS,
+  });
   registerTools(s, trilium, brainRef, mode);
   return s;
 }

@@ -1,0 +1,72 @@
+{
+  "dxt_version": "0.1",
+  "name": "brainllm",
+  "display_name": "BrainLLM",
+  "version": "5.0.0",
+  "description": "Turns TriliumNext Notes into a persistent, graph-structured second brain for Claude and other LLM clients.",
+  "long_description": "BrainLLM is an MCP server that organises memory into six purpose-built areas (Master, LLM, Memory, Knowledge, Insights, Templates). Each note type carries a blueprint the tools enforce; the model supplies content while the server owns placement, format, lifecycle, dates and backups. Requires a running TriliumNext instance and the Bun runtime.",
+  "author": {
+    "name": "Kevin Miiso",
+    "email": "miisodev@gmail.com",
+    "url": "https://github.com/miisodev"
+  },
+  "homepage": "https://github.com/miisodev/BrainLLM#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/miisodev/BrainLLM.git"
+  },
+  "support": "https://github.com/miisodev/BrainLLM/issues",
+  "license": "MIT",
+  "keywords": ["mcp", "trilium", "trilium-next", "second-brain", "knowledge-graph", "memory", "claude"],
+  "icon": "public/BrainLLM.png",
+  "server": {
+    "type": "binary",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "bun",
+      "args": ["run", "${__dirname}/dist/index.js"],
+      "env": {
+        "TRILIUM_BASE_URL": "${user_config.trilium_base_url}",
+        "TRILIUM_ETAPI_TOKEN": "${user_config.trilium_etapi_token}",
+        "BRAINLLM_MODE": "${user_config.brainllm_mode}",
+        "BRAINLLM_TZ": "${user_config.brainllm_tz}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "user_config": {
+    "trilium_base_url": {
+      "type": "string",
+      "title": "Trilium base URL",
+      "description": "URL of your TriliumNext instance.",
+      "default": "http://localhost:8080",
+      "required": true
+    },
+    "trilium_etapi_token": {
+      "type": "string",
+      "title": "Trilium ETAPI token",
+      "description": "Create one in Trilium: Options -> ETAPI -> Create token.",
+      "required": true,
+      "sensitive": true
+    },
+    "brainllm_mode": {
+      "type": "string",
+      "title": "Tool surface",
+      "description": "core (default) or full (adds the 32 raw ETAPI tools).",
+      "default": "core",
+      "required": false
+    },
+    "brainllm_tz": {
+      "type": "string",
+      "title": "Timezone (IANA)",
+      "description": "Optional. e.g. America/New_York. Leave blank to use the host clock.",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "bun": ">=1.0.0"
+    }
+  }
+}

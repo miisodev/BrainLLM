@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./BrainLLM.png" alt="BrainLLM logo" width="150" />
+<img src="./public/BrainLLM.png" alt="BrainLLM logo" width="150" />
 
 # BrainLLM
 
