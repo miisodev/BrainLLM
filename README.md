@@ -123,6 +123,22 @@ TRILIUM_BASE_URL=http://localhost:8080 TRILIUM_ETAPI_TOKEN=your-token bun run in
 
 ---
 
+## Adapting to your environment
+
+A handful of values in this repo reflect the author's own machine. None are secrets, but if you clone or fork, review these and swap in your own:
+
+| What | Where | Make it yours |
+|---|---|---|
+| **Timezone** | `BRAINLLM_TZ` in `.env` (the example shows `Africa/Johannesburg`) | Your IANA zone (e.g. `America/New_York`) — or leave it unset to use the host clock, which is correct when BrainLLM runs on your own machine. |
+| **Trilium launcher** | `scripts/start-trilium.ps1` — hard-codes `C:\Users\…\trilium.exe` and assumes the desktop port `37840` | A Windows-only convenience script. Point the path at your Trilium install (and match `TRILIUM_BASE_URL` to its real port), or ignore it and start Trilium however you like. |
+| **"Trilium isn't running" hint** | `skills/brainllm/SKILL.md` and `skills/brainllm/references/troubleshooting.md` | Both reference the author's absolute path to that script. Repoint them to your clone, or delete the line — it's only a fallback hint. |
+| **Bundle path** | Claude Desktop config → `/absolute/path/to/BrainLLM/dist/index.js` | The real absolute path to `dist/index.js` on your machine. |
+| **Author · repo · funding** | `package.json` (`author`, `repository`, `bugs`, `homepage`) and the PayPal badge near the top | Your own details if you fork; the funding link supports the original author. |
+
+None of these change how the brain works — they're just the seams where one person's setup meets yours.
+
+---
+
 ## Structure
 
 ```
