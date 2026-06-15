@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "BrainLLM": {
+      "command": "bun",
+      "args": [
+        "run",
+        "C:/Users/YOUR_USERNAME/BrainLLM/dist/index.js"
+      ],
+      "env": {
+        "TRILIUM_BASE_URL": "http://localhost:8080",
+        "TRILIUM_ETAPI_TOKEN": "your-etapi-token-here"
+      }
+    },
+    "BrainLLM (remote)": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://your-app.up.railway.app/mcp",
+        "--header",
+        "Authorization: Bearer ${MCP_AUTH_TOKEN}"
+      ],
+      "env": {
+        "MCP_AUTH_TOKEN": "your-mcp-auth-token-here"
+      }
+    }
+  }
+}
