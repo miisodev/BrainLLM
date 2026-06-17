@@ -182,7 +182,7 @@ export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): 
   for (const [slot, id] of slots) {
     if (!id) continue;
     const content = await trilium.getNoteContent(id).catch(() => "");
-    const summary = toText(content, slot === "goals" ? Infinity : 200);
+    const summary = toText(content, slot === "biography" ? 200 : Infinity);
     if (summary) digest.master.push({ slot, summary });
   }
 

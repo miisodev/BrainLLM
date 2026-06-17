@@ -151,8 +151,8 @@ export function registerTools(
   server.tool(
     "start",
     `Boot BrainLLM — call ONCE at the start of every session, before responding.
-Returns orientation: awareness (today + weekday), the Master digest (the user: biography /
-goals / preferences), the LLM digest (your own self-model: responsibilities / protocols), the
+Returns orientation: awareness (today + weekday), the Master digest (the user: biography preview /
+goals in full / preferences in full), the LLM digest (your own self-model: responsibilities / protocols), the
 live working set (active threads with idle ages), a review queue of items gone dormant, and the
 last session's summary. recall is for topic-specific lookup.`,
     {},
@@ -209,7 +209,11 @@ last session's summary. recall is for topic-specific lookup.`,
     `Log the session — call ONCE at the end (or when the user says goodbye). Idempotent per
 date: a second call the same day appends an addendum to the existing session note. Runs
 maintenance and triggers a database backup. Just pass the summary — placement and dedup
-are handled here.`,
+are handled here.
+
+After close() returns, follow this protocol in order:
+1. Call absorb() — scan notes for unabsorbed addendums and integrate them.
+2. Call maintain() — audit and fix brain hygiene (stale threads, missing labels, etc.).`,
     {
       summary: z.string().describe("What happened this session — factual, concise prose"),
       title: z.string().optional().describe("Short session title (default: derived from summary)"),
@@ -270,6 +274,10 @@ are handled here.`,
         maintenance: hygiene ? "ran" : "skipped",
         log: logReport ? `${logReport.action} (${logReport.created}c/${logReport.updated}u/${logReport.deleted}d)` : "skipped",
         logNoteId: logReport?.noteId ?? null,
+        next: [
+          "Call absorb() — find and absorb any unabsorbed addendums.",
+          "Call maintain() — audit and fix brain hygiene.",
+        ],
       });
     }
   );

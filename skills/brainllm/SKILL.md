@@ -31,16 +31,18 @@ DURING          remember(...)           ← the moment something worth keeping a
                 reopen(noteId)           ← re-activate an archived/resolved thread
                 connect(...)             ← wire a real relation the moment you notice it
 SESSION END     close(summary)           ← once, when work wraps or the user says goodbye
+                absorb()                 ← immediately after close: find and absorb unabsorbed addendums
+                maintain()               ← immediately after absorb: audit and fix brain hygiene
 PERIODIC        maintain(deep=true)      ← when start flags items, or ~weekly
                 absorb(noteId?)          ← scan singletons for pending addendums, surface them for revise()
 ANYTIME         brain()                  ← surface the full content tree (all areas, sub-containers)
 ```
 
-`start()` returns everything needed to orient — **awareness** (today + weekday + today's diary note id), the **Master digest** (the user: biography preview / **full goals** / preferences preview), the **LLM digest** (your self-model: responsibilities preview / **full protocols** — operate by them), the **live working set** (active threads with idle ages), a **review queue** of items gone dormant, and the **last session** summary. Don't re-derive it with extra calls.
+`start()` returns everything needed to orient — **awareness** (today + weekday + today's diary note id), the **Master digest** (the user: biography preview / **full goals** / **full preferences**), the **LLM digest** (your self-model: responsibilities preview / **full protocols** — operate by them), the **live working set** (active threads with idle ages), a **review queue** of items gone dormant, and the **last session** summary. Don't re-derive it with extra calls.
 
 `start()` also creates today's diary note (empty) if one doesn't exist yet — the `diaryNoteId` in the awareness block is its ID. Write into it with `diary(body)` whenever you have something worth recording.
 
-`close()` is idempotent per date (a second call the same day appends an addendum), runs the lite maintenance sweep, triggers a DB backup, regenerates today's change-log, and **links the session note and the log note** with `~references` relations.
+`close()` is idempotent per date (a second call the same day appends an addendum), runs the lite maintenance sweep, triggers a DB backup, regenerates today's change-log, and **links the session note and the log note** with `~references` relations. After `close()` returns, always follow with: **`absorb()`** (find and absorb any unabsorbed addendums), then **`maintain()`** (audit and fix brain hygiene).
 
 **Write during the session, not at the end.** A fact remembered mid-conversation survives a crash; one you planned to write at the end does not.
 
@@ -156,7 +158,7 @@ Every note type has a blueprint under **Templates** with five parts: **Structure
 | Tool | One-liner |
 |---|---|
 | `start()` | Orient: awareness (incl. today's diary id), full goals + full protocols, working set, review queue, last session. Creates today's diary note. Once, first. |
-| `close(summary, learned?, …)` | Idempotent session log + lite sweep + backup + log regen + session↔log linking. Once, last. |
+| `close(summary, learned?, …)` | Idempotent session log + lite sweep + backup + log regen + session↔log linking. Once, last. Then call `absorb()` → `maintain()`. |
 | `brain(includeArchived?)` | Full content tree: every typed note across all five areas, grouped by area and sub-container (singletons/diary, sessions/threads, master/domains, etc.) with id/title/kind/status/dates. |
 | `bootstrap()` | Create or repair the structure. Idempotent. |
 | `remember(kind, …)` | Write a note — routed, formatted, deduped, blueprint-wired server-side. Not for diary — use `diary()`. |
