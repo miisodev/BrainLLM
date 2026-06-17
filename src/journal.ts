@@ -9,13 +9,10 @@
 // duplicating.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { TriliumClient, Note } from "./trilium.js";
+import { type TriliumClient, type Note, ownedLabel } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { isStructural } from "./lifecycle.js";
 import { escapeHtml } from "./normalize.js";
-
-const labelOf = (n: Note, name: string) =>
-  n.attributes.find((a) => a.type === "label" && a.name === name)?.value;
 
 export interface LogReport {
   date: string;
@@ -44,7 +41,7 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
   const created: Array<{ title: string; noteId: string }> = [];
   const updated: Array<{ title: string; noteId: string }> = [];
   for (const n of touched.results) {
-    const kind = labelOf(n, "noteType");
+    const kind = ownedLabel(n, "noteType");
     if (!kind || kind === "blueprint" || kind === "log") continue;
     if (isStructural(cfg, n.noteId)) continue;
     (n.dateCreated.startsWith(date) ? created : updated).push({ title: `${n.title} (${kind})`, noteId: n.noteId });

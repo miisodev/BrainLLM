@@ -12,7 +12,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { TriliumClient, type Note } from "./trilium.js";
+import { TriliumClient, type Note, ownedLabel } from "./trilium.js";
 import { type BrainLLMConfig, saveConfig } from "./config.js";
 import {
   Kinds,
@@ -606,7 +606,7 @@ Use recall() for keyword or full-text search instead.`,
 
       const groups: Record<string, Array<{ id: string; title: string; status?: string; created: string; modified: string; archived?: true }>> = {};
       for (const n of all) {
-        const kind = labelOf(n, "noteType");
+        const kind = ownedLabel(n, "noteType");
         if (!kind || kind === "blueprint" || kind === "domain") continue;
         if (!groups[kind]) groups[kind] = [];
         groups[kind].push({
@@ -620,7 +620,7 @@ Use recall() for keyword or full-text search instead.`,
       }
 
       const total = all.filter((n) => {
-        const k = labelOf(n, "noteType");
+        const k = ownedLabel(n, "noteType");
         return k && k !== "blueprint" && k !== "domain";
       }).length;
 
@@ -981,7 +981,7 @@ Structural containers and blueprints are excluded; only content notes appear.`,
           orderBy: "dateCreated",
           orderDirection: "desc",
         })
-          .then((r) => r.results.filter((n) => labelOf(n, "noteType") !== "blueprint"))
+          .then((r) => r.results.filter((n) => ownedLabel(n, "noteType") !== "blueprint"))
           .catch(() => []);
       };
 

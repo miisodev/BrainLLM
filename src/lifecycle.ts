@@ -8,7 +8,7 @@
 // knowledge), and the start orientation digest.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { TriliumClient, Note } from "./trilium.js";
+import { type TriliumClient, type Note, ownedLabel } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { toText } from "./normalize.js";
 import { RESOLUTION_ANCHOR } from "./templates.js";
@@ -121,7 +121,7 @@ export async function sweep(
     .searchNotes(`#noteType note.dateModified < '${staleCutoff}'`, { ancestorNoteId: cfg.root, fastSearch: true, limit: 200 })
     .catch(() => ({ results: [] as Note[] }));
   for (const n of stale.results) {
-    const kind = label(n, "noteType");
+    const kind = ownedLabel(n, "noteType");
     if (!kind || RECORDS.has(kind) || isStructural(cfg, n.noteId)) continue;
     if (report.flagged.length < 15) report.flagged.push(`stale ${idleDays(n.dateModified)}d: ${n.title} [${n.noteId}]`);
   }
@@ -136,7 +136,7 @@ export async function sweep(
   }
   let orphans = 0;
   for (const n of kNotes.results) {
-    const kind = label(n, "noteType");
+    const kind = ownedLabel(n, "noteType");
     if (!kind || kind === "domain" || kind === "sources") continue;
     const hasOut = n.attributes.some((a) => a.type === "relation" && a.name !== "template");
     if (!hasOut && !targets.has(n.noteId) && orphans < 10) {

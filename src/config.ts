@@ -148,7 +148,16 @@ export async function discoverBrainLLM(trilium: TriliumClient): Promise<BrainLLM
       .searchNotes("#noteType=blueprint", { ancestorNoteId: config.templates.root, fastSearch: true, limit: 100 })
       .catch(() => null);
     for (const n of bps?.results ?? []) {
-      const kind = n.attributes.find((a) => a.type === "label" && a.name === "blueprint")?.value;
+      // Guard: noteType=blueprint must be an OWNED attribute (not inherited via ~template).
+      // fastSearch can bypass ancestorNoteId, returning content notes that inherited
+      // the blueprint's labels — skip those so they don't end up in structuralIds().
+      const isOwnBlueprint = n.attributes.some(
+        (a) => a.type === "label" && a.name === "noteType" && a.value === "blueprint" && a.noteId === n.noteId
+      );
+      if (!isOwnBlueprint) continue;
+      const kind = n.attributes.find(
+        (a) => a.type === "label" && a.name === "blueprint" && a.noteId === n.noteId
+      )?.value;
       if (kind) config.templates.byKind[kind] = n.noteId;
     }
   }

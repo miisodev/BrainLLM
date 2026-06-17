@@ -117,6 +117,19 @@ export interface SearchOpts {
   debug?: boolean;
 }
 
+// ── Attribute helpers (pure) ─────────────────────────────────────────────────
+
+/** Value of a label from ONLY the note's own (non-inherited) attributes.
+ *  The ETAPI /notes/{id} response includes inherited attributes (where
+ *  attribute.noteId ≠ note.noteId, inherited via parent hierarchy or ~template).
+ *  Use this when note-kind logic must not be fooled by a blueprint note's
+ *  inheritable labels propagating down to content notes. */
+export function ownedLabel(note: Note, name: string): string | undefined {
+  return note.attributes.find(
+    (a) => a.type === "label" && a.name === name && a.noteId === note.noteId
+  )?.value;
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 import { RelationTypes } from "./types.js";
