@@ -146,7 +146,7 @@ function inlineMd(escaped: string): string {
 /** Deterministic minimal markdown/plain-text → Trilium HTML. Bodies that
  *  already contain HTML tags pass through untouched. Supports paragraphs,
  *  #/##/### headings (mapped to h2/h3/h4 — h1 is the note title), -/* lists,
- *  numbered lists, fenced code blocks, bold/italic/inline code/links. */
+ *  numbered lists, fenced code blocks, GFM tables, bold/italic/inline code/links. */
 export function toHtml(body: string): string {
   if (!body.trim()) return "<p></p>";
   if (looksLikeHtml(body)) return body;
@@ -156,6 +156,7 @@ export function toHtml(body: string): string {
   let para: string[] = [];
   let list: { tag: "ul" | "ol"; items: string[] } | null = null;
   let code: string[] | null = null;
+  let tableBuffer: string[] = [];
 
   const flushPara = () => {
     if (para.length) {
@@ -169,6 +170,25 @@ export function toHtml(body: string): string {
       list = null;
     }
   };
+  const flushTable = () => {
+    if (!tableBuffer.length) return;
+    const rows = tableBuffer.map((l) =>
+      l.replace(/^\s*\||\|\s*$/g, "").split("|").map((c) => c.trim())
+    );
+    if (rows.length >= 2 && rows[1].every((c) => /^[-: ]+$/.test(c))) {
+      const headers = rows[0];
+      const bodyRows = rows.slice(2);
+      const head = `<thead><tr>${headers.map((h) => `<th>${inlineMd(escapeHtml(h))}</th>`).join("")}</tr></thead>`;
+      const body = bodyRows.length
+        ? `<tbody>${bodyRows.map((r) => `<tr>${headers.map((_, i) => `<td>${inlineMd(escapeHtml(r[i] ?? ""))}</td>`).join("")}</tr>`).join("")}</tbody>`
+        : "";
+      out.push(`<table>${head}${body}</table>`);
+    } else {
+      for (const l of tableBuffer) para.push(l.trim());
+      flushPara();
+    }
+    tableBuffer = [];
+  };
 
   for (const line of lines) {
     if (code !== null) {
@@ -181,10 +201,17 @@ export function toHtml(body: string): string {
       continue;
     }
     if (/^```/.test(line)) {
-      flushPara(); flushList();
+      flushPara(); flushList(); flushTable();
       code = [];
       continue;
     }
+
+    if (/^\s*\|/.test(line)) {
+      flushPara(); flushList();
+      tableBuffer.push(line);
+      continue;
+    }
+    if (tableBuffer.length) flushTable();
 
     const heading = line.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
@@ -206,7 +233,7 @@ export function toHtml(body: string): string {
     }
 
     if (!line.trim()) {
-      flushPara(); flushList();
+      flushPara(); flushList(); flushTable();
       continue;
     }
 
@@ -214,6 +241,7 @@ export function toHtml(body: string): string {
     para.push(line.trim());
   }
   if (code !== null) out.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+  flushTable();
   flushPara(); flushList();
 
   return out.join("\n") || "<p></p>";

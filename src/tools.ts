@@ -75,21 +75,47 @@ function insertBeforeResolution(html: string, section: string): string {
   return html + "\n" + section;
 }
 
-/** Replace or append within an <h2>heading</h2> section; append the section if absent. */
+/** Replace or append within a heading section (h2/h3/h4 tried in order).
+ *  Appends as a new h2 section if the heading is not found at any level. */
 function setSection(html: string, heading: string, content: string, mode: "replace" | "append"): string {
-  const h = `<h2>${heading}</h2>`;
-  const start = html.indexOf(h);
-  if (start === -1) return `${html}\n${h}\n${content}`;
-  const after = start + h.length;
-  const next = html.indexOf("<h2>", after);
-  const end = next === -1 ? html.length : next;
-  const existing = html.slice(after, end).trim();
-  const inner = mode === "append" && existing ? `${existing}\n${content}` : content;
-  return `${html.slice(0, after)}\n${inner}\n${html.slice(end)}`;
+  for (const level of [2, 3, 4]) {
+    const tag = `h${level}`;
+    const open = `<${tag}>${heading}</${tag}>`;
+    const start = html.indexOf(open);
+    if (start === -1) continue;
+    const after = start + open.length;
+    const nextMatch = html.slice(after).search(new RegExp(`<h[2-${level}]>`));
+    const end = nextMatch === -1 ? html.length : after + nextMatch;
+    const existing = html.slice(after, end).trim();
+    const inner = mode === "append" && existing ? `${existing}\n${content}` : content;
+    return `${html.slice(0, after)}\n${inner}\n${html.slice(end)}`;
+  }
+  return `${html}\n<h2>${heading}</h2>\n${content}`;
 }
 
 async function ensureArchivedFlag(trilium: TriliumClient, note: Note): Promise<void> {
   if (!hasLabel(note, "archived")) await trilium.addLabel(note.noteId, "archived", "");
+}
+
+/** Extract accumulated addendums from a note body (created by revise() default mode).
+ *  Returns the h2 section headings of the main content and each addendum block separately. */
+function parseAddendums(html: string): {
+  sectionHeadings: string[];
+  addendums: Array<{ date: string; content: string }>;
+} {
+  const segments = html.split(/(?=<h2>)/i);
+  const sectionHeadings: string[] = [];
+  const addendums: Array<{ date: string; content: string }> = [];
+  for (const seg of segments) {
+    const addendumMatch = seg.match(/^<h2>Addendum\s*[—–\-]\s*([^<]+)<\/h2>([\s\S]*)/i);
+    if (addendumMatch) {
+      addendums.push({ date: addendumMatch[1].trim(), content: addendumMatch[2].trim() });
+    } else {
+      const headingMatch = seg.match(/^<h2>([^<]+)<\/h2>/i);
+      if (headingMatch) sectionHeadings.push(headingMatch[1]);
+    }
+  }
+  return { sectionHeadings, addendums };
 }
 
 // ── Registration ──────────────────────────────────────────────────────────────
@@ -143,9 +169,29 @@ last session's summary. recall is for topic-specific lookup.`,
       const weekday = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${todayStr}T00:00:00Z`).getUTCDay()];
       const lastDate = digest.lastSession?.date;
       const daysSinceLastSession = lastDate ? Math.round((Date.parse(todayStr) - Date.parse(lastDate)) / 86_400_000) : null;
+
+      // Ensure today's diary note exists (create empty entry if none yet).
+      let diaryNoteId: string | null = null;
+      if (cfg.llm.diary) {
+        try {
+          const existingDiary = await trilium
+            .searchNotes(`#noteType=diary #created=${todayStr}`, { ancestorNoteId: cfg.llm.diary, fastSearch: true, limit: 1 })
+            .catch(() => ({ results: [] as Note[] }));
+          if (existingDiary.results[0]) {
+            diaryNoteId = existingDiary.results[0].noteId;
+          } else {
+            const created = await trilium.createNote(cfg.llm.diary, todayStr, contentFor("diary", { date: todayStr, body: "" }));
+            diaryNoteId = created.note.noteId;
+            await trilium.addLabel(diaryNoteId, "noteType", "diary");
+            await trilium.addLabel(diaryNoteId, "created", todayStr);
+            await wireTemplate(diaryNoteId, "diary");
+          }
+        } catch { /* non-fatal — diary creation fails silently */ }
+      }
+
       return txt({
         status: "ready",
-        awareness: { today: todayStr, weekday, lastSession: lastDate ?? null, daysSinceLastSession },
+        awareness: { today: todayStr, weekday, diaryNoteId, lastSession: lastDate ?? null, daysSinceLastSession },
         master: digest.master,
         llm: digest.llm,
         workingSet: digest.workingSet,
@@ -212,12 +258,62 @@ are handled here.`,
 
       const logReport = await generateDailyLog(trilium, cfg, d).catch(() => null);
 
+      // Wire session ↔ log with ~references relations (idempotent).
+      if (logReport?.noteId) {
+        await trilium.addRelation(noteId, "references", logReport.noteId).catch(() => null);
+        await trilium.addRelation(logReport.noteId, "references", noteId).catch(() => null);
+      }
+
       return txt({
         action, noteId, date: d,
         backup: backedUp ? `brainllm-${d}.db` : "skipped",
         maintenance: hygiene ? "ran" : "skipped",
         log: logReport ? `${logReport.action} (${logReport.created}c/${logReport.updated}u/${logReport.deleted}d)` : "skipped",
+        logNoteId: logReport?.noteId ?? null,
       });
+    }
+  );
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // DIARY
+  // ════════════════════════════════════════════════════════════════════════════
+
+  server.tool(
+    "diary",
+    `Write to today's LLM diary — your raw, unfiltered daily record. Idempotent per date:
+a second call the same day appends a timestamped addendum to the existing entry.
+start() creates today's entry (empty) automatically; use this tool to write content into it.`,
+    {
+      body: z.string().describe("What to record — prose, honest and unfiltered"),
+      date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
+    },
+    async ({ body, date }) => {
+      const d = date ?? today();
+      const cfg = b();
+      const parentId = cfg.llm.diary;
+      if (!parentId) throw new Error('BrainLLM not bootstrapped — run bootstrap.');
+      const html = toHtml(body);
+
+      const found = await trilium
+        .searchNotes(`#noteType=diary #created=${d}`, { ancestorNoteId: parentId, fastSearch: true, limit: 1 })
+        .catch(() => ({ results: [] as Note[] }));
+
+      if (found.results[0]) {
+        const noteId = found.results[0].noteId;
+        await trilium.createRevision(noteId).catch(() => null);
+        const current = await trilium.getNoteContent(noteId).catch(() => "");
+        const time = new Date().toISOString().slice(11, 16);
+        await trilium.updateNoteContent(noteId, `${current}\n<h3>Addendum — ${time}</h3>\n${html}`);
+        await trilium.updateLabelValue(noteId, "updated", d);
+        return txt({ action: "appended", noteId, date: d });
+      }
+
+      const created = await trilium.createNote(parentId, d, contentFor("diary", { date: d, body: html }));
+      const noteId = created.note.noteId;
+      await trilium.addLabel(noteId, "noteType", "diary");
+      await trilium.addLabel(noteId, "created", d);
+      await wireTemplate(noteId, "diary");
+      return txt({ action: "created", noteId, date: d, location: locationLabel("diary") });
     }
   );
 
@@ -231,14 +327,15 @@ are handled here.`,
 
 Kinds by area:
   master:    biography | goals | preferences   (one maintained note each — upserts)
-  llm:       responsibilities | protocols       (one maintained note each — upserts) · diary (dated)
+  llm:       responsibilities | protocols       (one maintained note each — upserts)
   memory:    thread                             (multi-session work; daily session via close)
   knowledge: knowledge                          (about the user, beyond biography/goals/preferences)
              information                        (a domain sub-category note — pass domain= and a title)
              sources                            (the one maintained Sources note per domain — pass domain=)
 
 Singletons and the per-domain Sources note upsert (content is appended). Collection kinds
-dedup by title, so duplicates are impossible. Body may be text, markdown, or HTML.`,
+dedup by title, so duplicates are impossible. Body may be text, markdown, or HTML.
+For diary entries use the dedicated diary() tool — remember(kind="diary") is rejected.`,
     {
       kind: z.enum(Kinds).describe("What kind of memory this is"),
       title: z.string().optional().describe("Title — collection kinds (thread/knowledge/information sub-category); ignored for singletons & sources"),
@@ -323,7 +420,12 @@ dedup by title, so duplicates are impossible. Body may be text, markdown, or HTM
         });
       }
 
-      // 4 ── Generic collection: thread / knowledge / diary / session / log / domain.
+      // 3.5 ── Diary is now a dedicated tool — reject here with a clear redirect.
+      if (kind === "diary") {
+        throw new Error('Use the dedicated diary() tool to write diary entries. remember(kind="diary") is no longer supported.');
+      }
+
+      // 4 ── Generic collection: thread / knowledge / session / log / domain.
       const { title: cleanTitle } = normalizeTitle(title ?? "");
       if (!cleanTitle) throw new Error(`kind "${kind}" requires a title`);
 
@@ -457,10 +559,81 @@ includeArchived=true.`,
   );
 
   server.tool(
+    "domain",
+    `Surface the brain's complete picture for a named domain, topic, or project area.
+Looks up the Knowledge domain folder (if one exists), then gathers all content across
+every area that carries a matching #domain or #topic slug — information, sources, threads,
+knowledge notes — grouped by kind. knowledgeDomain is null when no formal domain exists yet.
+Use recall() for keyword or full-text search instead.`,
+    {
+      name: z.string().describe("Domain, topic, or project name"),
+      includeArchived: z.boolean().optional().describe("Include archived/resolved items (default: false)"),
+    },
+    async ({ name, includeArchived }) => {
+      const cfg = b();
+      const slug = slugify(name);
+      const runIn = (ancestor: string | undefined, q: string) =>
+        ancestor
+          ? trilium
+              .searchNotes(q, { ancestorNoteId: ancestor, limit: 100, fastSearch: true, includeArchivedNotes: includeArchived ?? false })
+              .then((r) => r.results)
+              .catch(() => [] as Note[])
+          : Promise.resolve([] as Note[]);
+
+      const [domainContainers, byTopic, byDomain] = await Promise.all([
+        runIn(cfg.knowledge.domains, `#noteType=domain #domain=${slug}`),
+        runIn(cfg.root, `#topic=${slug}`),
+        runIn(cfg.root, `#domain=${slug}`),
+      ]);
+
+      const knowledgeDomain = domainContainers[0]
+        ? { id: domainContainers[0].noteId, title: domainContainers[0].title }
+        : null;
+
+      const seen = new Set<string>();
+      const all: Note[] = [];
+      for (const n of [...byTopic, ...byDomain]) {
+        if (!seen.has(n.noteId)) { seen.add(n.noteId); all.push(n); }
+      }
+
+      const groups: Record<string, Array<{ id: string; title: string; status?: string; created: string; modified: string; archived?: true }>> = {};
+      for (const n of all) {
+        const kind = labelOf(n, "noteType");
+        if (!kind || kind === "blueprint" || kind === "domain") continue;
+        if (!groups[kind]) groups[kind] = [];
+        groups[kind].push({
+          id: n.noteId,
+          title: n.title,
+          status: labelOf(n, "status") ?? undefined,
+          created: labelOf(n, "created") ?? n.dateCreated.slice(0, 10),
+          modified: n.dateModified.slice(0, 10),
+          ...(hasLabel(n, "archived") ? { archived: true as const } : {}),
+        });
+      }
+
+      const total = all.filter((n) => {
+        const k = labelOf(n, "noteType");
+        return k && k !== "blueprint" && k !== "domain";
+      }).length;
+
+      return txt({
+        domain: name,
+        slug,
+        knowledgeDomain,
+        total,
+        groups,
+        ...(total === 0 && !knowledgeDomain
+          ? { note: `No content found for "${slug}". Create a Knowledge domain with remember(kind="information", domain="${name}") or tag notes with topics=["${slug}"].` }
+          : {}),
+      });
+    }
+  );
+
+  server.tool(
     "revise",
     `Update an existing note by id. Append a dated addendum (default), replace the body
-(mode=replace), or edit a single <h2> section in place (pass section — e.g. a blueprint
-section like "Present"). A revision snapshot is always taken first. Also logs thread progress.`,
+(mode=replace), or edit a heading section in place (pass section — targets h2/h3/h4 in that
+order; appends as h2 if not found). A revision snapshot is always taken first. Also logs thread progress.`,
     {
       noteId: z.string().describe("Note to update"),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML"),
@@ -535,6 +708,47 @@ status, and archive it in place (it stays where it is, excluded from default rec
         status: terminal,
         archivedInPlace: true,
         ...(followUps.length ? { followUps } : {}),
+      });
+    }
+  );
+
+  server.tool(
+    "reopen",
+    `Reopen an archived or resolved thread: removes the #archived flag, resets status to
+active, clears the closed date, and appends a dated "Reopened" addendum. Use when a resolved
+or dormant thread resurfaces as live work.`,
+    {
+      noteId: z.string().describe("The archived/resolved thread to reopen"),
+      reason: z.string().optional().describe("Why it was reopened — written as an addendum"),
+      date: z.string().optional().describe("ISO date (default: today)"),
+    },
+    async ({ noteId, reason, date }) => {
+      if (isStructural(b(), noteId)) throw new Error("Refusing to reopen a structural note");
+      const d = date ?? today();
+      const note = await trilium.getNote(noteId);
+
+      const archivedAttr = note.attributes.find((a) => a.type === "label" && a.name === "archived");
+      if (archivedAttr) await trilium.deleteAttribute(archivedAttr.attributeId).catch(() => null);
+
+      const closedAttr = note.attributes.find((a) => a.type === "label" && a.name === "closed");
+      if (closedAttr) await trilium.deleteAttribute(closedAttr.attributeId).catch(() => null);
+
+      await trilium.updateLabelValue(noteId, "status", "active");
+
+      await trilium.createRevision(noteId).catch(() => null);
+      const current = await trilium.getNoteContent(noteId).catch(() => "");
+      const addendum = reason
+        ? `<h2>Reopened — ${d}</h2>\n${toHtml(reason)}`
+        : `<h2>Reopened — ${d}</h2>\n<p><em>Thread re-activated.</em></p>`;
+      await trilium.updateNoteContent(noteId, `${current}\n${addendum}`);
+      await trilium.updateLabelValue(noteId, "updated", d);
+
+      return txt({
+        ok: true,
+        noteId,
+        kind: (labelOf(note, "noteType") as AnyKind | undefined) ?? "note",
+        status: "active",
+        reopened: d,
       });
     }
   );
@@ -627,6 +841,63 @@ calling twice is safe. Use remove=true to delete an edge.`,
   // ════════════════════════════════════════════════════════════════════════════
 
   server.tool(
+    "absorb",
+    `Scan singleton notes (biography, goals, preferences, responsibilities, protocols) for
+accumulated addendums — blocks appended by revise() default mode — and return them
+structured so you can merge each one back into the right section via
+revise(noteId, section=<heading>, body=<merged>, mode=replace).
+Pass noteId to scan a specific note; omit to scan all five singletons. Read-only — does not modify anything.`,
+    {
+      noteId: z.string().optional().describe("Specific note to scan; omit to scan all five singletons"),
+    },
+    async ({ noteId }) => {
+      const cfg = b();
+
+      const targets: Array<[string, string]> = [];
+      if (noteId) {
+        const note = await trilium.getNote(noteId);
+        targets.push([noteId, labelOf(note, "noteType") ?? "unknown"]);
+      } else {
+        const singletons: Array<[string, string]> = [
+          [cfg.master.biography,    "biography"],
+          [cfg.master.goals,        "goals"],
+          [cfg.master.preferences,  "preferences"],
+          [cfg.llm.responsibilities,"responsibilities"],
+          [cfg.llm.protocols,       "protocols"],
+        ];
+        for (const [id, kind] of singletons) {
+          if (id) targets.push([id, kind]);
+        }
+      }
+
+      const rows = await Promise.all(targets.map(async ([id, kind]) => {
+        const note = await trilium.getNote(id).catch(() => null);
+        if (!note) return null;
+        const content = await trilium.getNoteContent(id).catch(() => "");
+        const { sectionHeadings, addendums } = parseAddendums(content);
+        if (!addendums.length) return null;
+        return {
+          id,
+          title: note.title,
+          kind,
+          sectionHeadings,
+          addendums: addendums.map((a) => ({ date: a.date, snippet: toText(a.content, 300), content: a.content })),
+        };
+      }));
+
+      const found = rows.filter(Boolean);
+      return txt({
+        scanned: targets.length,
+        withAddendums: found.length,
+        notes: found,
+        ...(found.length === 0
+          ? { note: "All clean — no pending addendums." }
+          : { hint: "Call revise(noteId, section='<heading>', body='<merged>', mode='replace') to absorb each addendum." }),
+      });
+    }
+  );
+
+  server.tool(
     "maintain",
     `Run the maintenance sweep. start and close run the lite sweep automatically (ages stale
 threads active → dormant → archived). deep=true also surfaces stale notes (untouched past the
@@ -676,6 +947,87 @@ re-wire with connect() first).`,
       await trilium.updateLabelValue(noteId, "closed", today());
       await ensureArchivedFlag(trilium, note);
       return txt({ ok: true, archived: noteId, title: note.title });
+    }
+  );
+
+  server.tool(
+    "brain",
+    `Surface the entire BrainLLM content tree — every typed note across all five content areas
+(Master, LLM, Memory, Knowledge, Insights), grouped by area and sub-container, with
+id/title/kind/status/dates. Use to audit what the brain contains or locate a specific note.
+Structural containers and blueprints are excluded; only content notes appear.`,
+    {
+      includeArchived: z.boolean().optional().describe("Include archived/resolved notes (default: false)"),
+    },
+    async ({ includeArchived }) => {
+      const cfg = b();
+      if (!cfg.root) return txt({ status: "uninitialized", action: "Run bootstrap first." });
+
+      const fetchFrom = async (id: string | undefined): Promise<Note[]> => {
+        if (!id) return [];
+        return trilium.searchNotes("#noteType", {
+          ancestorNoteId: id,
+          fastSearch: true,
+          limit: 300,
+          includeArchivedNotes: includeArchived ?? false,
+          orderBy: "dateCreated",
+          orderDirection: "desc",
+        })
+          .then((r) => r.results.filter((n) => labelOf(n, "noteType") !== "blueprint"))
+          .catch(() => []);
+      };
+
+      const row = (n: Note) => ({
+        id: n.noteId,
+        title: n.title,
+        kind: labelOf(n, "noteType"),
+        status: labelOf(n, "status") ?? undefined,
+        created: labelOf(n, "created") ?? n.dateCreated.slice(0, 10),
+        modified: n.dateModified.slice(0, 10),
+        ...(hasLabel(n, "archived") ? { archived: true } : {}),
+      });
+
+      const [
+        masterAll,
+        llmAll, llmDiary,
+        sessions, threads,
+        kMaster, kDomains,
+        insights,
+      ] = await Promise.all([
+        fetchFrom(cfg.master.root),
+        fetchFrom(cfg.llm.root),
+        fetchFrom(cfg.llm.diary),
+        fetchFrom(cfg.memory.sessions),
+        fetchFrom(cfg.memory.threads),
+        fetchFrom(cfg.knowledge.master),
+        fetchFrom(cfg.knowledge.domains),
+        fetchFrom(cfg.insights.logs),
+      ]);
+
+      const diaryIds = new Set(llmDiary.map((n) => n.noteId));
+      const llmSingletons = llmAll.filter((n) => !diaryIds.has(n.noteId));
+
+      const areas = {
+        Master: masterAll.map(row),
+        LLM: {
+          singletons: llmSingletons.map(row),
+          diary: llmDiary.map(row),
+        },
+        Memory: {
+          sessions: sessions.map(row),
+          threads: threads.map(row),
+        },
+        Knowledge: {
+          master: kMaster.map(row),
+          domains: kDomains.map(row),
+        },
+        Insights: insights.map(row),
+      };
+
+      const total = masterAll.length + llmSingletons.length + llmDiary.length +
+        sessions.length + threads.length + kMaster.length + kDomains.length + insights.length;
+
+      return txt({ total, areas });
     }
   );
 

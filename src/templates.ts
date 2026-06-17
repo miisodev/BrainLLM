@@ -63,6 +63,11 @@ export function contentFor(kind: AnyKind, o: TemplateOpts): string {
         "<p><em>❇️ discovered &amp; credible · ✅ used in this domain's information.</em></p>",
         o.body || "<ul></ul>",
       ].join("\n");
+    case "diary":
+      return [
+        metaLine(["diary", o.date]),
+        o.body || "<p></p>",
+      ].join("\n");
     case "log":
       return [
         metaLine(["log", o.date]),

@@ -8,7 +8,7 @@ An MCP (Model Context Protocol) server that turns [TriliumNext Notes](https://gi
 
 </div>
 
-**v5: a six-area mind with a typed tool surface.** The brain is organised into six purpose-built areas (Master, LLM, Memory, Knowledge, Insights, Templates), each note type carries a **blueprint** that the tools enforce, and the model works through a clean surface: per-area read tools, single-word universal verbs, and a raw ETAPI escape hatch. Placement, format, lifecycle, dates and backups are server policy — the model supplies content, the server owns form.
+**v5.1: a six-area mind with a typed tool surface.** The brain is organised into six purpose-built areas (Master, LLM, Memory, Knowledge, Insights, Templates), each note type carries a **blueprint** that the tools enforce, and the model works through a clean surface: per-area read tools, single-word universal verbs, and a raw ETAPI escape hatch. Placement, format, lifecycle, dates and backups are server policy — the model supplies content, the server owns form.
 
 <div align="center">
 
@@ -24,7 +24,11 @@ An MCP (Model Context Protocol) server that turns [TriliumNext Notes](https://gi
 
 - **Six-area structure** — Master (the user), LLM (the assistant's self-model), Memory (sessions + threads), Knowledge (learned domains), Insights (auto change-logs), Templates (the blueprints). Built and engraved at bootstrap.
 - **Blueprints enforce form** — every note type has a blueprint (Structure / Format / Lifecycle / Maintenance / Example); the core tools produce exactly the blueprint's shape, so documentation and reality can't drift.
-- **Typed tool surface** — **surface reads** (`master`/`master_recall`, `memory`/`memory_recall`, …), **universal verbs** (`start`, `close`, `bootstrap`, `remember`, `recall`, `revise`, `resolve`, `connect`, `explore`, `maintain`, `forget`), and **raw ETAPI** behind `BRAINLLM_MODE=full`.
+- **Typed tool surface** — **surface reads** (`master`/`master_recall`, `memory`/`memory_recall`, …), **universal verbs** (`start`, `close`, `brain`, `bootstrap`, `remember`, `diary`, `recall`, `revise`, `resolve`, `connect`, `explore`, `maintain`, `forget`), and **raw ETAPI** behind `BRAINLLM_MODE=full`.
+- **Full orientation on start** — `start()` returns the user's **goals in full** and the model's **protocols in full**, plus creates today's diary note. No separate reads needed to act from them.
+- **Dedicated diary tool** — `diary(body)` writes to today's LLM diary entry (one note per day, created empty by `start()`; same-day calls append a timestamped addendum).
+- **Full brain tree** — `brain()` surfaces every typed note across all five content areas, grouped by area with id/title/kind/status/dates — audit the whole brain in one call.
+- **One-per-day discipline** — diary, session, and log notes are each limited to one per day; subsequent writes on the same day append. Session and log notes are linked with `~references` after each `close()`.
 - **Interconnection** — a closed relation vocabulary, `connect` to wire, `explore` to traverse (links / backlinks / neighborhood / path), and `maintain` to surface unconnected notes.
 - **Graceful lifecycle** — threads degrade active → dormant → archived-in-place; nothing is deleted. The maintenance sweep ages work and surfaces stale or orphaned notes.
 - **Timezone-correct dates** — BrainLLM sends Trilium its local now, so every `dateCreated`/`dateModified`, the calendar, sessions and logs land in the user's timezone (set `BRAINLLM_TZ` on a hosted deploy).
@@ -165,7 +169,7 @@ The model never chooses placement — `remember(kind=…)` routes it. Domains ar
 
 ### Core — universal verbs
 
-`start` · `close` · `bootstrap` · `remember` · `recall` · `revise` · `resolve` · `connect` · `explore` · `maintain` · `forget`
+`start` · `close` · `brain` · `bootstrap` · `remember` · `diary` · `recall` · `domain` · `absorb` · `revise` · `resolve` · `reopen` · `connect` · `explore` · `maintain` · `forget`
 
 ### Core — surface reads (dual-mode)
 

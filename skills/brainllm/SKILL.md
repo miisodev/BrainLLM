@@ -3,7 +3,7 @@ name: brainllm
 description: "Persistent memory and knowledge graph via the BrainLLM (Trilium) MCP. Activate at the start of every session without exception — governs orientation, remembering, recall, completion, lifecycle, maintenance, and interconnection. Trigger immediately on any first user message. Also trigger whenever: memory is referenced, something needs to be remembered or recalled, a durable fact or decision emerges, context from a prior session is needed, a knowledge domain is introduced, content goes stale, or any Trilium operation is requested. Do not improvise memory operations without reading this skill."
 ---
 
-# BrainLLM — Operational Skill (v5)
+# BrainLLM — Operational Skill (v5.1)
 
 Persistent memory that survives across sessions, stored in TriliumNext. Treat it as your own mind: orient at session start, write the moment something matters, complete things when they complete, log the session at the end.
 
@@ -13,7 +13,7 @@ Persistent memory that survives across sessions, stored in TriliumNext. Treat it
 
 Placement, naming, labels, blueprints, deduplication, relation bookkeeping, degradation, archival, dates and backups are server policy. You never choose a parent note, never add a `#noteType` label, never check for duplicates, never stamp a date. If you find yourself doing bookkeeping, stop — a tool does it for you.
 
-**Operate from it, natively.** `start()` loads who the user is (the Master digest) and who you are here (your responsibilities and protocols) — act from both without being asked. When the topic is the user's world, read `knowledge` / `recall` before answering from training; the brain is authoritative where it speaks. Write the instant something matters; wire a relation the instant you see one. Using it should feel like remembering, not filing.
+**Operate from it, natively.** `start()` loads who the user is (the Master digest — goals in full) and who you are here (your responsibilities and protocols — in full) — act from both without being asked. When the topic is the user's world, read `knowledge` / `recall` before answering from training; the brain is authoritative where it speaks. Write the instant something matters; wire a relation the instant you see one. Using it should feel like remembering, not filing.
 
 ---
 
@@ -22,18 +22,25 @@ Placement, naming, labels, blueprints, deduplication, relation bookkeeping, degr
 ```
 SESSION START   start()                 ← once, before responding to anything
 DURING          remember(...)           ← the moment something worth keeping appears
+                diary(body)             ← your daily record (one note/day, auto-created by start)
                 <surface> / _recall      ← read a surface in full, or skim it
                 recall(...)              ← brain-wide search before answering from memory
+                domain(name)             ← surface all content for a domain/topic/project, grouped by kind
                 revise(...)              ← edit a note (section-surgical for singletons)
                 resolve(...)             ← close a thread with its outcome
+                reopen(noteId)           ← re-activate an archived/resolved thread
                 connect(...)             ← wire a real relation the moment you notice it
 SESSION END     close(summary)           ← once, when work wraps or the user says goodbye
 PERIODIC        maintain(deep=true)      ← when start flags items, or ~weekly
+                absorb(noteId?)          ← scan singletons for pending addendums, surface them for revise()
+ANYTIME         brain()                  ← surface the full content tree (all areas, sub-containers)
 ```
 
-`start()` returns everything needed to orient — **awareness** (today + weekday), the **Master digest** (the user: biography / goals / preferences), the **LLM digest** (your own self-model: responsibilities / protocols — operate by them), the **live working set** (active threads with idle ages), a **review queue** of items gone dormant, and the **last session** summary. Don't re-derive it with extra calls.
+`start()` returns everything needed to orient — **awareness** (today + weekday + today's diary note id), the **Master digest** (the user: biography preview / **full goals** / preferences preview), the **LLM digest** (your self-model: responsibilities preview / **full protocols** — operate by them), the **live working set** (active threads with idle ages), a **review queue** of items gone dormant, and the **last session** summary. Don't re-derive it with extra calls.
 
-`close()` is idempotent per date (a second call the same day appends an addendum), runs the lite maintenance sweep, triggers a DB backup, and regenerates today's change-log.
+`start()` also creates today's diary note (empty) if one doesn't exist yet — the `diaryNoteId` in the awareness block is its ID. Write into it with `diary(body)` whenever you have something worth recording.
+
+`close()` is idempotent per date (a second call the same day appends an addendum), runs the lite maintenance sweep, triggers a DB backup, regenerates today's change-log, and **links the session note and the log note** with `~references` relations.
 
 **Write during the session, not at the end.** A fact remembered mid-conversation survives a crash; one you planned to write at the end does not.
 
@@ -44,14 +51,16 @@ PERIODIC        maintain(deep=true)      ← when start flags items, or ~weekly
 ```
 BrainLLM
 ├── Master      biography · goals · preferences            (maintained singletons)
-├── LLM         responsibilities · protocols · diary        (singletons + a daily diary)
-├── Memory      sessions · threads                          (daily summaries + multi-session work)
+├── LLM         responsibilities · protocols · Diary/       (singletons + one diary note/day)
+├── Memory      Sessions/ · Threads/                        (one session/day + multi-session work)
 ├── Knowledge   Master · Domains/[domain]/{ sources, info } (learned info beyond/contra training)
-├── Insights    logs                                        (auto per-day change logs)
+├── Insights    Logs/                                       (one log/day, auto-generated)
 └── Templates   a blueprint per note type                   (the form contract)
 ```
 
 Placement is server policy — there is no parent parameter. You choose the **kind**; the server routes it.
+
+**One-per-day notes:** diary, session, and log notes are each limited to one per day. Diary notes are created by `start()` and written via `diary()`. Session notes are created and updated by `close()`. Log notes are auto-generated and updated by `close()`. Same-day repeat calls append (diary: timestamped addendum, session: addendum, log: regenerated content).
 
 ---
 
@@ -70,11 +79,13 @@ Each surface has two read tools: `<surface>` reads in full, `<surface>_recall` s
 
 `recall(query, kinds?, domain?, includeArchived?)` searches the **whole** brain — use it when you don't know the surface, or for cross-surface lookups.
 
+`brain(includeArchived?)` surfaces **every content note** across all five areas — id, title, kind, status, dates — grouped by area. Use to audit the full picture or locate a note.
+
 ---
 
-## Writing — `remember` (and `close`)
+## Writing — `remember`, `diary` (and `close`)
 
-`remember(kind, ...)` is the write path; the server places and formats per the blueprint:
+`remember(kind, ...)` is the write path for most content; the server places and formats per the blueprint:
 
 | The content is… | kind | Notes |
 |---|---|---|
@@ -82,11 +93,12 @@ Each surface has two read tools: `<surface>` reads in full, `<surface>_recall` s
 | A credible source for a domain | `sources` | pass `domain=`; mark ❇️ discovered / ✅ used |
 | A fact about the user that doesn't fit biography/goals/preferences | `knowledge` | titled note in Knowledge/Master |
 | A multi-session line of work | `thread` | `revise()` to log progress, `resolve()` to close |
-| Your own daily, unfiltered record | `diary` | one entry per day |
 
-**Singletons** (biography, goals, preferences, responsibilities, protocols) are **maintained in place** — read it with the surface tool (that returns its id and its `<h2>` section headings; `start()`'s digest is only a preview, not the ids), then `revise(id, section="<one heading>", body=…, mode="replace")` to rewrite that section. They hold a *current-state* truth, not a changelog, so replace the section rather than appending to it. **Sessions** are written by `close`. **Logs** are auto-generated (no manual write).
+`diary(body, date?)` is the dedicated path for your daily record — one note per day, created empty by `start()` and written/appended by this tool. Do **not** use `remember(kind="diary")` — use `diary()`.
 
-Your LLM singletons are *yours*: **responsibilities** derive from the user's goals and preferences (revisit them when those shift), **protocols** are your operating and self-correctness rules, and the **diary** is your raw, honest record — which the user reads too. Replacing something outdated wholesale? Pass `supersedes=<oldId>` to `remember` and the old note is archived and linked.
+**Singletons** (biography, goals, preferences, responsibilities, protocols) are **maintained in place** — read it with the surface tool (that returns its id and its `<h2>` section headings; `start()`'s digest is only a preview/full content, not the ids), then `revise(id, section="<one heading>", body=…, mode="replace")` to rewrite that section. They hold a *current-state* truth, not a changelog, so replace the section rather than appending to it. **Sessions** are written by `close`. **Logs** are auto-generated (no manual write).
+
+Your LLM singletons are *yours*: **responsibilities** derive from the user's goals and preferences (revisit them when those shift), **protocols** are your operating and self-correctness rules (served in full by `start()` — act from them always), and the **diary** is your raw, honest record — which the user reads too. Replacing something outdated wholesale? Pass `supersedes=<oldId>` to `remember` and the old note is archived and linked.
 
 Body may be text, markdown, or HTML — normalized server-side. Titles are short, specific, stable (the dedup key); no status words.
 
@@ -97,7 +109,7 @@ Body may be text, markdown, or HTML — normalized server-side. Titles are short
 `revise(noteId, body?, title?, section?, mode?)`:
 - default — append a dated addendum (right for threads, knowledge, information);
 - `mode=replace` — rewrite the body;
-- `section="Overview"` — edit one `<h2>` section in place (the efficient path for maintaining a singleton: read it, then revise the one section).
+- `section="Overview"` — edit one heading section in place (tries h2 → h3 → h4; appends as h2 if absent). The efficient path for maintaining a singleton: read it, then revise the one section.
 
 A revision snapshot is always taken first. Containers and blueprints are refused; the maintained singletons are editable.
 
@@ -125,7 +137,7 @@ Pick the most specific verb that's true; `relatesTo` is the last resort. `worksW
 
 ## Lifecycle & Maintenance
 
-Threads age: **active → dormant** (untouched past the policy window) **→ archived in place**. Degradation demotes, never deletes — archived notes keep their content and are retrievable with `includeArchived=true`. Singletons are maintained (they don't age); sessions, diary and logs are records.
+Threads age: **active → dormant** (untouched past the policy window) **→ archived in place**. Degradation demotes, never deletes — archived notes keep their content and are retrievable with `includeArchived=true`. Singletons are maintained (they don't age); sessions, diary and logs are records (one per day, not aged).
 
 `maintain()` lite runs automatically inside `start`/`close` (ages threads). `maintain(deep=true)` adds **stale-review** (notes untouched past `staleAfterDays`) and the **orphan report**. Act on `flagged`: `connect()` orphans, `revise()`/`resolve()` stale items. `dryRun=true` previews. Timings live in `brainllm.json → policy` — never hardcode them.
 
@@ -143,16 +155,21 @@ Every note type has a blueprint under **Templates** with five parts: **Structure
 
 | Tool | One-liner |
 |---|---|
-| `start()` | Orient: awareness, Master + LLM (self-model) digests, working set, review queue, last session. Once, first. |
-| `close(summary, learned?, …)` | Idempotent session log + lite sweep + backup + log regen. Once, last. |
+| `start()` | Orient: awareness (incl. today's diary id), full goals + full protocols, working set, review queue, last session. Creates today's diary note. Once, first. |
+| `close(summary, learned?, …)` | Idempotent session log + lite sweep + backup + log regen + session↔log linking. Once, last. |
+| `brain(includeArchived?)` | Full content tree: every typed note across all five areas, grouped by area and sub-container (singletons/diary, sessions/threads, master/domains, etc.) with id/title/kind/status/dates. |
 | `bootstrap()` | Create or repair the structure. Idempotent. |
-| `remember(kind, …)` | Write a note — routed, formatted, deduped, blueprint-wired server-side. |
+| `remember(kind, …)` | Write a note — routed, formatted, deduped, blueprint-wired server-side. Not for diary — use `diary()`. |
+| `diary(body, date?)` | Append to today's diary (one note/day, created by `start()`; same-day calls add a timestamped addendum). |
 | `recall(query, …)` | BrainLLM-wide ranked search with kind/status context. |
 | `<surface>` / `<surface>_recall` | Read a surface in full / skim it (master, llm, memory, knowledge, insights, templates). |
-| `revise(noteId, …)` | Append / replace / section-edit a note; snapshot first. |
+| `revise(noteId, …)` | Append / replace / section-edit a note (h2/h3/h4); snapshot first. |
 | `resolve(noteId, outcome, …)` | Close a thread: outcome + terminal status + archive-in-place. |
+| `reopen(noteId, reason?, …)` | Re-activate an archived/resolved thread: removes #archived, resets status, appends addendum. |
+| `domain(name, …)` | Surface all content for a named domain, topic, or project: Knowledge domain folder + threads, knowledge, information/sources — grouped by kind. |
 | `connect(from, relation, to, remove?)` | Typed edge from the closed vocabulary; symmetric handled; idempotent. |
 | `explore(noteId, mode, …)` | Graph: links / backlinks / neighborhood / path. |
+| `absorb(noteId?)` | Scan singletons (or one note) for pending `<h2>Addendum —` blocks; returns section headings + addendum content for revise(). Read-only. |
 | `maintain(deep?, dryRun?)` | Aging + stale-review + orphan report. |
 | `forget(noteId, reason?, hard?)` | Archive (default) or hard-delete (blocked while backlinked). |
 

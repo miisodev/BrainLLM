@@ -19,6 +19,7 @@ const labelOf = (n: Note, name: string) =>
 
 export interface LogReport {
   date: string;
+  noteId?: string;
   created: number;
   updated: number;
   deleted: number;
@@ -77,15 +78,16 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
   if (existing.results[0]) {
     const id = existing.results[0].noteId;
     const current = await trilium.getNoteContent(id).catch(() => "");
-    if (current.trim() === body.trim()) return { date, ...counts, action: "unchanged" };
+    if (current.trim() === body.trim()) return { date, noteId: id, ...counts, action: "unchanged" };
     await trilium.updateNoteContent(id, body);
-    return { date, ...counts, action: "updated" };
+    return { date, noteId: id, ...counts, action: "updated" };
   }
 
   const note = await trilium.createNote(cfg.insights.logs, date, body);
-  await trilium.addLabel(note.note.noteId, "noteType", "log");
-  await trilium.addLabel(note.note.noteId, "created", date);
+  const logNoteId = note.note.noteId;
+  await trilium.addLabel(logNoteId, "noteType", "log");
+  await trilium.addLabel(logNoteId, "created", date);
   const tpl = cfg.templates.byKind["log"];
-  if (tpl) await trilium.addRelation(note.note.noteId, "template", tpl).catch(() => null);
-  return { date, ...counts, action: "created" };
+  if (tpl) await trilium.addRelation(logNoteId, "template", tpl).catch(() => null);
+  return { date, noteId: logNoteId, ...counts, action: "created" };
 }

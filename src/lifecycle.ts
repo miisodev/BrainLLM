@@ -173,7 +173,7 @@ const label = (n: Note, name: string) =>
 export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): Promise<SessionDigest> {
   const digest: SessionDigest = { master: [], llm: [], workingSet: [], reviewQueue: [], counts: {} };
 
-  // Master singletons — first lines of biography / goals / preferences.
+  // Master singletons — goals in full; biography and preferences as short previews.
   const slots: Array<[string, string]> = [
     ["biography", cfg.master.biography],
     ["goals", cfg.master.goals],
@@ -182,11 +182,11 @@ export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): 
   for (const [slot, id] of slots) {
     if (!id) continue;
     const content = await trilium.getNoteContent(id).catch(() => "");
-    const summary = toText(content, 200);
+    const summary = toText(content, slot === "goals" ? Infinity : 200);
     if (summary) digest.master.push({ slot, summary });
   }
 
-  // LLM singletons — the assistant's own self-model (responsibilities / protocols).
+  // LLM singletons — protocols in full; responsibilities as a short preview.
   const llmSlots: Array<[string, string]> = [
     ["responsibilities", cfg.llm.responsibilities],
     ["protocols", cfg.llm.protocols],
@@ -194,7 +194,7 @@ export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): 
   for (const [slot, id] of llmSlots) {
     if (!id) continue;
     const content = await trilium.getNoteContent(id).catch(() => "");
-    const summary = toText(content, 500);
+    const summary = toText(content, slot === "protocols" ? Infinity : 500);
     if (summary) digest.llm.push({ slot, summary });
   }
 
