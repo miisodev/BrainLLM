@@ -1207,8 +1207,10 @@ immediately, no restart needed.`,
             root: { id: existing.noteId, title: existing.title },
             children,
           });
-        } catch {
-          // Stale root ID — fall through to fresh init.
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!msg.includes("404")) throw e;
+          // 404 = note deleted from Trilium — fall through to fresh init.
         }
       }
 

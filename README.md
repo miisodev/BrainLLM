@@ -121,6 +121,16 @@ When `PORT` is set, BrainLLM serves a streamable-HTTP MCP server: `/mcp` (one se
 
 The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector. On **Railway**, `PORT` is injected automatically — set `MCP_AUTH_TOKEN`, `TRILIUM_BASE_URL`, `TRILIUM_ETAPI_TOKEN` and `BRAINLLM_TZ` as service variables and deploy. Point your client at `https://<app>.up.railway.app/mcp` with the bearer token.
 
+For config persistence across redeploys, add a volume to the **BrainLLM MCP service** (separate from the Trilium service's data volume) and set `BRAINLLM_CONFIG` to a file path inside it:
+
+```bash
+# Railway CLI — create and mount the volume, then set the config path
+railway volume -p <project-id> -s <brainllm-service-id> -e production add --mount-path /vol
+railway variables set BRAINLLM_CONFIG=/vol/brainllm.json
+```
+
+Without this, `BRAINLLM_CONFIG` should be left unset — the server auto-discovers from Trilium on each cold start via `#brainLlmRoot`, which is cheap but adds ~1 s to startup. Do **not** point `BRAINLLM_CONFIG` at Trilium's data directory; that path only exists on the Trilium service and will cause a startup ENOENT.
+
 ---
 
 ## First-time setup
@@ -140,7 +150,7 @@ A handful of values in this repo reflect the author's own machine. None are secr
 | What | Where | Make it yours |
 |---|---|---|
 | **Timezone** | `BRAINLLM_TZ` in `.env` (the example shows `Africa/Johannesburg`) | Your IANA zone (e.g. `America/New_York`) — or leave it unset to use the host clock, which is correct when BrainLLM runs on your own machine. |
-| **Config path** | `BRAINLLM_CONFIG` env var (unset by default) | On Railway or any persistent-volume deploy, set this to a mounted file path (e.g. `/data/brainllm.json`) so config survives redeploys without re-discovery on every cold start. Leave unset for local/stdio use. |
+| **Config path** | `BRAINLLM_CONFIG` env var (unset by default) | On Railway or any persistent-volume deploy, mount a volume on the **MCP service** (not the Trilium service) and set this to a file path inside it (e.g. `/vol/brainllm.json`) so config survives redeploys. Leave unset for local/stdio use — auto-discovery handles startup. Do not point it at Trilium's data directory. |
 | **Trilium launcher** | `scripts/start-trilium.ps1` — hard-codes `C:\Users\…\trilium.exe` and assumes the desktop port `37840` | A Windows-only convenience script. Point the path at your Trilium install (and match `TRILIUM_BASE_URL` to its real port), or ignore it and start Trilium however you like. |
 | **"Trilium isn't running" hint** | `skills/brainllm/SKILL.md` and `skills/brainllm/references/troubleshooting.md` | Both reference the author's absolute path to that script. Repoint them to your clone, or delete the line — it's only a fallback hint. |
 | **Bundle path** | Claude Desktop config → `/absolute/path/to/BrainLLM/dist/index.js` | The real absolute path to `dist/index.js` on your machine. |

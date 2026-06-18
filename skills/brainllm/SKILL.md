@@ -188,7 +188,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `start()` | Orient: full master (bio/goals/prefs) + full LLM (responsibilities/protocols) + diary id + session id + active/dormant threads + last session + changesSinceLastSession. Creates today's diary + session stubs. Once, first. |
 | `close(summary, title?, learned?, …)` | Session log ([yyyy-mm-dd] note, title param above Summary) + sweep + backup + log. Returns full diary. Once, last. Then: diary (optional) → addendum() → maintain(). |
 | `brain(includeArchived?)` | Full content tree: every typed note across all five areas, grouped. |
-| `bootstrap()` | Create or repair the structure. Idempotent. |
+| `bootstrap()` | Initialize the structure if uninitialized, or verify and refresh config if it already exists. Only creates a new tree when the stored root note is confirmed deleted in Trilium (404). Any other error (network, auth, timeout) is surfaced rather than silently creating a duplicate tree. |
 | `remember(kind, …)` | Write a note — routed, formatted, deduped server-side. Rejects diary/session/log/domain — each has a dedicated path. |
 | `diary(body, date?)` | Write/append to today's [yyyy-mm-dd] diary (stub created by start; same-day calls add a timestamped addendum). |
 | `recall(query, …)` | BrainLLM-wide ranked search. `orderBy` / `orderDirection` for temporal ordering; `fastSearch` for title/label-only (faster). |
@@ -227,7 +227,7 @@ Full signatures, the gotchas in depth, and a use-case→tool map: `references/fu
 | Situation | Fix |
 |---|---|
 | BrainLLM tools time out / connection errors | Run `C:\Users\miiso\Projects\OSS\BrainLLM\scripts\start-trilium.ps1` (PowerShell). Wait ~3 s, retry. |
-| `start()` → `uninitialized` | Run `bootstrap()` (idempotent, safe anytime). |
+| `start()` → `uninitialized` | Run `bootstrap()`. Safe anytime — only creates a new tree if the root note is confirmed gone; surfaces errors otherwise. |
 | Dates look off on a hosted deploy | Set `BRAINLLM_TZ` (IANA, e.g. `Africa/Johannesburg`) so Trilium stamps in the user's timezone. |
 
 For relation/label conventions read `references/taxonomy.md`; for full-mode signatures `references/full-mode.md`; for other symptoms `references/troubleshooting.md`.
