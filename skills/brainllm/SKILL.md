@@ -138,6 +138,8 @@ Your LLM singletons are *yours*: **responsibilities** derive from the user's goa
 
 Body may be text, markdown, or HTML — normalized server-side. Titles are short, specific, stable (the dedup key); no status words.
 
+All append operations are retry-safe — if the last block already carries the same content, the tool returns `action: "already_written"` and skips the write.
+
 ---
 
 ## Updating — `revise`
@@ -190,7 +192,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `brain(includeArchived?)` | Full content tree: every typed note across all five areas, grouped. |
 | `bootstrap()` | Initialize the structure if uninitialized, or verify and refresh config if it already exists. Only creates a new tree when the stored root note is confirmed deleted in Trilium (404). Any other error (network, auth, timeout) is surfaced rather than silently creating a duplicate tree. |
 | `remember(kind, …)` | Write a note — routed, formatted, deduped server-side. Rejects diary/session/log/domain — each has a dedicated path. |
-| `diary(body, date?)` | Write/append to today's [yyyy-mm-dd] diary (stub created by start; same-day calls add a timestamped addendum). Returns `action: "already_written"` if the same content was written within the past 5 min — safe to retry. |
+| `diary(body, date?)` | Write/append to today's [yyyy-mm-dd] diary (stub created by start; same-day calls add a timestamped addendum). |
 | `recall(query, …)` | BrainLLM-wide ranked search. `orderBy` / `orderDirection` for temporal ordering; `fastSearch` for title/label-only (faster). |
 | `<surface>` / `<surface>_recall` | Read a surface in full / skim it (master, llm, memory, knowledge, insights). |
 | `revise(noteId, …)` | Append / replace / section-edit a note (h2/h3/h4); snapshot taken on content writes (not metadata-only). |
