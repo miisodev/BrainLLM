@@ -24,14 +24,18 @@ if (!brain) {
   console.error("[brainllm] No brainllm.json — attempting auto-discovery from Trilium...");
   try {
     brain = await discoverBrainLLM(trilium);
-    if (brain) {
-      saveConfig(brain);
-      console.error(`[brainllm] Auto-discovered. Config written to: ${configFilePath()}`);
-    } else {
-      console.error("[brainllm] BrainLLM not found in Trilium. Run the bootstrap tool to initialize.");
-    }
   } catch (err) {
     console.error(`[brainllm] Auto-discovery failed: ${err}`);
+  }
+  if (brain) {
+    try {
+      saveConfig(brain);
+      console.error(`[brainllm] Auto-discovered. Config written to: ${configFilePath()}`);
+    } catch (err) {
+      console.error(`[brainllm] Auto-discovered but could not persist config: ${err}`);
+    }
+  } else if (!brain) {
+    console.error("[brainllm] BrainLLM not found in Trilium. Run the bootstrap tool to initialize.");
   }
 }
 
