@@ -74,45 +74,39 @@ function makeTestNote(noteId: string, attrs: Array<{ noteId?: string; name: stri
   };
 }
 
-describe("ownedLabel — blueprint inheritance guard", () => {
-  test("returns the owned kind, ignoring an inherited noteType=blueprint", () => {
+describe("ownedLabel — owned vs. inherited attribute", () => {
+  test("returns the owned kind, ignoring an inherited attribute from another note", () => {
     const note = makeTestNote("THREAD_001", [
-      { noteId: "BLUEPRINT_001", name: "noteType", value: "blueprint", isInheritable: true },
-      { noteId: "THREAD_001",   name: "noteType", value: "thread" },
+      { noteId: "OTHER_001", name: "noteType", value: "inherited-kind", isInheritable: true },
+      { noteId: "THREAD_001", name: "noteType", value: "thread" },
     ]);
     expect(ownedLabel(note, "noteType")).toBe("thread");
   });
 
   test("returns undefined when the label only exists as inherited", () => {
     const note = makeTestNote("THREAD_001", [
-      { noteId: "BLUEPRINT_001", name: "noteType", value: "blueprint", isInheritable: true },
+      { noteId: "OTHER_001", name: "noteType", value: "inherited-kind", isInheritable: true },
     ]);
     expect(ownedLabel(note, "noteType")).toBeUndefined();
   });
 
   test("returns the owned value when there is no inheritance", () => {
-    const note = makeTestNote("BP_001", [
-      { noteId: "BP_001", name: "noteType", value: "blueprint" },
+    const note = makeTestNote("NOTE_001", [
+      { noteId: "NOTE_001", name: "noteType", value: "thread" },
     ]);
-    expect(ownedLabel(note, "noteType")).toBe("blueprint");
+    expect(ownedLabel(note, "noteType")).toBe("thread");
   });
 });
 
 describe("isContainer — revise() protection", () => {
-  const blueprintId = "THREAD_BLUEPRINT_001";
-  const contentId   = "THREAD_CONTENT_001";
-  const cfg = {
-    ...EMPTY_BRAINLLM,
-    templates: { ...EMPTY_BRAINLLM.templates, byKind: { thread: blueprintId } },
-  };
+  const contentId = "THREAD_CONTENT_001";
 
-  test("returns false for a templated content note (revise should succeed)", () => {
-    // contentId is NOT in structuralIds — revise() must be allowed
-    expect(isContainer(cfg, contentId)).toBe(false);
+  test("returns false for a content note (revise should succeed)", () => {
+    expect(isContainer(EMPTY_BRAINLLM, contentId)).toBe(false);
   });
 
-  test("returns true for the actual blueprint note (revise should be refused)", () => {
-    // blueprintId IS in structuralIds via byKind — revise() must refuse
-    expect(isContainer(cfg, blueprintId)).toBe(true);
+  test("returns true for a structural container (revise should be refused)", () => {
+    const cfg = { ...EMPTY_BRAINLLM, memory: { ...EMPTY_BRAINLLM.memory, threads: "THREADS_CONTAINER" } };
+    expect(isContainer(cfg, "THREADS_CONTAINER")).toBe(true);
   });
 });

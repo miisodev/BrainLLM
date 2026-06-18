@@ -127,6 +127,16 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
   );
 
   server.tool(
+    "undelete_note",
+    "Recover a recently Trilium-deleted note from Trilium's trash. canBeUndeleted must be true (check note_history). Distinct from recover() which restores BrainLLM-archived notes.",
+    { noteId: z.string() },
+    async ({ noteId }) => {
+      await trilium.undeleteNote(noteId);
+      return txt({ ok: true, undeleted: noteId });
+    }
+  );
+
+  server.tool(
     "note_history",
     "Recent changes feed (creations / modifications / deletions), newest first.",
     { ancestorNoteId: z.string().optional() },
@@ -295,14 +305,25 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "update_attachment",
-    "Update an attachment's title and/or mime.",
-    { attachmentId: z.string(), title: z.string().optional(), mime: z.string().optional() },
-    async ({ attachmentId, title, mime }) => {
-      const fields: { title?: string; mime?: string } = {};
-      if (title != null) fields.title = title;
-      if (mime != null) fields.mime = mime;
-      const att = await trilium.updateAttachment(attachmentId, fields);
-      return txt({ id: att.attachmentId, title: att.title, mime: att.mime });
+    "Update an attachment's content and/or metadata (title, mime). Pass content to replace the binary/text data in place; pass title/mime to update metadata only.",
+    {
+      attachmentId: z.string(),
+      title: z.string().optional(),
+      mime: z.string().optional().describe("MIME type — also used as Content-Type when writing content"),
+      content: z.string().optional().describe("New content (replaces existing; text or base64 for binary)"),
+    },
+    async ({ attachmentId, title, mime, content }) => {
+      if (content != null) {
+        await trilium.updateAttachmentContent(attachmentId, content, mime ?? "text/plain");
+      }
+      if (title != null || mime != null) {
+        const fields: { title?: string; mime?: string } = {};
+        if (title != null) fields.title = title;
+        if (mime != null) fields.mime = mime;
+        const att = await trilium.updateAttachment(attachmentId, fields);
+        return txt({ id: att.attachmentId, title: att.title, mime: att.mime, contentUpdated: content != null });
+      }
+      return txt({ ok: true, attachmentId, contentUpdated: content != null });
     }
   );
 
@@ -364,12 +385,15 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "create_backup",
-    "Trigger a named database backup (brainllm-{date}.db).",
-    { date: z.string().optional() },
-    async ({ date }) => {
-      const d = date ?? localToday();
-      await trilium.createBackup(d);
-      return txt({ ok: true, backup: `brainllm-${d}.db` });
+    "Trigger a named Trilium database backup. The backup file is written to Trilium's backup directory as <name>.db (default name: brainllm-{date}). Use a descriptive name for milestone snapshots (e.g. 'before-migration').",
+    {
+      name: z.string().optional().describe("Backup file name without .db extension (default: brainllm-{today})"),
+      date: z.string().optional().describe("ISO date used in the default name when name is omitted (default: today)"),
+    },
+    async ({ name, date }) => {
+      const backupName = name ?? `brainllm-${date ?? localToday()}`;
+      await trilium.createBackup(backupName);
+      return txt({ ok: true, backup: `${backupName}.db` });
     }
   );
 }

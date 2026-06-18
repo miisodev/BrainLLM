@@ -1,6 +1,6 @@
 # Full Mode — Raw ETAPI Reference (V5)
 
-`BRAINLLM_MODE=full` adds 32 raw ETAPI tools alongside the core surface. They map one-to-one onto Trilium's ETAPI and are **brain-agnostic** — no placement, format, dedup, blueprint wiring, or lifecycle.
+`BRAINLLM_MODE=full` adds 32 raw ETAPI tools alongside the core surface. They map one-to-one onto Trilium's ETAPI and are **brain-agnostic** — no placement, format, dedup, or lifecycle.
 
 **Ground rule:** use the core surface (`remember`, `recall`, the `<surface>` reads, `revise`, `resolve`, `connect`, `explore`, `forget`) for all routine work. Reach for full-mode only when the high-level path genuinely cannot do the job — these bypass every server guarantee, so correctness is on you.
 
@@ -8,15 +8,15 @@
 
 ## Using full mode natively (against the BrainLLM structure)
 
-Full-mode tools place nothing, label nothing, and enforce no blueprint — so when you reach past the core surface you take on what it normally guarantees. Three things keep raw edits from silently corrupting the brain:
+Full-mode tools place nothing, label nothing — so when you reach past the core surface you take on what it normally guarantees. Three things keep raw edits from silently corrupting the brain:
 
-- **A note is only a "memory" once it carries `#noteType`.** `recall` and every `<surface>` read filter out untyped notes, so a note you `create_note` without labelling is invisible to them. For a new memory, use core `remember` — it places the note, writes `#noteType` + `#created`/`#updated`, wires the blueprint, and dedups by title. Reach for `create_note` only for shapes core can't make (a `code` / `canvas` / `mermaid` note, a deliberate placement), then replicate the labels yourself: `add_label noteType <kind>`, and match the type's shape via `templates(<kind>)`.
+- **A note is only a "memory" once it carries `#noteType`.** `recall` and every `<surface>` read filter out untyped notes, so a note you `create_note` without labelling is invisible to them. For a new memory, use core `remember` — it places the note, writes `#noteType` + `#created`/`#updated`, and dedups by title. Reach for `create_note` only for shapes core can't make (a `code` / `canvas` / `mermaid` note, a deliberate placement), then replicate the labels yourself: `add_label noteType <kind>`.
 - **Overwrites don't snapshot; labels don't dedup.** `update_note_content` replaces the body with no revision — `create_revision` first when the content matters. `add_label` always adds (it can leave you with two `#status` labels); change an existing one with `update_attribute`. `delete_note` deletes the whole subtree when it's the last branch — prefer core `forget`, which archives and checks backlinks.
 - **Find structure by its marker, not a hardcoded id.** There is no `get_brain_config` in V5. To locate a container, `search_notes("#brainLlmRoot")` for the root, then `get_note` and walk `children` to the area / book you need; or lift a `parents` id from any note a surface read already returned.
 
 ### Raw artifacts (code, images, files)
 
-BrainLLM memories are the typed text notes the blueprints define; `code` / `file` / `image` notes have no blueprint and aren't a `#noteType` kind. Keep raw artifacts *attached to* or *embedded in* a typed note rather than free-floating:
+BrainLLM memories are typed text notes; `code` / `file` / `image` notes aren't a `#noteType` kind. Keep raw artifacts *attached to* or *embedded in* a typed note rather than free-floating:
 - **Code / structured text** → embed it as a fenced block in an `information` note via core `remember` (fully conformant and full-text searchable), or
 - **Binary (image, PDF, file)** → `create_attachment` it onto the relevant typed note (`role=image` / `file`).
 
@@ -29,8 +29,10 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | A query core `recall` can't express (date ranges, exact labels, custom ordering) | `search_notes` |
 | Exact attributes / parent-child ids of a note | `get_note` |
 | Attach an image or file to a note | `create_attachment` (`role=image` / `file`) |
+| Update an existing attachment's content in place | `update_attachment` (pass `content=`) |
 | Store a code snippet, canvas, or mermaid diagram as a note | `create_note` (`type=code` / …) + label it |
 | Recover content clobbered by a bad write | `get_revisions` → `get_revision_content` |
+| Recover a Trilium-hard-deleted note | `note_history` (check `canBeUndeleted`) → `undelete_note` |
 | Fix or remove a stray label / relation | `get_note` (read its `attributeId`) → `update_attribute` / `delete_attribute` |
 | Place one note under a second parent | `clone_note` (shared content, not a copy) |
 | A Trilium journal day / week / month / year note | `get_day_note` / `get_week_note` / … |
@@ -48,6 +50,7 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | `update_note_content` | `(noteId, content)` — full replace |
 | `patch_note` | `(noteId, title?, type?, mime?)` — metadata only |
 | `delete_note` | `(noteId)` — hard-delete (subtree if last branch) |
+| `undelete_note` | `(noteId)` — recover a Trilium-deleted note from Trilium's trash (`canBeUndeleted` must be true per `note_history`). Distinct from core `recover()` which restores BrainLLM-archived notes. |
 | `note_history` | `(ancestorNoteId?)` — recent changes feed (creations/modifications/deletions) |
 
 ## Attributes
@@ -84,7 +87,7 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | `get_attachments` | `(noteId)` |
 | `get_attachment_content` | `(attachmentId)` |
 | `create_attachment` | `(ownerId, title, mime, content, role?)` — `role` ∈ file·image |
-| `update_attachment` | `(attachmentId, title?, mime?)` |
+| `update_attachment` | `(attachmentId, title?, mime?, content?)` — patch metadata and/or replace content in place |
 | `delete_attachment` | `(attachmentId)` |
 
 ## Calendar (Trilium journal)

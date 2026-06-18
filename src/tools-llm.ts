@@ -34,10 +34,15 @@ export function registerLlmTools(server: McpServer, trilium: TriliumClient, brai
     { limit: z.number().optional() },
     async ({ limit }) => {
       const cfg = b();
+      const [respPreview, protPreview, diary] = await Promise.all([
+        preview(trilium, cfg.llm.responsibilities),
+        preview(trilium, cfg.llm.protocols),
+        skim(trilium, cfg.llm.diary, { kind: "diary", limit: limit ?? 7 }),
+      ]);
       return txt({
-        responsibilities: await preview(trilium, cfg.llm.responsibilities),
-        protocols: await preview(trilium, cfg.llm.protocols),
-        diary: await skim(trilium, cfg.llm.diary, { kind: "diary", limit: limit ?? 7 }),
+        responsibilities: { id: cfg.llm.responsibilities, preview: respPreview },
+        protocols: { id: cfg.llm.protocols, preview: protPreview },
+        diary,
       });
     }
   );

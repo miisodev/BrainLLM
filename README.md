@@ -8,7 +8,7 @@ An MCP (Model Context Protocol) server that turns [TriliumNext Notes](https://gi
 
 </div>
 
-**v5.1: a six-area mind with a typed tool surface.** The brain is organised into six purpose-built areas (Master, LLM, Memory, Knowledge, Insights, Templates), each note type carries a **blueprint** that the tools enforce, and the model works through a clean surface: per-area read tools, single-word universal verbs, and a raw ETAPI escape hatch. Placement, format, lifecycle, dates and backups are server policy — the model supplies content, the server owns form.
+**v5.2: a five-area mind with a typed tool surface.** The brain is organised into five purpose-built areas (Master, LLM, Memory, Knowledge, Insights), and the model works through a clean surface: per-area read tools, single-word universal verbs, and a raw ETAPI escape hatch. Placement, format, lifecycle, dates and backups are server policy — the model supplies content, the server owns form.
 
 <div align="center">
 
@@ -22,18 +22,17 @@ An MCP (Model Context Protocol) server that turns [TriliumNext Notes](https://gi
 
 ## Features
 
-- **Six-area structure** — Master (the user), LLM (the assistant's self-model), Memory (sessions + threads), Knowledge (learned domains), Insights (auto change-logs), Templates (the blueprints). Built and engraved at bootstrap.
-- **Blueprints enforce form** — every note type has a blueprint (Structure / Format / Lifecycle / Maintenance / Example); the core tools produce exactly the blueprint's shape, so documentation and reality can't drift.
-- **Typed tool surface** — **surface reads** (`master`/`master_recall`, `memory`/`memory_recall`, …), **universal verbs** (`start`, `close`, `brain`, `bootstrap`, `remember`, `diary`, `recall`, `revise`, `resolve`, `connect`, `explore`, `maintain`, `forget`), and **raw ETAPI** behind `BRAINLLM_MODE=full`.
-- **Full orientation on start** — `start()` returns the user's **goals in full**, **preferences in full**, and the model's **protocols in full**, plus creates today's diary note. No separate reads needed to act from them.
+- **Five-area structure** — Master (the user), LLM (the assistant's self-model), Memory (sessions + threads), Knowledge (learned domains), Insights (per-session logs). Built and labelled at bootstrap.
+- **Typed tool surface** — **surface reads** (`master`/`master_recall`, `memory`/`memory_recall`, …), **universal verbs** (`start`, `close`, `brain`, `bootstrap`, `remember`, `diary`, `recall`, `revise`, `resolve`, `recover`, `connect`, `explore`, `maintain`, `forget`, `backup`), and **raw ETAPI** behind `BRAINLLM_MODE=full`.
+- **Full orientation on start** — `start()` returns the user's **goals in full**, **preferences in full**, and the model's **protocols in full**, plus today's diary note and a delta of notes changed since the last session. No separate reads needed to act from them.
 - **Dedicated diary tool** — `diary(body)` writes to today's LLM diary entry (one note per day, created empty by `start()`; same-day calls append a timestamped addendum).
 - **Full brain tree** — `brain()` surfaces every typed note across all five content areas, grouped by area with id/title/kind/status/dates — audit the whole brain in one call.
 - **One-per-day discipline** — diary, session, and log notes are each limited to one per day; subsequent writes on the same day append. Session and log notes are linked with `~references` after each `close()`.
-- **Post-close protocol** — after `close()` returns, the model is instructed to call `absorb()` (find and integrate unabsorbed addendums) then `maintain()` (audit and fix brain hygiene) before ending the session.
+- **Post-close protocol** — after `close()` returns, the model calls `addendum()` (find and merge pending addendum blocks) then `maintain()` (audit and fix brain hygiene) before ending the session.
 - **Interconnection** — a closed relation vocabulary, `connect` to wire, `explore` to traverse (links / backlinks / neighborhood / path), and `maintain` to surface unconnected notes.
-- **Graceful lifecycle** — threads degrade active → dormant → archived-in-place; nothing is deleted. The maintenance sweep ages work and surfaces stale or orphaned notes.
+- **Graceful lifecycle** — threads degrade active → dormant → archived-in-place; nothing is deleted. The maintenance sweep ages work and surfaces stale or orphaned notes. `recover()` undoes `forget()`.
 - **Timezone-correct dates** — BrainLLM sends Trilium its local now, so every `dateCreated`/`dateModified`, the calendar, sessions and logs land in the user's timezone (set `BRAINLLM_TZ` on a hosted deploy).
-- **Auto change-logs + awareness** — a per-day Insights log of what changed (idempotent, sourced from Trilium's own history), and `start` opens with the date, weekday and continuity.
+- **Per-session change-logs** — `close()` generates a per-day Insights log (sourced from Trilium's own history); `start()` surfaces the delta since the last session so the model always knows what changed.
 - **Zero ID pasting** — `bootstrap` builds the tree and writes `brainllm.json`; auto-discovery rebuilds config if the file is missing.
 
 ---
@@ -116,7 +115,7 @@ BrainLLM runs in one of two transport modes, selected by `PORT`:
 | **stdio** | Local Claude Desktop / Claude Code spawns BrainLLM as a child process | `PORT` **unset** (default) |
 | **HTTP connector** | Remote clients reach BrainLLM over the network | `PORT` **set** (Railway sets it for you) |
 
-When `PORT` is set, BrainLLM serves a streamable-HTTP MCP server: `/mcp` (one session per `mcp-session-id`) and `GET /health`. Set `MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on `/mcp`. The HTTP deployment also runs the daily change-log generation.
+When `PORT` is set, BrainLLM serves a streamable-HTTP MCP server: `/mcp` (one session per `mcp-session-id`) and `GET /health`. Set `MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on `/mcp`.
 
 ### Deploy with Docker / Railway
 
@@ -126,7 +125,7 @@ The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector. On
 
 ## First-time setup
 
-On a fresh Trilium instance, ask Claude to run `bootstrap`. It builds the six-area tree (each note engraved with its purpose), creates the per-type blueprints, writes `brainllm.json`, and activates config immediately — no restart, no manual ID copying. Or via CLI:
+On a fresh Trilium instance, ask Claude to run `bootstrap`. It builds the five-area tree (each area engraved with its purpose), writes `brainllm.json`, and activates config immediately — no restart, no manual ID copying. Or via CLI:
 
 ```bash
 TRILIUM_BASE_URL=http://localhost:8080 TRILIUM_ETAPI_TOKEN=your-token bun run init
@@ -141,6 +140,7 @@ A handful of values in this repo reflect the author's own machine. None are secr
 | What | Where | Make it yours |
 |---|---|---|
 | **Timezone** | `BRAINLLM_TZ` in `.env` (the example shows `Africa/Johannesburg`) | Your IANA zone (e.g. `America/New_York`) — or leave it unset to use the host clock, which is correct when BrainLLM runs on your own machine. |
+| **Config path** | `BRAINLLM_CONFIG` env var (unset by default) | On Railway or any persistent-volume deploy, set this to a mounted file path (e.g. `/data/brainllm.json`) so config survives redeploys without re-discovery on every cold start. Leave unset for local/stdio use. |
 | **Trilium launcher** | `scripts/start-trilium.ps1` — hard-codes `C:\Users\…\trilium.exe` and assumes the desktop port `37840` | A Windows-only convenience script. Point the path at your Trilium install (and match `TRILIUM_BASE_URL` to its real port), or ignore it and start Trilium however you like. |
 | **"Trilium isn't running" hint** | `skills/brainllm/SKILL.md` and `skills/brainllm/references/troubleshooting.md` | Both reference the author's absolute path to that script. Repoint them to your clone, or delete the line — it's only a fallback hint. |
 | **Bundle path** | Claude Desktop config → `/absolute/path/to/BrainLLM/dist/index.js` | The real absolute path to `dist/index.js` on your machine. |
@@ -158,8 +158,7 @@ BrainLLM  (#brainLlmRoot)
 ├── 🤖 LLM          responsibilities · protocols · Diary/        (singletons + daily diary)
 ├── 🗂️ Memory       Sessions/ · Threads/                         (daily summaries + running work)
 ├── 📚 Knowledge    Master/ · Domains/[domain]/{ Sources, info } (learned, beyond/contra training)
-├── 💡 Insights     Logs/                                        (auto per-day change logs)
-└── 🧩 Templates    blueprints per note type                     (the form contract)
+└── 💡 Insights     Logs/                                        (per-session change logs)
 ```
 
 The model never chooses placement — `remember(kind=…)` routes it. Domains are created on first use; each holds one maintained **Sources** note (❇️ discovered / ✅ used) plus sub-category **information** notes.
@@ -170,11 +169,11 @@ The model never chooses placement — `remember(kind=…)` routes it. Domains ar
 
 ### Core — universal verbs
 
-`start` · `close` · `brain` · `bootstrap` · `remember` · `diary` · `recall` · `domain` · `absorb` · `revise` · `resolve` · `reopen` · `connect` · `explore` · `maintain` · `forget`
+`start` · `close` · `brain` · `bootstrap` · `remember` · `diary` · `recall` · `domain` · `addendum` · `revise` · `resolve` · `reopen` · `recover` · `connect` · `explore` · `maintain` · `forget` · `backup`
 
 ### Core — surface reads (dual-mode)
 
-`master`/`master_recall` · `llm`/`llm_recall` · `memory`/`memory_recall` · `knowledge`/`knowledge_recall` · `insights`/`insights_recall` · `templates`/`templates_recall`
+`master`/`master_recall` · `llm`/`llm_recall` · `memory`/`memory_recall` · `knowledge`/`knowledge_recall` · `insights`/`insights_recall`
 
 ### Full mode (`BRAINLLM_MODE=full`)
 

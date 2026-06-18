@@ -32,7 +32,6 @@ show("llm", config.llm.root);
 show("memory", config.memory.root);
 show("knowledge", config.knowledge.root);
 show("insights", config.insights.root);
-show("templates", config.templates.root);
 
 console.log("\n✅ Done.");
 console.log(`\nConfig written to: ${savedPath}`);

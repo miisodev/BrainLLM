@@ -25,7 +25,6 @@ export interface BrainLLMConfig {
   memory:    { root: string; sessions: string; threads: string };
   knowledge: { root: string; master: string; domains: string };
   insights:  { root: string; logs: string };
-  templates: { root: string; master: string; llm: string; memory: string; knowledge: string; insights: string; byKind: Record<string, string> };
   policy: LifecyclePolicy;
 }
 
@@ -37,14 +36,16 @@ export const EMPTY_BRAINLLM: BrainLLMConfig = {
   memory:    { root: "", sessions: "", threads: "" },
   knowledge: { root: "", master: "", domains: "" },
   insights:  { root: "", logs: "" },
-  templates: { root: "", master: "", llm: "", memory: "", knowledge: "", insights: "", byKind: {} },
   policy:    { ...DEFAULT_POLICY },
 };
 
 // ── File path ─────────────────────────────────────────────────────────────────
 
 export function configFilePath(): string {
-  // Always co-located with the running bundle — no env override.
+  // BRAINLLM_CONFIG lets Railway (or any persistent-volume deploy) pin the file
+  // to a mount path that survives redeploys, avoiding auto-discovery on every cold start.
+  const override = process.env.BRAINLLM_CONFIG;
+  if (override) return override;
   return join(dirname(Bun.main), "brainllm.json");
 }
 
@@ -125,47 +126,16 @@ export async function discoverBrainLLM(trilium: TriliumClient): Promise<BrainLLM
         case "Insights":
           config.insights = { root: id, logs: g("Logs") };
           break;
-        case "Templates":
-          config.templates = {
-            root: id,
-            master: g("Master"),
-            llm: g("LLM"),
-            memory: g("Memory"),
-            knowledge: g("Knowledge"),
-            insights: g("Insights"),
-            byKind: {},
-          };
-          break;
       }
     }
   } catch {
     return null;
   }
 
-  // Discover blueprint ids (Templates → area book → blueprint note).
-  if (config.templates.root) {
-    const bps = await trilium
-      .searchNotes("#noteType=blueprint", { ancestorNoteId: config.templates.root, fastSearch: true, limit: 100 })
-      .catch(() => null);
-    for (const n of bps?.results ?? []) {
-      // Guard: noteType=blueprint must be an OWNED attribute (not inherited via ~template).
-      // fastSearch can bypass ancestorNoteId, returning content notes that inherited
-      // the blueprint's labels — skip those so they don't end up in structuralIds().
-      const isOwnBlueprint = n.attributes.some(
-        (a) => a.type === "label" && a.name === "noteType" && a.value === "blueprint" && a.noteId === n.noteId
-      );
-      if (!isOwnBlueprint) continue;
-      const kind = n.attributes.find(
-        (a) => a.type === "label" && a.name === "blueprint" && a.noteId === n.noteId
-      )?.value;
-      if (kind) config.templates.byKind[kind] = n.noteId;
-    }
-  }
-
   // Validate that required structural IDs are populated.
   const requiredIds = [
     config.master.root, config.llm.root, config.memory.root,
-    config.knowledge.root, config.insights.root, config.templates.root,
+    config.knowledge.root, config.insights.root,
   ];
   if (requiredIds.some((id) => !id)) return null;
 

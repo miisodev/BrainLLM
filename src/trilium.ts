@@ -252,6 +252,10 @@ export class TriliumClient {
     return this.request<void>(`/notes/${noteId}`, { method: "DELETE" });
   }
 
+  async undeleteNote(noteId: string): Promise<void> {
+    return this.request<void>(`/notes/${noteId}/undelete`, { method: "POST" });
+  }
+
   // ── Note content ───────────────────────────────────────────────────────────
 
   async getNoteContent(noteId: string): Promise<string> {
@@ -415,6 +419,19 @@ export class TriliumClient {
     return this.request<void>(`/attachments/${attachmentId}`, { method: "DELETE" });
   }
 
+  async updateAttachmentContent(attachmentId: string, content: string, mime: string = "text/plain"): Promise<void> {
+    const url = `${this.baseUrl}/etapi/attachments/${attachmentId}/content`;
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": mime, "trilium-local-now-datetime": localNowDateTime() },
+      body: content,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Trilium API error ${res.status}: ${body}`);
+    }
+  }
+
   async updateAttachment(
     attachmentId: string,
     fields: { title?: string; mime?: string }
@@ -454,8 +471,10 @@ export class TriliumClient {
 
   // ── Backup ─────────────────────────────────────────────────────────────────
 
-  async createBackup(date: string): Promise<void> {
-    const backupName = `brainllm-${date}`;
+  async createBackup(nameOrDate: string): Promise<void> {
+    // Accepts either a full backup name (e.g. "brainllm-2024-01-15" or "before-migration")
+    // or a bare date (YYYY-MM-DD), which is prefixed to match the default convention.
+    const backupName = /^\d{4}-\d{2}-\d{2}$/.test(nameOrDate) ? `brainllm-${nameOrDate}` : nameOrDate;
     const url = `${this.baseUrl}/etapi/backup/${backupName}`;
     const res = await fetch(url, {
       method: "PUT",

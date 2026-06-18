@@ -75,11 +75,6 @@ export function dedupScope(cfg: BrainLLMConfig, kind: AnyKind): string {
   }
 }
 
-/** The blueprint note for a kind, wired via Trilium's ~template relation. */
-export function templateIdFor(cfg: BrainLLMConfig, kind: AnyKind): string | undefined {
-  return cfg.templates.byKind[kind] || undefined;
-}
-
 // ── Label plan ────────────────────────────────────────────────────────────────
 
 export function labelPlan(kind: AnyKind, opts: RememberOpts, date: string): LabelPlan[] {

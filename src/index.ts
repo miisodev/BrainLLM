@@ -4,8 +4,6 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
 import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, EMPTY_BRAINLLM } from "./config.js";
-import { generateDailyLog } from "./journal.js";
-import { localToday } from "./time.js";
 
 const baseUrl = process.env.TRILIUM_BASE_URL;
 const token   = process.env.TRILIUM_ETAPI_TOKEN;
@@ -75,10 +73,27 @@ if (port) {
   // Each MCP session gets its own transport + server instance.
   // Sessions are keyed by the mcp-session-id header the client echoes back.
 
-  const sessions = new Map<string, WebStandardStreamableHTTPServerTransport>();
+  interface SessionEntry {
+    transport: WebStandardStreamableHTTPServerTransport;
+    lastUsed: number;
+  }
+
+  const sessions = new Map<string, SessionEntry>();
+
+  // Evict sessions idle past 1 hour — clients that drop without sending DELETE
+  // would otherwise accumulate forever in the map.
+  const SESSION_TTL_MS = 60 * 60 * 1000;
+  setInterval(() => {
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    for (const [id, entry] of sessions) {
+      if (entry.lastUsed < cutoff) sessions.delete(id);
+    }
+  }, 15 * 60 * 1000).unref();
 
   Bun.serve({
     port,
+    // 50 MB cap — prevents runaway memory on large note writes in HTTP mode.
+    maxRequestBodySize: 50 * 1024 * 1024,
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
 
@@ -102,15 +117,29 @@ if (port) {
 
       const sessionId = req.headers.get("mcp-session-id");
 
+      // MCP spec: DELETE /mcp terminates the session explicitly.
+      if (req.method === "DELETE") {
+        if (sessionId && sessions.has(sessionId)) {
+          sessions.delete(sessionId);
+          return new Response(null, { status: 204 });
+        }
+        return new Response(JSON.stringify({ error: "Session not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
       if (sessionId && sessions.has(sessionId)) {
-        return sessions.get(sessionId)!.handleRequest(req);
+        const entry = sessions.get(sessionId)!;
+        entry.lastUsed = Date.now();
+        return entry.transport.handleRequest(req);
       }
 
       if (!sessionId) {
         // Initialization request — create a fresh session
         const transport = new WebStandardStreamableHTTPServerTransport({
           sessionIdGenerator: () => crypto.randomUUID(),
-          onsessioninitialized: (id) => { sessions.set(id, transport); },
+          onsessioninitialized: (id) => { sessions.set(id, { transport, lastUsed: Date.now() }); },
           onsessionclosed:      (id) => { sessions.delete(id); },
         });
 
@@ -126,17 +155,6 @@ if (port) {
   });
 
   console.error(`[brainllm] HTTP connector listening on :${port}`);
-
-  // ── Daily log generation ──────────────────────────────────────────────────
-  // Keep today's Insights/Logs note fresh and catch up recent days on startup.
-  // (Runs only in the always-on HTTP deployment; locally, close triggers it.)
-  const runLog = (date: string) => {
-    if (!brainRef.config.root) return;
-    void generateDailyLog(trilium, brainRef.config, date).catch((e) => console.error(`[brainllm] log gen failed: ${e}`));
-  };
-  const dayMinus = (i: number) => new Date(Date.parse(`${localToday()}T00:00:00Z`) - i * 86_400_000).toISOString().slice(0, 10);
-  for (let i = 0; i <= 3; i++) runLog(dayMinus(i));
-  setInterval(() => runLog(localToday()), 3 * 60 * 60 * 1000);
 } else {
   // ── stdio mode — local Claude Code / desktop ──────────────────────────────
   const transport = new StdioServerTransport();

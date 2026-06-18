@@ -12,9 +12,8 @@
 
 import { TriliumClient } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
-import { DEFAULT_POLICY, type Area, type AnyKind } from "./types.js";
+import { DEFAULT_POLICY, type AnyKind } from "./types.js";
 import { purposeContent, contentFor, STRUCTURED_SINGLETONS } from "./templates.js";
-import { BLUEPRINTS, blueprintContent } from "./blueprints.js";
 
 export async function createBrainLLMStructure(trilium: TriliumClient): Promise<BrainLLMConfig> {
   const d = new Date().toISOString().slice(0, 10);
@@ -23,7 +22,7 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
   const root = await trilium.createNote(
     "root",
     "BrainLLM",
-    purposeContent("The interconnected second brain — six areas: Master, LLM, Memory, Knowledge, Insights, and Templates."),
+    purposeContent("The interconnected second brain — five areas: Master, LLM, Memory, Knowledge, and Insights."),
     "book"
   );
   const rootId = root.note.noteId;
@@ -82,42 +81,6 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
   const insightsRoot = await book(rootId, "Insights", "The insights system — the brain's record of itself, starting with per-day logs of how its own content changed.", "bx bx-bulb");
   const logs = await book(insightsRoot, "Logs", "A collection of per-day, auto-generated notes recording the brain content (notes) created, updated, or deleted that day.", "bx bx-history");
 
-  // ── Templates ───────────────────────────────────────────────────────────────
-  const templatesRoot = await book(rootId, "Templates", "The content blueprint system — per note type: protocols for content structure, format, lifecycle, and maintenance, plus a worked example. The core tools enforce each type's structure and format; the rest is guidance.", "bx bx-shape-square");
-  const [tMaster, tLlm, tMemory, tKnowledge, tInsights] = await Promise.all([
-    book(templatesRoot, "Master", "Blueprint protocols for each note type under the Master area — content structure, format, lifecycle, maintenance, and a worked example.", "bx bx-user"),
-    book(templatesRoot, "LLM", "Blueprint protocols for each note type under the LLM area — content structure, format, lifecycle, maintenance, and a worked example.", "bx bx-bot"),
-    book(templatesRoot, "Memory", "Blueprint protocols for each note type under the Memory area — content structure, format, lifecycle, maintenance, and a worked example.", "bx bx-been-here"),
-    book(templatesRoot, "Knowledge", "Blueprint protocols for each note type under the Knowledge area — content structure, format, lifecycle, maintenance, and a worked example.", "bx bx-library"),
-    book(templatesRoot, "Insights", "Blueprint protocols for each note type under the Insights area — content structure, format, lifecycle, maintenance, and a worked example.", "bx bx-bulb"),
-  ]);
-
-  // ── Blueprints ────────────────────────────────────────────────────────────
-  // Authored blueprint notes, created under their area book and marked as
-  // Trilium templates. (Instance → blueprint ~template wiring lands with rollout.)
-  const templateBook: Record<Area, string> = {
-    master: tMaster, llm: tLlm, memory: tMemory, knowledge: tKnowledge, insights: tInsights,
-  };
-  const byKind: Record<string, string> = {};
-  for (const bp of BLUEPRINTS) {
-    const created = await trilium.createNote(templateBook[bp.area], `${bp.title} — Blueprint`, blueprintContent(bp.kind), "text");
-    byKind[String(bp.kind)] = created.note.noteId;
-    await Promise.all([
-      trilium.addLabel(created.note.noteId, "noteType", "blueprint"),
-      trilium.addLabel(created.note.noteId, "blueprint", String(bp.kind)),
-      trilium.addLabel(created.note.noteId, "template", ""),
-    ]);
-  }
-
-  // Wire each singleton to its blueprint via ~template.
-  const singletons: Array<[string, string]> = [
-    ["biography", biography], ["goals", goals], ["preferences", preferences],
-    ["responsibilities", responsibilities], ["protocols", protocols],
-  ];
-  for (const [kind, noteId] of singletons) {
-    if (byKind[kind]) await trilium.addRelation(noteId, "template", byKind[kind]).catch(() => null);
-  }
-
   return {
     version: 5,
     root: rootId,
@@ -126,7 +89,6 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
     memory:    { root: memoryRoot, sessions, threads },
     knowledge: { root: knowledgeRoot, master: knowledgeMaster, domains },
     insights:  { root: insightsRoot, logs },
-    templates: { root: templatesRoot, master: tMaster, llm: tLlm, memory: tMemory, knowledge: tKnowledge, insights: tInsights, byKind },
     policy: { ...DEFAULT_POLICY },
   };
 }

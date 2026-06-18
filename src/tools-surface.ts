@@ -20,6 +20,7 @@ export interface Stub {
   id: string;
   title: string;
   kind?: string;
+  status?: string;
   updated: string;
   preview: string;
 }
@@ -44,12 +45,12 @@ export async function skim(
     })
     .catch(() => ({ results: [] as Note[] }));
 
-  const stubs: Stub[] = [];
-  for (const n of res.results.slice(0, limit)) {
-    const content = await trilium.getNoteContent(n.noteId).catch(() => "");
-    stubs.push({ id: n.noteId, title: n.title, kind: labelOf(n, "noteType"), updated: n.dateModified.slice(0, 10), preview: toText(content, 160) });
-  }
-  return stubs;
+  return Promise.all(
+    res.results.slice(0, limit).map(async (n) => {
+      const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+      return { id: n.noteId, title: n.title, kind: labelOf(n, "noteType"), status: labelOf(n, "status") ?? undefined, updated: n.dateModified.slice(0, 10), preview: toText(content, 160) };
+    })
+  );
 }
 
 /** Read a note in full (id + title + kind + content). */

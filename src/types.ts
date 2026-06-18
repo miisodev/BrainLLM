@@ -6,7 +6,7 @@
 // there is no second copy anywhere.
 //
 // V5 is a clean break: a fresh instance, no v3/v4 migration layer. The note
-// vocabulary is organised by the six first-level areas of the brain tree.
+// vocabulary is organised by the five first-level areas of the brain tree.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type NoteType =

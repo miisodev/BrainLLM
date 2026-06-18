@@ -26,9 +26,6 @@ export function structuralIds(cfg: BrainLLMConfig): string[] {
     cfg.memory.root, cfg.memory.sessions, cfg.memory.threads,
     cfg.knowledge.root, cfg.knowledge.master, cfg.knowledge.domains,
     cfg.insights.root, cfg.insights.logs,
-    cfg.templates.root, cfg.templates.master, cfg.templates.llm,
-    cfg.templates.memory, cfg.templates.knowledge, cfg.templates.insights,
-    ...Object.values(cfg.templates.byKind),
   ].filter(Boolean);
 }
 
@@ -36,10 +33,10 @@ export function isStructural(cfg: BrainLLMConfig, noteId: string): boolean {
   return structuralIds(cfg).includes(noteId);
 }
 
-/** Containers and blueprints — locked against content edits. The maintained
- *  singletons (biography/goals/preferences/responsibilities/protocols) are
- *  structural but editable in place, so they're excluded here (revise allows
- *  them; forget still refuses them via isStructural). */
+/** Containers — locked against content edits. The maintained singletons
+ *  (biography/goals/preferences/responsibilities/protocols) are structural but
+ *  editable in place, so they're excluded here (revise allows them; forget
+ *  still refuses them via isStructural). */
 export function isContainer(cfg: BrainLLMConfig, noteId: string): boolean {
   const singletons = [
     cfg.master.biography, cfg.master.goals, cfg.master.preferences,
@@ -116,7 +113,7 @@ export async function sweep(
 
   // ── Deep: stale-review (nothing useful left untouched) ──────────────────────
   const staleCutoff = isoDaysAgo(policy.staleAfterDays);
-  const RECORDS = new Set(["log", "session", "diary", "blueprint"]);
+  const RECORDS = new Set(["log", "session", "diary"]);
   const stale = await trilium
     .searchNotes(`#noteType note.dateModified < '${staleCutoff}'`, { ancestorNoteId: cfg.root, fastSearch: true, limit: 200 })
     .catch(() => ({ results: [] as Note[] }));
@@ -173,7 +170,7 @@ const label = (n: Note, name: string) =>
 export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): Promise<SessionDigest> {
   const digest: SessionDigest = { master: [], llm: [], workingSet: [], reviewQueue: [], counts: {} };
 
-  // Master singletons — goals in full; biography and preferences as short previews.
+  // Master singletons — all in full.
   const slots: Array<[string, string]> = [
     ["biography", cfg.master.biography],
     ["goals", cfg.master.goals],
@@ -182,11 +179,11 @@ export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): 
   for (const [slot, id] of slots) {
     if (!id) continue;
     const content = await trilium.getNoteContent(id).catch(() => "");
-    const summary = toText(content, slot === "biography" ? 200 : Infinity);
+    const summary = toText(content, Infinity);
     if (summary) digest.master.push({ slot, summary });
   }
 
-  // LLM singletons — protocols in full; responsibilities as a short preview.
+  // LLM singletons — both in full. Diary is added inline by start().
   const llmSlots: Array<[string, string]> = [
     ["responsibilities", cfg.llm.responsibilities],
     ["protocols", cfg.llm.protocols],
@@ -194,7 +191,7 @@ export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): 
   for (const [slot, id] of llmSlots) {
     if (!id) continue;
     const content = await trilium.getNoteContent(id).catch(() => "");
-    const summary = toText(content, slot === "protocols" ? Infinity : 500);
+    const summary = toText(content, Infinity);
     if (summary) digest.llm.push({ slot, summary });
   }
 

@@ -42,7 +42,7 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
   const updated: Array<{ title: string; noteId: string }> = [];
   for (const n of touched.results) {
     const kind = ownedLabel(n, "noteType");
-    if (!kind || kind === "blueprint" || kind === "log") continue;
+    if (!kind || kind === "log") continue;
     if (isStructural(cfg, n.noteId)) continue;
     (n.dateCreated.startsWith(date) ? created : updated).push({ title: `${n.title} (${kind})`, noteId: n.noteId });
   }
@@ -76,15 +76,13 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
     const id = existing.results[0].noteId;
     const current = await trilium.getNoteContent(id).catch(() => "");
     if (current.trim() === body.trim()) return { date, noteId: id, ...counts, action: "unchanged" };
-    await trilium.updateNoteContent(id, body);
+    await trilium.updateNoteContent(id, `${current}\n<h2>Addendum — ${date}</h2>\n${body}`);
     return { date, noteId: id, ...counts, action: "updated" };
   }
 
-  const note = await trilium.createNote(cfg.insights.logs, date, body);
+  const note = await trilium.createNote(cfg.insights.logs, `[${date}]`, body);
   const logNoteId = note.note.noteId;
   await trilium.addLabel(logNoteId, "noteType", "log");
   await trilium.addLabel(logNoteId, "created", date);
-  const tpl = cfg.templates.byKind["log"];
-  if (tpl) await trilium.addRelation(logNoteId, "template", tpl).catch(() => null);
   return { date, noteId: logNoteId, ...counts, action: "created" };
 }

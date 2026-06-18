@@ -22,5 +22,7 @@ COPY --from=builder /app/dist/index.js ./dist/index.js
 RUN chown -R bun:bun /app
 USER bun
 
+# EXPOSE is documentation-only. The server binds to $PORT (injected by Railway
+# or any container host) — not hardcoded to 8080.
 EXPOSE 8080
 CMD ["bun", "dist/index.js"]

@@ -23,7 +23,6 @@ Closed — `connect()` rejects anything not on this list. Pick the most specific
 | `derivedFrom` | A → B | A was synthesised from B |
 
 **Auto-wired — don't duplicate manually:**
-- `instance → blueprint` via `~template` on every note `remember()` creates → its type's blueprint.
 - `new → old` via `supersedes=` on `remember()` → `supersedes`, old note archived.
 
 ---
@@ -34,7 +33,7 @@ Written by the server — you never set `#noteType`, `#status`, `#created`, `#up
 
 | Label | Values | Purpose |
 |---|---|---|
-| `#noteType` | `biography` `goals` `preferences` `responsibilities` `protocols` `diary` `session` `thread` `knowledge` `domain` `information` `sources` `log` `blueprint` | Kind — exactly one per note, set at creation |
+| `#noteType` | `biography` `goals` `preferences` `responsibilities` `protocols` `diary` `session` `thread` `knowledge` `domain` `information` `sources` `log` | Kind — exactly one per note, set at creation |
 | `#status` | `active` `dormant` `resolved` `superseded` | Lifecycle state — threads age; `resolve()` sets terminal |
 | `#created` | ISO date | Set at creation (the user's local day) |
 | `#updated` | ISO date | Updated on every write |
@@ -43,7 +42,6 @@ Written by the server — you never set `#noteType`, `#status`, `#created`, `#up
 | `#domain` | slugged | Knowledge domain — book auto-created on first use |
 | `#archived` | (flag) | Excludes the note from default `recall()`; content preserved in place |
 | `#brainLlmRoot` | (flag) | Marks the brain root — used by auto-discovery |
-| `#blueprint` | kind | On a Templates blueprint note: which type it documents |
 | `#iconClass` | `bx …` | Display icon (structural notes) |
 
 **Searching by label:** `recall()` accepts `kinds=[]`, `domain=`, `includeArchived=`. Raw queries via `search_notes()`: `#status=active`, `#noteType=thread`, `#topic=infra`, `#archived` (presence), `note.dateModified < 'YYYY-MM-DD'`. Combine with `AND`/`OR` (space = AND).
