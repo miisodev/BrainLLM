@@ -138,8 +138,6 @@ Your LLM singletons are *yours*: **responsibilities** derive from the user's goa
 
 Body may be text, markdown, or HTML — normalized server-side. Titles are short, specific, stable (the dedup key); no status words.
 
-**Retry-safety:** `connect()` and `diary()` are safe to retry — connect checks for an existing edge before writing; diary compares the last addendum's content + timestamp before appending (returns `already_written` if duplicate within 5 min). `revise(mode="replace")` is idempotent. Do **not** blindly retry `remember()` on its upsert/update path or `revise(mode="append")` — those append unconditionally and will duplicate content.
-
 ---
 
 ## Updating — `revise`
