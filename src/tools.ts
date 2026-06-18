@@ -13,7 +13,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { TriliumClient, type Note, ownedLabel } from "./trilium.js";
+import { TriliumClient, type Note, type RecentChange, ownedLabel } from "./trilium.js";
 import { type BrainLLMConfig, saveConfig } from "./config.js";
 import {
   Kinds,
@@ -212,8 +212,17 @@ in the brain since the previous session). Use recall() for topic-specific lookup
         const sinceDate = digest.lastSession.date;
         try {
           const history = await trilium.getNoteHistory(cfg.root);
-          changesSinceLastSession = history
-            .filter((h) => h.date >= sinceDate)
+          // Deduplicate by noteId — Trilium can emit multiple events for the
+          // same note on the same day (common for deletions). Prefer the entry
+          // where current_isDeleted=true so the flag is never lost.
+          const deduped = new Map<string, RecentChange>();
+          for (const h of history.filter((h) => h.date >= sinceDate)) {
+            const prev = deduped.get(h.noteId);
+            if (!prev || (h.current_isDeleted && !prev.current_isDeleted)) {
+              deduped.set(h.noteId, h);
+            }
+          }
+          changesSinceLastSession = [...deduped.values()]
             .slice(0, 25)
             .map((h) => ({
               id: h.noteId,
