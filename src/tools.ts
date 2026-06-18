@@ -392,9 +392,27 @@ start() creates today's entry (empty) automatically; use this tool to write cont
 
       if (found.results[0]) {
         const noteId = found.results[0].noteId;
-        await trilium.createRevision(noteId).catch(() => null);
         const current = await trilium.getNoteContent(noteId).catch(() => "");
         const time = new Date().toISOString().slice(11, 16);
+
+        // Idempotency guard: if the last addendum within the past 5 min carries the
+        // same normalised content, skip — makes diary() safe to retry after transient failures.
+        const norm = (s: string) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+        const lastIdx = current.lastIndexOf("<h3>Addendum —");
+        if (lastIdx !== -1) {
+          const afterHeader = current.slice(lastIdx);
+          const headerMatch = afterHeader.match(/^<h3>Addendum — (\d{2}:\d{2})<\/h3>\n?/);
+          if (headerMatch) {
+            const [hh, mm] = headerMatch[1].split(":").map(Number);
+            const now = new Date();
+            const diffMins = Math.abs(now.getUTCHours() * 60 + now.getUTCMinutes() - (hh * 60 + mm));
+            if (diffMins <= 5 && norm(afterHeader.slice(headerMatch[0].length)) === norm(html)) {
+              return txt({ action: "already_written", noteId, date: d });
+            }
+          }
+        }
+
+        await trilium.createRevision(noteId).catch(() => null);
         await trilium.updateNoteContent(noteId, `${current}\n<h3>Addendum — ${time}</h3>\n${html}`);
         await trilium.updateLabelValue(noteId, "updated", d);
         return txt({ action: "appended", noteId, date: d });

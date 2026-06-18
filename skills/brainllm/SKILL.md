@@ -138,6 +138,8 @@ Your LLM singletons are *yours*: **responsibilities** derive from the user's goa
 
 Body may be text, markdown, or HTML — normalized server-side. Titles are short, specific, stable (the dedup key); no status words.
 
+**Retry-safety:** `connect()` and `diary()` are safe to retry — connect checks for an existing edge before writing; diary compares the last addendum's content + timestamp before appending (returns `already_written` if duplicate within 5 min). `revise(mode="replace")` is idempotent. Do **not** blindly retry `remember()` on its upsert/update path or `revise(mode="append")` — those append unconditionally and will duplicate content.
+
 ---
 
 ## Updating — `revise`
@@ -190,7 +192,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `brain(includeArchived?)` | Full content tree: every typed note across all five areas, grouped. |
 | `bootstrap()` | Initialize the structure if uninitialized, or verify and refresh config if it already exists. Only creates a new tree when the stored root note is confirmed deleted in Trilium (404). Any other error (network, auth, timeout) is surfaced rather than silently creating a duplicate tree. |
 | `remember(kind, …)` | Write a note — routed, formatted, deduped server-side. Rejects diary/session/log/domain — each has a dedicated path. |
-| `diary(body, date?)` | Write/append to today's [yyyy-mm-dd] diary (stub created by start; same-day calls add a timestamped addendum). |
+| `diary(body, date?)` | Write/append to today's [yyyy-mm-dd] diary (stub created by start; same-day calls add a timestamped addendum). Returns `action: "already_written"` if the same content was written within the past 5 min — safe to retry. |
 | `recall(query, …)` | BrainLLM-wide ranked search. `orderBy` / `orderDirection` for temporal ordering; `fastSearch` for title/label-only (faster). |
 | `<surface>` / `<surface>_recall` | Read a surface in full / skim it (master, llm, memory, knowledge, insights). |
 | `revise(noteId, …)` | Append / replace / section-edit a note (h2/h3/h4); snapshot taken on content writes (not metadata-only). |
