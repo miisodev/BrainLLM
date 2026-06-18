@@ -198,7 +198,8 @@ export async function sweep(
     { id: cfg.llm.diary,        kind: "diary",     label: "Diary"            },
     { id: cfg.insights.logs,    kind: "log",       label: "Logs"             },
     { id: cfg.memory.threads,   kind: "thread",    label: "Threads"          },
-    { id: cfg.knowledge.master, kind: "knowledge", label: "Knowledge/Master" },
+    { id: cfg.knowledge.master,  kind: "knowledge", label: "Knowledge/Master"  },
+    { id: cfg.knowledge.domains, kind: "domain",    label: "Knowledge/Domains" },
   ];
   for (const { id, kind, label: containerLabel } of dupeContainers) {
     if (!id) continue;
