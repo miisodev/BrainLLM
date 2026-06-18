@@ -175,7 +175,7 @@ Pick the most specific verb that's true; `relatesTo` is the last resort. `worksW
 
 Threads age: **active → dormant** (untouched past the policy window) **→ archived in place**. Degradation demotes, never deletes — archived notes keep their content and are retrievable with `includeArchived=true`. Singletons are maintained (they don't age); sessions, diary, and logs are records (one per day, not aged).
 
-`maintain()` lite runs automatically inside `start`/`close` (ages threads). `maintain(deep=true)` adds **stale-review** (notes untouched past `staleAfterDays`) and the **orphan report**. Act on `flagged`: `connect()` orphans, `revise()`/`resolve()` stale items. `dryRun=true` previews. Timings live in `brainllm.json → policy` — never hardcode them.
+`maintain()` lite runs automatically inside `start`/`close` and does two things: ages threads (active → dormant → archived) and checks every typed container (Threads, Sessions, Diary, Logs) for direct children missing their expected `#noteType` label. `maintain(deep=true)` adds three more passes: **stale-review** (notes untouched past `staleAfterDays`), **orphan/sink report** (knowledge notes with no outbound relations — orphan = isolated, sink = has inbound but no outbound), and **duplicate-title detection** (groups same-titled notes per container and flags extras). Act on `flagged`: `connect()` orphans/sinks, `revise()`/`resolve()` stale items, `forget()` duplicate extras. `dryRun=true` previews without writing. The report always includes `policy` (the active thresholds). Timings live in `brainllm.json → policy` — never hardcode them.
 
 `start()`'s `dormantThreads` field surfaces dormant threads — mention what's relevant, then `resolve()`, `revise()` (any touch reactivates), or let it age.
 
@@ -202,7 +202,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `connect(from, relation, to, remove?)` | Typed edge from the closed vocabulary; symmetric handled; idempotent. |
 | `explore(noteId, mode, …)` | Graph: links / backlinks / neighborhood / path. |
 | `addendum()` | Search the brain for notes containing "Addendum" — returns ids, titles, kinds, snippets for revise()-based merging. |
-| `maintain(deep?, dryRun?)` | Aging + stale-review + orphan report. |
+| `maintain(deep?, dryRun?)` | Lite: thread aging + unlabeled-node check per typed container. Deep adds: stale-review + orphan/sink report + duplicate-title detection. Report includes `policy` (active thresholds). |
 | `forget(noteId, reason?, hard?)` | Archive (default) or hard-delete (blocked while backlinked). Undo with recover(). |
 
 ---
