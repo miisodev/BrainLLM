@@ -143,7 +143,9 @@ export async function sweep(
       for (const childId of childIds) {
         if (typedIds.has(childId) || isStructural(cfg, childId)) continue;
         const child = await trilium.getNote(childId).catch(() => null);
-        if (child) report.flagged.push(`unlabeled: ${child.title} [${childId}] in ${label} — add #noteType=${kind}`);
+        if (child && !child.attributes.some((a) => a.type === "label" && a.name === "archived")) {
+          report.flagged.push(`unlabeled: ${child.title} [${childId}] in ${label} — add #noteType=${kind}`);
+        }
       }
     } catch { /* non-fatal */ }
   }
