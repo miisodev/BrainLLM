@@ -96,6 +96,22 @@ async function ensureArchivedFlag(trilium: TriliumClient, note: Note): Promise<v
   if (!hasLabel(note, "archived")) await trilium.addLabel(note.noteId, "archived", "");
 }
 
+/** True if the last BrainLLM append-block in `current` has the same normalised
+ *  text as `incomingHtml`. Covers Addendum / Reopened / Recovered heading blocks.
+ *  Used by all date-keyed append operations to make them safe to retry. */
+function isDuplicateAppend(current: string, incomingHtml: string): boolean {
+  const norm = (s: string) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  const markerRe = /<h[23]>(?:Addendum|Reopened|Recovered) —[^<]*<\/h[23]>/gi;
+  let lastEnd = -1;
+  let m: RegExpExecArray | null;
+  while ((m = markerRe.exec(current)) !== null) lastEnd = m.index + m[0].length;
+  if (lastEnd === -1) return false;
+  const afterHeader = current.slice(lastEnd).replace(/^\n/, "");
+  const nextH = afterHeader.search(/<h[1-6]/i);
+  const block = nextH === -1 ? afterHeader : afterHeader.slice(0, nextH);
+  return norm(block) === norm(incomingHtml);
+}
+
 /** Extract accumulated addendums from a note body (created by revise() default mode).
  *  Returns the h2 section headings of the main content and each addendum block separately. */
 function parseAddendums(html: string): {
@@ -459,20 +475,23 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       const d = date ?? today();
       const html = toHtml(body ?? "");
 
-      /** Append content into a single maintained note. */
-      const upsertInto = async (id: string) => {
-        await trilium.createRevision(id).catch(() => null);
+      /** Append content into a single maintained note. Returns false (no-op) if the
+       *  last addendum already carries the same normalised content — retry-safe. */
+      const upsertInto = async (id: string): Promise<boolean> => {
         const current = await trilium.getNoteContent(id).catch(() => "");
+        if (isDuplicateAppend(current, html)) return false;
+        await trilium.createRevision(id).catch(() => null);
         await trilium.updateNoteContent(id, `${current}\n<h2>Addendum — ${d}</h2>\n${html}`);
         await trilium.updateLabelValue(id, "updated", d);
+        return true;
       };
 
       // 1 ── Global singletons: one fixed maintained note (biography, goals, …).
       if (isSingleton(kind)) {
         const id = kindHome(b(), kind);
         if (!id) throw new Error(`BrainLLM not bootstrapped for "${kind}" — run bootstrap`);
-        await upsertInto(id);
-        return txt({ action: "maintained", noteId: id, kind, location: locationLabel(kind) });
+        const wrote = await upsertInto(id);
+        return txt({ action: wrote ? "maintained" : "already_written", noteId: id, kind, location: locationLabel(kind) });
       }
 
       // 2 ── Per-domain singleton: the one Sources note in a domain.
@@ -490,8 +509,8 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
             await trilium.addLabel(sid, l.name, l.value, l.inheritable ?? false);
           }
         }
-        await upsertInto(sid);
-        return txt({ action: "maintained", noteId: sid, kind, location: locationLabel(kind, domainTitle) });
+        const wrote = await upsertInto(sid);
+        return txt({ action: wrote ? "maintained" : "already_written", noteId: sid, kind, location: locationLabel(kind, domainTitle) });
       }
 
       // 3 ── Domain collection: sub-category information notes (many per domain),
@@ -506,8 +525,9 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           .catch(() => ({ results: [] as Note[] }));
         const existing = inDomain.results.find((n) => sameTitle(n.title, subTitle));
         if (existing) {
-          await trilium.createRevision(existing.noteId).catch(() => null);
           const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
+          if (isDuplicateAppend(current, html)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title });
+          await trilium.createRevision(existing.noteId).catch(() => null);
           await trilium.updateNoteContent(existing.noteId, insertBeforeResolution(current, `<h2>Addendum — ${d}</h2>\n${html}`));
           await trilium.updateLabelValue(existing.noteId, "updated", d);
           return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title });
@@ -547,8 +567,9 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
 
       const existing = await findExisting(kind, cleanTitle);
       if (existing) {
-        await trilium.createRevision(existing.noteId).catch(() => null);
         const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
+        if (isDuplicateAppend(current, html)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title });
+        await trilium.createRevision(existing.noteId).catch(() => null);
         await trilium.updateNoteContent(existing.noteId, insertBeforeResolution(current, `<h2>Addendum — ${d}</h2>\n${html}`));
         await trilium.updateLabelValue(existing.noteId, "updated", d);
         for (const t of topics ?? []) {
@@ -793,14 +814,17 @@ order; appends as h2 if not found). A revision snapshot is always taken first. A
       const note = await trilium.getNote(noteId);
 
       if (body) {
-        await trilium.createRevision(noteId).catch(() => null);
         const html = toHtml(body);
         const current = await trilium.getNoteContent(noteId).catch(() => "");
         if (section) {
+          await trilium.createRevision(noteId).catch(() => null);
           await trilium.updateNoteContent(noteId, setSection(current, section, html, mode === "append" ? "append" : "replace"));
         } else if (mode === "replace") {
+          await trilium.createRevision(noteId).catch(() => null);
           await trilium.updateNoteContent(noteId, html);
         } else {
+          if (isDuplicateAppend(current, html)) return txt({ ok: true, noteId, mode: "already_written", date: d });
+          await trilium.createRevision(noteId).catch(() => null);
           await trilium.updateNoteContent(noteId, insertBeforeResolution(current, `<h2>Addendum — ${d}</h2>\n${html}`));
         }
       }
@@ -884,13 +908,13 @@ or dormant thread resurfaces as live work.`,
 
       await trilium.updateLabelValue(noteId, "status", "active");
 
-      await trilium.createRevision(noteId).catch(() => null);
       const current = await trilium.getNoteContent(noteId).catch(() => "");
-      const addendum = reason
-        ? `<h2>Reopened — ${d}</h2>\n${toHtml(reason)}`
-        : `<h2>Reopened — ${d}</h2>\n<p><em>Thread re-activated.</em></p>`;
-      await trilium.updateNoteContent(noteId, `${current}\n${addendum}`);
-      await trilium.updateLabelValue(noteId, "updated", d);
+      const reopenHtml = reason ? toHtml(reason) : "<p><em>Thread re-activated.</em></p>";
+      if (!isDuplicateAppend(current, reopenHtml)) {
+        await trilium.createRevision(noteId).catch(() => null);
+        await trilium.updateNoteContent(noteId, `${current}\n<h2>Reopened — ${d}</h2>\n${reopenHtml}`);
+        await trilium.updateLabelValue(noteId, "updated", d);
+      }
 
       return txt({
         ok: true,
@@ -1109,14 +1133,14 @@ prior snapshot. For notes deleted from Trilium entirely (not just archived), use
       if (closedAttr) await trilium.deleteAttribute(closedAttr.attributeId).catch(() => null);
 
       await trilium.updateLabelValue(noteId, "status", "active");
-      await trilium.createRevision(noteId).catch(() => null);
 
       const current = await trilium.getNoteContent(noteId).catch(() => "");
-      const addendum = reason
-        ? `<h2>Recovered — ${d}</h2>\n${toHtml(reason)}`
-        : `<h2>Recovered — ${d}</h2>\n<p><em>Note restored from archive.</em></p>`;
-      await trilium.updateNoteContent(noteId, `${current}\n${addendum}`);
-      await trilium.updateLabelValue(noteId, "updated", d);
+      const recoverHtml = reason ? toHtml(reason) : "<p><em>Note restored from archive.</em></p>";
+      if (!isDuplicateAppend(current, recoverHtml)) {
+        await trilium.createRevision(noteId).catch(() => null);
+        await trilium.updateNoteContent(noteId, `${current}\n<h2>Recovered — ${d}</h2>\n${recoverHtml}`);
+        await trilium.updateLabelValue(noteId, "updated", d);
+      }
 
       return txt({
         ok: true,
