@@ -191,15 +191,16 @@ export async function sweep(
   }
 
   // ── Deep: duplicate-title detection ────────────────────────────────────────
-  // Per typed container, group notes by normalised title and flag any group > 1.
+  // Flat containers: group by normalised title, flag any group > 1.
   // Includes archived notes to catch leftovers from past dedup failures.
   const dupeContainers: Array<{ id: string; kind: string; label: string }> = [
-    { id: cfg.memory.sessions, kind: "session", label: "Sessions" },
-    { id: cfg.llm.diary,       kind: "diary",   label: "Diary"    },
-    { id: cfg.insights.logs,   kind: "log",     label: "Logs"     },
-    { id: cfg.memory.threads,  kind: "thread",  label: "Threads"  },
+    { id: cfg.memory.sessions,  kind: "session",   label: "Sessions"         },
+    { id: cfg.llm.diary,        kind: "diary",     label: "Diary"            },
+    { id: cfg.insights.logs,    kind: "log",       label: "Logs"             },
+    { id: cfg.memory.threads,   kind: "thread",    label: "Threads"          },
+    { id: cfg.knowledge.master, kind: "knowledge", label: "Knowledge/Master" },
   ];
-  for (const { id, kind, label } of dupeContainers) {
+  for (const { id, kind, label: containerLabel } of dupeContainers) {
     if (!id) continue;
     const all = await trilium
       .searchNotes(`#noteType=${kind}`, { ancestorNoteId: id, fastSearch: true, limit: 500, includeArchivedNotes: true })
@@ -214,7 +215,32 @@ export async function sweep(
     for (const [, group] of byTitle) {
       if (group.length > 1) {
         const ids = group.map((n) => n.noteId).join(", ");
-        report.flagged.push(`duplicate: '${group[0].title}' ×${group.length} [${ids}] in ${label} — forget() the extras`);
+        report.flagged.push(`duplicate: '${group[0].title}' ×${group.length} [${ids}] in ${containerLabel} — forget() the extras`);
+      }
+    }
+  }
+
+  // Domain-scoped kinds: information and sources are per-domain, so group by
+  // (#domain-slug, title) — same title in different domains is intentional.
+  if (cfg.knowledge.domains) {
+    for (const domainKind of ["information", "sources"] as const) {
+      const all = await trilium
+        .searchNotes(`#noteType=${domainKind}`, { ancestorNoteId: cfg.knowledge.domains, fastSearch: true, limit: 500, includeArchivedNotes: true })
+        .catch(() => ({ results: [] as Note[] }));
+      report.scanned += all.results.length;
+      const byDomainTitle = new Map<string, Note[]>();
+      for (const n of all.results) {
+        const domSlug = n.attributes.find((a) => a.type === "label" && a.name === "domain")?.value ?? "_unknown";
+        const key = `${domSlug}::${n.title.toLowerCase().trim()}`;
+        if (!byDomainTitle.has(key)) byDomainTitle.set(key, []);
+        byDomainTitle.get(key)!.push(n);
+      }
+      for (const [key, group] of byDomainTitle) {
+        if (group.length > 1) {
+          const domSlug = key.split("::")[0];
+          const ids = group.map((n) => n.noteId).join(", ");
+          report.flagged.push(`duplicate: '${group[0].title}' ×${group.length} [${ids}] in Domain/${domSlug} (${domainKind}) — forget() the extras`);
+        }
       }
     }
   }
