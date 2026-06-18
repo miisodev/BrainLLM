@@ -69,7 +69,7 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
 
   // Upsert the day's log note in Insights/Logs.
   const existing = await trilium
-    .searchNotes(`#noteType=log #created=${date}`, { ancestorNoteId: cfg.insights.logs, fastSearch: true, limit: 1 })
+    .searchNotes(`#noteType=log #created='${date}'`, { ancestorNoteId: cfg.insights.logs, fastSearch: true, limit: 1 })
     .catch(() => ({ results: [] as Note[] }));
 
   if (existing.results[0]) {

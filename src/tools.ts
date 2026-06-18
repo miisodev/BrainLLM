@@ -168,7 +168,7 @@ in the brain since the previous session). Use recall() for topic-specific lookup
       if (cfg.llm.diary) {
         try {
           const existingDiary = await trilium
-            .searchNotes(`#noteType=diary #created=${todayStr}`, { ancestorNoteId: cfg.llm.diary, fastSearch: true, limit: 1 })
+            .searchNotes(`#noteType=diary #created='${todayStr}'`, { ancestorNoteId: cfg.llm.diary, fastSearch: true, limit: 1 })
             .catch(() => ({ results: [] as Note[] }));
           if (existingDiary.results[0]) {
             diaryNoteId = existingDiary.results[0].noteId;
@@ -186,15 +186,14 @@ in the brain since the previous session). Use recall() for topic-specific lookup
       }
 
       // Ensure today's session note exists (title [yyyy-mm-dd]).
+      // Use the digest's lastSession instead of a second Trilium search — avoids
+      // the unquoted-date parser issue and saves a round-trip.
       let sessionNoteId: string | null = null;
       let sessionPreview = "";
       if (cfg.memory.sessions) {
         try {
-          const existingSession = await trilium
-            .searchNotes(`#noteType=session #created=${todayStr}`, { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 1 })
-            .catch(() => ({ results: [] as Note[] }));
-          if (existingSession.results[0]) {
-            sessionNoteId = existingSession.results[0].noteId;
+          if (digest.lastSession?.date === todayStr) {
+            sessionNoteId = digest.lastSession.id;
             const content = await trilium.getNoteContent(sessionNoteId).catch(() => "");
             sessionPreview = toText(content, 200);
           } else {
@@ -275,7 +274,7 @@ After close() returns, follow this protocol in order:
 
       // Idempotent per date — search by label, not by title.
       const existing = await trilium
-        .searchNotes(`#noteType=session #created=${d}`, { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 5 })
+        .searchNotes(`#noteType=session #created='${d}'`, { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 5 })
         .catch(() => ({ results: [] as Note[] }));
 
       let noteId: string;
@@ -316,7 +315,7 @@ After close() returns, follow this protocol in order:
       let diaryEntry: { id: string; content: string } | null = null;
       if (cfg.llm.diary) {
         const diarySearch = await trilium
-          .searchNotes(`#noteType=diary #created=${d}`, { ancestorNoteId: cfg.llm.diary, fastSearch: true, limit: 1 })
+          .searchNotes(`#noteType=diary #created='${d}'`, { ancestorNoteId: cfg.llm.diary, fastSearch: true, limit: 1 })
           .catch(() => ({ results: [] as Note[] }));
         if (diarySearch.results[0]) {
           const id = diarySearch.results[0].noteId;
@@ -378,7 +377,7 @@ start() creates today's entry (empty) automatically; use this tool to write cont
       const html = toHtml(body);
 
       const found = await trilium
-        .searchNotes(`#noteType=diary #created=${d}`, { ancestorNoteId: parentId, fastSearch: true, limit: 1 })
+        .searchNotes(`#noteType=diary #created='${d}'`, { ancestorNoteId: parentId, fastSearch: true, limit: 1 })
         .catch(() => ({ results: [] as Note[] }));
 
       if (found.results[0]) {

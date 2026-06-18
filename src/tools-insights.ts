@@ -18,7 +18,7 @@ export function registerInsightsTools(server: McpServer, trilium: TriliumClient,
     async ({ date }) => {
       const d = date ?? localToday();
       const found = await trilium
-        .searchNotes(`#noteType=log #created=${d}`, { ancestorNoteId: b().insights.logs, fastSearch: true, limit: 1 })
+        .searchNotes(`#noteType=log #created='${d}'`, { ancestorNoteId: b().insights.logs, fastSearch: true, limit: 1 })
         .catch(() => ({ results: [] as Note[] }));
       if (!found.results[0]) return txt({ date: d, note: "No log for this day." });
       return txt(await readFull(trilium, found.results[0].noteId));
