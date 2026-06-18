@@ -157,6 +157,7 @@ in the brain since the previous session). Use recall() for topic-specific lookup
       }
       const hygiene = await sweep(trilium, cfg, { deep: false, dryRun: false }).catch((e) => ({
         scanned: 0, fixed: [], transitions: [], deleted: [], flagged: [`sweep failed: ${e}`], dryRun: false,
+        policy: { dormantAfterDays: cfg.policy.dormantAfterDays, archiveDormantAfterDays: cfg.policy.archiveDormantAfterDays, staleAfterDays: cfg.policy.staleAfterDays },
       }));
       const digest = await buildDigest(trilium, cfg);
       const todayStr = today();

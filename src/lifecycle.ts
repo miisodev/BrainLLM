@@ -65,25 +65,33 @@ export interface SweepReport {
   deleted: string[];
   flagged: string[];
   dryRun: boolean;
+  policy: { dormantAfterDays: number; archiveDormantAfterDays: number; staleAfterDays: number };
 }
 
 function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** The V5 maintenance sweep. Lite (auto, inside start/close): age stale threads.
- *  Deep: also surface stale notes (the core-invaluability rule) and unconnected
- *  knowledge to wire with connect(). Degrades, never deletes. */
+/** The V5 maintenance sweep.
+ *  Lite (auto, inside start/close): age stale threads + unlabeled-node check.
+ *  Deep: stale-review, orphan/sink report, duplicate-title detection. */
 export async function sweep(
   trilium: TriliumClient,
   cfg: BrainLLMConfig,
   opts: { deep?: boolean; dryRun?: boolean } = {}
 ): Promise<SweepReport> {
   const { deep = false, dryRun = false } = opts;
-  const report: SweepReport = { scanned: 0, fixed: [], transitions: [], deleted: [], flagged: [], dryRun };
+  const policy = cfg.policy;
+  const report: SweepReport = {
+    scanned: 0, fixed: [], transitions: [], deleted: [], flagged: [], dryRun,
+    policy: {
+      dormantAfterDays: policy.dormantAfterDays,
+      archiveDormantAfterDays: policy.archiveDormantAfterDays,
+      staleAfterDays: policy.staleAfterDays,
+    },
+  };
   if (!cfg.root) return report;
 
-  const policy = cfg.policy;
   const today = localToday();
   const dormantCutoff = isoDaysAgo(policy.dormantAfterDays);
   const archiveCutoff = isoDaysAgo(policy.archiveDormantAfterDays);
@@ -92,16 +100,17 @@ export async function sweep(
   const toDormant = await trilium
     .searchNotes(`#noteType=thread #status=active note.dateModified < '${dormantCutoff}'`, { ancestorNoteId: cfg.memory.threads, limit: 50 })
     .catch(() => ({ results: [] as Note[] }));
+  report.scanned += toDormant.results.length;
   for (const n of toDormant.results) {
-    report.scanned++;
     if (!dryRun) await trilium.updateLabelValue(n.noteId, "status", "dormant");
     report.transitions.push(`dormant: ${n.title} (thread, idle ${idleDays(n.dateModified)}d)`);
   }
+
   const toArchive = await trilium
     .searchNotes(`#noteType=thread #status=dormant note.dateModified < '${archiveCutoff}'`, { ancestorNoteId: cfg.memory.threads, limit: 50 })
     .catch(() => ({ results: [] as Note[] }));
+  report.scanned += toArchive.results.length;
   for (const n of toArchive.results) {
-    report.scanned++;
     if (!dryRun) {
       await trilium.updateLabelValue(n.noteId, "closed", today);
       await trilium.addLabel(n.noteId, "archived", "");
@@ -109,36 +118,104 @@ export async function sweep(
     report.transitions.push(`archived: ${n.title} (thread, dormant past grace)`);
   }
 
+  // ── Unlabeled-node sweep ────────────────────────────────────────────────────
+  // Fetch each typed container's direct children; diff against a typed search
+  // to find children that escaped labelling (via create_note bypass or past bugs).
+  const typedContainers: Array<{ id: string; kind: string; label: string }> = [
+    { id: cfg.memory.threads,  kind: "thread",  label: "Threads"  },
+    { id: cfg.memory.sessions, kind: "session", label: "Sessions" },
+    { id: cfg.llm.diary,       kind: "diary",   label: "Diary"    },
+    { id: cfg.insights.logs,   kind: "log",     label: "Logs"     },
+  ];
+  for (const { id, kind, label } of typedContainers) {
+    if (!id) continue;
+    try {
+      const container = await trilium.getNote(id);
+      const childIds = container.childNoteIds;
+      if (!childIds.length) continue;
+      report.scanned += childIds.length;
+
+      const typed = await trilium
+        .searchNotes(`#noteType=${kind}`, { ancestorNoteId: id, fastSearch: true, limit: childIds.length + 10 })
+        .catch(() => ({ results: [] as Note[] }));
+      const typedIds = new Set(typed.results.map((n) => n.noteId));
+
+      for (const childId of childIds) {
+        if (typedIds.has(childId) || isStructural(cfg, childId)) continue;
+        const child = await trilium.getNote(childId).catch(() => null);
+        if (child) report.flagged.push(`unlabeled: ${child.title} [${childId}] in ${label} — add #noteType=${kind}`);
+      }
+    } catch { /* non-fatal */ }
+  }
+
   if (!deep) return report;
 
-  // ── Deep: stale-review (nothing useful left untouched) ──────────────────────
+  // ── Deep: stale-review ──────────────────────────────────────────────────────
   const staleCutoff = isoDaysAgo(policy.staleAfterDays);
   const RECORDS = new Set(["log", "session", "diary"]);
   const stale = await trilium
     .searchNotes(`#noteType note.dateModified < '${staleCutoff}'`, { ancestorNoteId: cfg.root, fastSearch: true, limit: 200 })
     .catch(() => ({ results: [] as Note[] }));
+  report.scanned += stale.results.length;
   for (const n of stale.results) {
     const kind = ownedLabel(n, "noteType");
     if (!kind || RECORDS.has(kind) || isStructural(cfg, n.noteId)) continue;
     if (report.flagged.length < 15) report.flagged.push(`stale ${idleDays(n.dateModified)}d: ${n.title} [${n.noteId}]`);
   }
 
-  // ── Deep: orphan report — knowledge with no relation either way ─────────────
+  // ── Deep: orphan + sink report ──────────────────────────────────────────────
+  // orphan = no outbound AND not pointed to by anything (truly isolated).
+  // sink   = no outbound BUT has inbound (consumed but never connected forward).
   const kNotes = await trilium
     .searchNotes("#noteType", { ancestorNoteId: cfg.knowledge.root, fastSearch: true, limit: 200 })
     .catch(() => ({ results: [] as Note[] }));
+  report.scanned += kNotes.results.length;
   const targets = new Set<string>();
   for (const n of kNotes.results) {
     for (const a of n.attributes) if (a.type === "relation" && a.name !== "template") targets.add(a.value);
   }
   let orphans = 0;
+  let sinks = 0;
   for (const n of kNotes.results) {
     const kind = ownedLabel(n, "noteType");
     if (!kind || kind === "domain" || kind === "sources") continue;
     const hasOut = n.attributes.some((a) => a.type === "relation" && a.name !== "template");
-    if (!hasOut && !targets.has(n.noteId) && orphans < 10) {
+    const hasIn = targets.has(n.noteId);
+    if (!hasOut && !hasIn && orphans < 10) {
       orphans++;
       report.flagged.push(`unconnected: ${n.title} [${n.noteId}] — connect() it`);
+    } else if (!hasOut && hasIn && sinks < 5) {
+      sinks++;
+      report.flagged.push(`sink: ${n.title} [${n.noteId}] — has inbound relations but no outbound`);
+    }
+  }
+
+  // ── Deep: duplicate-title detection ────────────────────────────────────────
+  // Per typed container, group notes by normalised title and flag any group > 1.
+  // Includes archived notes to catch leftovers from past dedup failures.
+  const dupeContainers: Array<{ id: string; kind: string; label: string }> = [
+    { id: cfg.memory.sessions, kind: "session", label: "Sessions" },
+    { id: cfg.llm.diary,       kind: "diary",   label: "Diary"    },
+    { id: cfg.insights.logs,   kind: "log",     label: "Logs"     },
+    { id: cfg.memory.threads,  kind: "thread",  label: "Threads"  },
+  ];
+  for (const { id, kind, label } of dupeContainers) {
+    if (!id) continue;
+    const all = await trilium
+      .searchNotes(`#noteType=${kind}`, { ancestorNoteId: id, fastSearch: true, limit: 500, includeArchivedNotes: true })
+      .catch(() => ({ results: [] as Note[] }));
+    report.scanned += all.results.length;
+    const byTitle = new Map<string, Note[]>();
+    for (const n of all.results) {
+      const key = n.title.toLowerCase().trim();
+      if (!byTitle.has(key)) byTitle.set(key, []);
+      byTitle.get(key)!.push(n);
+    }
+    for (const [, group] of byTitle) {
+      if (group.length > 1) {
+        const ids = group.map((n) => n.noteId).join(", ");
+        report.flagged.push(`duplicate: '${group[0].title}' ×${group.length} [${ids}] in ${label} — forget() the extras`);
+      }
     }
   }
 
