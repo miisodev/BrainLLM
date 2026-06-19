@@ -1020,9 +1020,15 @@ calling twice is safe. Use remove=true to delete an edge.`,
   server.tool(
     "addendum",
     `Search Master, LLM singletons (responsibilities + protocols only, not diary), and Knowledge
-for notes containing pending addendum blocks that need to be merged back into the main content.
-Returns note IDs, titles, kinds, and content snippets so you can identify what to merge.
-After reviewing, use revise() to integrate each addendum into the appropriate section.`,
+for notes containing pending addendum blocks that need to be folded into the main content.
+
+These surfaces should be clean, merged, structured notes — not stacks of timestamped addendum
+markers. An addendum block on one of these notes is a temporary staging area: read it, fold
+its content into the relevant section body using revise(mode=replace or section=), then leave
+no addendum marker behind. Addendum-style append is appropriate only for sessions, diary
+entries, and logs — records by nature whose history has value. Everywhere else, merge.
+
+Returns note IDs, titles, kinds, and content snippets so you can identify what to fold in.`,
     {},
     async () => {
       const cfg = b();
@@ -1067,7 +1073,7 @@ After reviewing, use revise() to integrate each addendum into the appropriate se
         notes: found,
         ...(found.length === 0
           ? { note: "No notes with pending addendums." }
-          : { hint: "Call revise(noteId, section='<heading>', body='<merged content>', mode='replace') to merge each addendum." }),
+          : { hint: "Fold each addendum into its note: read the block, then revise(noteId, section='<heading>', body='<merged content>', mode='replace') to absorb it into the right section. These notes must be left clean — no addendum markers. Addendum-style history belongs only in sessions, diary, and logs." }),
       });
     }
   );

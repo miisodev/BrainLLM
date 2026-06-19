@@ -145,11 +145,13 @@ All append operations are retry-safe — if the last block already carries the s
 ## Updating — `revise`
 
 `revise(noteId, body?, title?, section?, mode?)`:
-- default — append a dated addendum (right for threads, knowledge, information);
+- default — append a dated addendum (right for threads, knowledge notes, information notes, and any note that is a record — new detail accumulates alongside the existing body);
 - `mode=replace` — rewrite the body;
 - `section="Overview"` — edit one heading section in place (tries h2 → h3 → h4; appends as h2 if absent). The efficient path for a singleton: read it, then revise the one section.
 
 A revision snapshot is always taken first. Containers are refused; the maintained singletons are editable.
+
+**Merge rule — Master, LLM singletons, and Knowledge notes should be clean structured documents, not stacks of timestamped addendum markers.** When folding new content into a singleton or knowledge note, use `section=` or `mode=replace` — absorb it into the body. Dated addendum append is the right mode only for sessions, diary entries, and logs, where the chronological record itself has value.
 
 ---
 
@@ -203,7 +205,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `domain(name, …)` | Surface all content for a named domain/topic/project, grouped by kind. |
 | `connect(from, relation, to, remove?)` | Typed edge from the closed vocabulary; symmetric handled; idempotent. |
 | `explore(noteId, mode, …)` | Graph: links / backlinks / neighborhood / path. |
-| `addendum()` | Search Master, LLM singletons (responsibilities + protocols, not diary), and Knowledge for pending addendum blocks — returns ids, titles, kinds, snippets for revise()-based merging. |
+| `addendum()` | Search Master, LLM singletons (responsibilities + protocols, not diary), and Knowledge for pending addendum blocks. These notes must be clean and structured — fold each block into the relevant section with revise(section=…, mode=replace), then leave no addendum marker. Only sessions, diary, and logs accumulate addendum history. |
 | `maintain(deep?, dryRun?)` | Lite: thread aging + unlabeled-node check per typed container. Deep adds: stale-review + orphan/sink report + duplicate-title detection. Report includes `policy` (active thresholds). |
 | `forget(noteId, reason?, hard?)` | Archive (default) or hard-delete (blocked while backlinked). Undo with recover(). |
 
