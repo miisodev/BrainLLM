@@ -1019,20 +1019,36 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
   server.tool(
     "addendum",
-    `Search the entire brain for notes containing the word "Addendum" — surfaces notes with
-pending addendum blocks that need to be merged back into the main content. Returns note IDs,
-titles, kinds, and content snippets so you can identify what to merge.
+    `Search Master, LLM singletons (responsibilities + protocols only, not diary), and Knowledge
+for notes containing pending addendum blocks that need to be merged back into the main content.
+Returns note IDs, titles, kinds, and content snippets so you can identify what to merge.
 After reviewing, use revise() to integrate each addendum into the appropriate section.`,
     {},
     async () => {
       const cfg = b();
       if (!cfg.root) return txt({ error: "BrainLLM not bootstrapped — run bootstrap." });
-      const results = await trilium
-        .searchNotes("Addendum", { ancestorNoteId: cfg.root, limit: 50 })
-        .catch(() => ({ results: [] as Note[] }));
+
+      const searchIn = (ancestorNoteId: string) =>
+        trilium.searchNotes("Addendum", { ancestorNoteId, limit: 50 }).catch(() => ({ results: [] as Note[] }));
+
+      const [masterRes, llmRes, knowledgeRes] = await Promise.all([
+        cfg.master.root    ? searchIn(cfg.master.root)    : Promise.resolve({ results: [] as Note[] }),
+        cfg.llm.root       ? searchIn(cfg.llm.root)       : Promise.resolve({ results: [] as Note[] }),
+        cfg.knowledge.root ? searchIn(cfg.knowledge.root) : Promise.resolve({ results: [] as Note[] }),
+      ]);
+
+      // Exclude diary notes from the LLM area — diary is a record, not a singleton to merge.
+      const allRaw = [
+        ...masterRes.results,
+        ...llmRes.results.filter((n) => labelOf(n, "noteType") !== "diary"),
+        ...knowledgeRes.results,
+      ];
+
+      const seen = new Set<string>();
+      const unique = allRaw.filter((n) => { if (seen.has(n.noteId)) return false; seen.add(n.noteId); return true; });
 
       const notes = await Promise.all(
-        results.results.map(async (n) => {
+        unique.map(async (n) => {
           const kind = labelOf(n, "noteType");
           if (!kind) return null;
           const content = await trilium.getNoteContent(n.noteId).catch(() => "");

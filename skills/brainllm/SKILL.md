@@ -203,7 +203,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `domain(name, …)` | Surface all content for a named domain/topic/project, grouped by kind. |
 | `connect(from, relation, to, remove?)` | Typed edge from the closed vocabulary; symmetric handled; idempotent. |
 | `explore(noteId, mode, …)` | Graph: links / backlinks / neighborhood / path. |
-| `addendum()` | Search the brain for notes containing "Addendum" — returns ids, titles, kinds, snippets for revise()-based merging. |
+| `addendum()` | Search Master, LLM singletons (responsibilities + protocols, not diary), and Knowledge for pending addendum blocks — returns ids, titles, kinds, snippets for revise()-based merging. |
 | `maintain(deep?, dryRun?)` | Lite: thread aging + unlabeled-node check per typed container. Deep adds: stale-review + orphan/sink report + duplicate-title detection. Report includes `policy` (active thresholds). |
 | `forget(noteId, reason?, hard?)` | Archive (default) or hard-delete (blocked while backlinked). Undo with recover(). |
 
