@@ -1,4 +1,4 @@
-# Taxonomy Reference (V5)
+# Taxonomy Reference (V5.2)
 
 ## Relation Vocabulary
 

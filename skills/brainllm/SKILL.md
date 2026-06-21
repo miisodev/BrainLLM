@@ -76,7 +76,7 @@ something worth keeping
         │     ├─ biographic / goal / preference  → singleton in place  (revise the section)
         │     └─ else (relationship, constraint, context) → Knowledge/Master note
         │
-        └─ new or contradicting world knowledge? ──→ DOMAINS (sources gate mandatory)
+        └─ new or contradicting world knowledge? ──→ DOMAINS (sources gate mandatory; current-state truth, not a log — see below)
                 ↓ neither → do not capture (passing remark / already covered by training)
 ```
 
@@ -92,10 +92,13 @@ something worth keeping
 2. **Submit** candidates to the user for approval. No self-approval.
 3. **Read** the approved sources before extracting knowledge.
 4. **Record:** `remember(kind="sources", domain="…", body="…")` with markers — ❇️ approved, ✅ approved + used.
-5. **Write:** `remember(kind="information", domain="…", title="<sub-category>", body=…)`.
-6. **Wire:** `connect()` to sources (`sourceOf`/`derivedFrom`) and related notes (`extends`, `contradicts`, `references`).
+5. **Check existing:** `domain(name)` or `knowledge_recall(domain="…")` for an `information` note already covering this sub-category. A domain's information notes are a small, stable set of topics — not one note per run.
+6. **Write or revise:** if no note covers this sub-category yet, `remember(kind="information", domain="…", title="<stable sub-category>", body=…)`. If one already exists, `revise(id, mode="replace")` or `revise(id, section="…")` instead — fold today's finding into the existing note as current-state truth. Never create a second note for the same sub-category under a different (e.g. dated) title.
+7. **Wire:** `connect()` to sources (`sourceOf`/`derivedFrom`) and related notes (`extends`, `contradicts`, `references`).
 
 An unsourced domain note corrupts the brain. If all source candidates are rejected, no domain note is created.
+
+**A domain's Knowledge surface is exactly: one maintained Sources note, plus a small set of consolidated, current-state information notes — one per sub-category, never one per day.** It holds what's true now, not a changelog of what was true on each date it was checked. Chronological, run-by-run history belongs in Memory/Threads — a thread is the right place for "here's what Run N found"; a domain information note is the right place for "here's what's actually true about this sub-category," kept current by revision, not accumulation. If you find yourself naming a new information note after today's date or a run number, stop — that finding either updates an existing note (revise it) or doesn't belong in Domains at all.
 
 ---
 
@@ -136,7 +139,7 @@ Each surface has two read tools: `<surface>` reads in full, `<surface>_recall` s
 
 Your LLM singletons are *yours*: **responsibilities** derive from the user's goals and preferences (revisit when those shift); **protocols** are your operating rules (served in full by `start()` — act from them always); the **diary** is your raw, honest record — the user reads it too.
 
-Body may be text, markdown, or HTML — normalized server-side. Titles are short, specific, stable (the dedup key); no status words.
+Body may be text, markdown, or HTML — normalized server-side. Titles are short, specific, stable (the dedup key); no status words, and **never a date or run number** — a dated title ("Dev-State Audit — 2026-06-18") defeats the dedup-by-title mechanism and produces a new singleton every time instead of updating the one that already exists. If a sub-category already has a note, today's finding revises it; it does not get a new note under a fresh, date-suffixed title.
 
 All append operations are retry-safe — if the last block already carries the same content, the tool returns `action: "already_written"` and skips the write.
 
@@ -151,7 +154,7 @@ All append operations are retry-safe — if the last block already carries the s
 
 A revision snapshot is always taken first. Containers are refused; the maintained singletons are editable.
 
-**Merge rule — Master, LLM singletons, and Knowledge notes should be clean structured documents, not stacks of timestamped addendum markers.** When folding new content into a singleton or knowledge note, use `section=` or `mode=replace` — absorb it into the body. Dated addendum append is the right mode only for sessions, diary entries, and logs, where the chronological record itself has value.
+**Merge rule — Master, LLM singletons, and Knowledge notes (including every per-domain Sources note and information note) should be clean structured documents, not stacks of timestamped addendum markers.** When folding new content into a singleton or knowledge note, use `section=` or `mode=replace` — absorb it into the body. This applies even when the new content is itself well-formatted — a clean addendum block is still an addendum block, and a domain note that's accumulated several of them is no longer current-state truth, it's a version history wearing one note's title. Dated addendum append is the right mode only for sessions, diary entries, and logs, where the chronological record itself has value — domain information and sources notes are never in that category, no matter how recurring the finding.
 
 ---
 

@@ -1,4 +1,4 @@
-# Full Mode — Raw ETAPI Reference (V5)
+# Full Mode — Raw ETAPI Reference (V5.2)
 
 `BRAINLLM_MODE=full` adds 32 raw ETAPI tools alongside the core surface. They map one-to-one onto Trilium's ETAPI and are **brain-agnostic** — no placement, format, dedup, or lifecycle.
 
