@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — lifecycle engine (V5)
+// BrainLLM — lifecycle engine (V6)
 //
 // Provides: structural-note protection (containers vs. editable singletons),
 // the resolution content surgery for closing threads, the maintenance sweep
@@ -10,7 +10,7 @@
 
 import { type TriliumClient, type Note, ownedLabel } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
-import { toText } from "./normalize.js";
+import { toText, closeDangling } from "./normalize.js";
 import { RESOLUTION_ANCHOR } from "./templates.js";
 import { localToday } from "./time.js";
 
@@ -48,12 +48,14 @@ export function isContainer(cfg: BrainLLMConfig, noteId: string): boolean {
 // ── Resolution content surgery (pure) ──────────────────────────────────────────
 
 /** Write an outcome into a note body. Replaces everything from the Resolution
- *  anchor down; appends the section if absent. */
+ *  anchor down; appends the section if absent. Closes dangling open tags in
+ *  `html` before surgery so the slice never cuts inside an unclosed element. */
 export function applyResolution(html: string, outcome: string, date: string): string {
+  const safe = closeDangling(html);
   const section = `${RESOLUTION_ANCHOR}\n${outcome}\n<p><em>Closed ${date}</em></p>`;
-  const idx = html.indexOf(RESOLUTION_ANCHOR);
-  if (idx >= 0) return html.slice(0, idx) + section;
-  return `${html}\n${section}`;
+  const idx = safe.indexOf(RESOLUTION_ANCHOR);
+  if (idx >= 0) return safe.slice(0, idx) + section;
+  return `${safe}\n${section}`;
 }
 
 // ── Maintenance sweep (deferred) ────────────────────────────────────────────────
@@ -72,7 +74,7 @@ function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** The V5 maintenance sweep.
+/** The V6 maintenance sweep.
  *  Lite (auto, inside start/close): age stale threads + unlabeled-node check.
  *  Deep: stale-review, orphan/sink report, duplicate-title detection. */
 export async function sweep(

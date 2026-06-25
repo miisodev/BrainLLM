@@ -22,7 +22,7 @@ describe("applyResolution", () => {
   });
 });
 
-describe("labelPlan (V5)", () => {
+describe("labelPlan (V6)", () => {
   test("every note gets noteType and created", () => {
     const flat = labelPlan("knowledge", {}, "2026-06-10").map((l) => `${l.name}=${l.value}`);
     expect(flat).toContain("noteType=knowledge");

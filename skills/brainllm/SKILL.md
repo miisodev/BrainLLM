@@ -3,7 +3,7 @@ name: brainllm
 description: "Persistent memory and knowledge graph via the BrainLLM (Trilium) MCP. Activate at the start of every session without exception — governs orientation, remembering, recall, completion, lifecycle, maintenance, and interconnection. Trigger immediately on any first user message. Also trigger whenever: memory is referenced, something needs to be remembered or recalled, a durable fact or decision emerges, context from a prior session is needed, a knowledge domain is introduced, content goes stale, or any Trilium operation is requested. Do not improvise memory operations without reading this skill."
 ---
 
-# BrainLLM — Operational Skill (v5.2)
+# BrainLLM — Operational Skill (v6.0)
 
 Persistent memory that survives across sessions, stored in TriliumNext. Treat it as your own mind: orient at session start, write the moment something matters, complete things when they complete, log the session at the end.
 
@@ -32,17 +32,22 @@ DURING          remember(...)           ← the moment something worth keeping a
                 recover(noteId)          ← restore any archived/resolved note (undo forget)
                 connect(...)             ← wire a real relation the moment you notice it
                 backup(name?)            ← milestone snapshot before a large restructure
-SESSION END     close(summary, title?)   ← once, when work wraps or the user says goodbye
+SESSION END     session()               ← mandatory pre-close; fetches singletons + diary + sweep; follow next[]
+                [revise() master singletons with session observations about the user]
+                [revise() LLM singletons with session observations about yourself]
                 diary(body)              ← update today's diary entry (optional)
                 addendum()               ← find and merge any pending addendum blocks
                 maintain()               ← audit and fix brain hygiene
+                close(summary, title?)  ← commit the session log (mandatory, once, last)
 PERIODIC        maintain(deep=true)      ← when start flags items, or ~weekly
 ANYTIME         brain()                  ← surface the full content tree (all areas, sub-containers)
 ```
 
 `start()` runs maintenance, creates today's diary and session stubs if they don't exist yet, then returns: **today + weekday**, the full **Master digest** (biography / goals / preferences — all in full), the full **LLM digest** (responsibilities / protocols in full, plus today's diary note with its ID in the `llm` array as `{slot:"diary", id, preview}`), **this session's note** as `{id, preview}`, **activeThreads** (with idle ages), **dormantThreads** for review, and the **lastSession** summary. Don't re-derive any of this with extra calls.
 
-`close(summary, title?, learned?, ...)` is idempotent per date — a second call the same day appends an addendum. The session note title is always `[yyyy-mm-dd]`; the `title` param appears as an `<h2>` heading above Summary in the body. Returns the **full diary entry** for the day with its ID. Runs maintenance, triggers a DB backup, generates the daily log, and links session↔log with `~references`. After `close()`, always follow in order: **`diary()`** (optional — update your diary), **`addendum()`** (find and merge pending addendum blocks), **`maintain()`** (hygiene).
+`session()` is the mandatory pre-close step — call it before `close()` when the session is wrapping. It fetches the **master singletons** (biography/goals/preferences) and **LLM singletons** (responsibilities/protocols) each in full with `{id, lastModified, content}`, today's **diary entry** with its id, and runs the **lightweight maintenance sweep**. Returns a `next[]` array that drives the full end-of-session protocol: update master singletons → update LLM singletons → `diary()` (optional) → `addendum()` → `maintain()` → `close()`. The goal is to evolve the singletons from this session's observations *before* the log is committed — ensuring logs are factual and singletons stay current. Idempotent: all reads are safe to repeat.
+
+`close(summary, title?, learned?, ...)` commits the session log — call it **once, last**, after completing the `session()` protocol. Idempotent per date — a second call the same day appends an addendum. The session note title is always `[yyyy-mm-dd]`; the `title` param appears as an `<h2>` heading above Summary in the body. Triggers a DB backup, generates the daily log, and links session↔log with `~references`. Returns `{action, noteId, date, backup, log}`.
 
 **Write during the session, not at the end.** A fact remembered mid-conversation survives a crash; one you planned to write at the end does not.
 
@@ -143,6 +148,10 @@ Body may be text, markdown, or HTML — normalized server-side. Titles are short
 
 All append operations are retry-safe — if the last block already carries the same content, the tool returns `action: "already_written"` and skips the write.
 
+**HTML-native writes.** All write tools (`close`, `diary`, `remember`, `revise`, `resolve`, `reopen`, `recover`) enforce Trilium/CKEditor 5 HTML rules on any body you supply: `<h1>` is demoted to `<h2>` (h1 is the Trilium note title), `<h5>`/`<h6>` are demoted to `<h4>`, `<div>` is replaced with `<p>`, `<br>` runs become paragraph separators, forbidden elements (script/style/iframe/form/input/…) are stripped, and `style=`/`on*` attributes are removed. Dangling unclosed tags are closed before any append or splice. If any of these mutations occur the return includes `sanitized: string[]` listing each change — read it and prefer clean HTML in future calls. **Body may be text, markdown, or HTML**; the server normalises all three. Markdown converts cleanly; supply HTML when you need precise structure.
+
+**Informational error returns.** User-input errors (`kind="sources"` without a domain, editing a container note, reopening a non-thread) return `{error, detail, hint}` instead of throwing — read the `hint` field and retry with corrected arguments. Bootstrap-missing errors still throw (they're system failures that cannot be self-corrected).
+
 ---
 
 ## Updating — `revise`
@@ -193,7 +202,8 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | Tool | One-liner |
 |---|---|
 | `start()` | Orient: full master (bio/goals/prefs) + full LLM (responsibilities/protocols) + diary id + session id + active/dormant threads + last session + changesSinceLastSession. Creates today's diary + session stubs. Once, first. |
-| `close(summary, title?, learned?, …)` | Session log ([yyyy-mm-dd] note, title param above Summary) + sweep + backup + log. Returns full diary. Once, last. Then: diary (optional) → addendum() → maintain(). |
+| `session(date?)` | Mandatory pre-close step. Fetches master and LLM singletons in full with `{id, lastModified, content}`, today's diary entry, and runs the lite maintenance sweep. Returns `next[]` driving the full end-of-session protocol. Call before `close()`; idempotent. |
+| `close(summary, title?, learned?, …)` | Commit the session log ([yyyy-mm-dd] note, title param above Summary) + backup + daily log. Returns `{action, noteId, date, backup, log}`. Requires `session()` first. Once, last. |
 | `brain(includeArchived?)` | Full content tree: every typed note across all five areas, grouped. |
 | `bootstrap()` | Initialize the structure if uninitialized, or verify and refresh config if it already exists. Only creates a new tree when the stored root note is confirmed deleted in Trilium (404). Any other error (network, auth, timeout) is surfaced rather than silently creating a duplicate tree. |
 | `remember(kind, …)` | Write a note — routed, formatted, deduped server-side. Rejects diary/session/log/domain — each has a dedicated path. |

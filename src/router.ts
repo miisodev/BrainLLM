@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — the router (V5)
+// BrainLLM — the router (V6)
 //
 // Single source of truth for WHERE a note lives, WHICH labels it carries and
 // WHICH template it follows, derived from its kind. The model never chooses a

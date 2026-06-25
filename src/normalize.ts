@@ -282,3 +282,119 @@ export function queryTokens(query: string, max = 4): string[] {
       .filter((t) => t.length > 2 && !STOP.has(t))
   )].slice(0, max);
 }
+
+// ── HTML sanitization ─────────────────────────────────────────────────────────
+
+/** Elements that are self-closing and never pushed onto the tag stack. */
+const VOID_ELEMENTS = new Set([
+  "area","base","br","col","embed","hr","img","input",
+  "link","meta","param","source","track","wbr",
+]);
+
+/** Close unclosed block-level tags at the end of an HTML string.
+ *  Stack-based pass — adequate for the structured content this codebase produces. */
+export function closeDangling(html: string): string {
+  const stack: string[] = [];
+  const re = /<\/?([a-zA-Z][a-zA-Z0-9-]*)(?:\s[^>]*)?\/?>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const tag = m[1].toLowerCase();
+    const full = m[0];
+    if (VOID_ELEMENTS.has(tag) || full.endsWith("/>")) continue;
+    if (full.startsWith("</")) {
+      const i = stack.lastIndexOf(tag);
+      if (i !== -1) stack.splice(i, 1);
+    } else {
+      stack.push(tag);
+    }
+  }
+  if (!stack.length) return html;
+  return html.trimEnd() + stack.reverse().map((t) => `</${t}>`).join("");
+}
+
+export interface SanitizeResult {
+  html: string;
+  /** Every mutation made — included in tool returns so the LLM knows what changed. */
+  warnings: string[];
+}
+
+/** Sanitize LLM-supplied HTML for Trilium / CKEditor 5 compatibility.
+ *  Always returns renderable content. Reports every mutation in `warnings`
+ *  so callers can surface issues without failing the write.
+ *
+ *  Rules applied in order:
+ *  1. Strip forbidden content blocks (script/style/iframe/form/object/…)
+ *  2. Strip forbidden void tags (input/embed)
+ *  3. Strip style= and on* attributes
+ *  4. Demote <h1> → <h2>  (h1 is reserved for the Trilium note title)
+ *  5. Demote <h5>/<h6> → <h4>  (CKEditor 5 supports h2–h4 only)
+ *  6. Replace <div> → <p>  (CKEditor 5 uses paragraph blocks, not divs)
+ *  7. Normalize <br> runs → paragraph separators; lone <br> → space
+ *  8. Close dangling open block tags at the end */
+export function sanitizeHtml(html: string): SanitizeResult {
+  const warnings: string[] = [];
+  let s = html;
+  let n = 0;
+
+  // 1. Strip forbidden content blocks (opening tag + inner content + closing tag).
+  n = 0;
+  s = s.replace(
+    /<(script|style|noscript|iframe|form|object|applet|select|textarea|button)(\s[^>]*)?>[\s\S]*?<\/\1>/gi,
+    () => { n++; return ""; },
+  );
+  if (n) warnings.push(`Stripped ${n} forbidden element block(s) — script/style/iframe/form/object/select/textarea/button`);
+
+  // 2. Strip forbidden void/lone tags.
+  n = 0;
+  s = s.replace(/<\/?(input|embed)(\s[^>]*)?\/?>/gi, () => { n++; return ""; });
+  if (n) warnings.push(`Stripped ${n} forbidden lone tag(s) — input/embed`);
+
+  // 3. Strip style= attributes.
+  n = 0;
+  s = s.replace(/\s+style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, () => { n++; return ""; });
+  if (n) warnings.push(`Stripped ${n} style= attribute(s) — use semantic elements instead`);
+
+  // 4. Strip on* event attributes.
+  n = 0;
+  s = s.replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, () => { n++; return ""; });
+  if (n) warnings.push(`Stripped ${n} on* event attribute(s)`);
+
+  // 5. Demote <h1> → <h2>.
+  n = 0;
+  s = s.replace(/<(\/?)h1(\s[^>]*)?>/gi, (_, close, attrs) => { n++; return `<${close}h2${attrs ?? ""}>`; });
+  if (n) warnings.push(`Demoted ${n} <h1> to <h2> — h1 is reserved for the Trilium note title`);
+
+  // 6. Demote <h5>/<h6> → <h4>.
+  n = 0;
+  s = s.replace(/<(\/?)h[56](\s[^>]*)?>/gi, (_, close, attrs) => { n++; return `<${close}h4${attrs ?? ""}>`; });
+  if (n) warnings.push(`Demoted ${n} <h5>/<h6> to <h4> — CKEditor 5 supports h2–h4 only`);
+
+  // 7. Replace <div> → <p> (attributes are not carried over — div attrs don't apply to p).
+  n = 0;
+  s = s.replace(/<(\/?)div(\s[^>]*)?>/gi, (_, close) => { n++; return `<${close}p>`; });
+  if (n) warnings.push(`Replaced ${n} <div> with <p> — CKEditor 5 uses paragraph blocks`);
+
+  // 8. Normalize <br> — runs become paragraph separators; lone <br> becomes a space.
+  if (/<br[\s/>]/i.test(s) || s.includes("<br>")) {
+    const before = s;
+    s = s.replace(/<br\s*\/?>(\s*<br\s*\/?>)+/gi, "</p><p>");
+    s = s.replace(/<br\s*\/?>/gi, " ");
+    if (s !== before) warnings.push("<br> normalized to paragraph separators");
+  }
+
+  // 9. Close dangling open block tags at end of content.
+  const closed = closeDangling(s);
+  if (closed !== s) {
+    warnings.push("Closed unclosed block tag(s) at end of content");
+    s = closed;
+  }
+
+  return { html: s.trim() || "<p></p>", warnings };
+}
+
+/** Append one or more HTML block sections to existing note content.
+ *  Closes any dangling open tags in `current` before appending, so new
+ *  sections are never swallowed inside an unclosed element. */
+export function safeAppend(current: string, ...blocks: string[]): string {
+  return [closeDangling(current.trimEnd()), ...blocks].filter(Boolean).join("\n");
+}

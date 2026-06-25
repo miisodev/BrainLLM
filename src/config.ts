@@ -1,13 +1,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — runtime configuration (V5)
+// BrainLLM — runtime configuration (V6)
 //
 // IDs are stored in brainllm.json next to the bundle. On startup:
 //   load file → auto-discover from Trilium (via #brainLlmRoot) → empty (bootstrap).
 // bootstrap writes this file; no manual editing required.
 //
-// V5 is a clean break from v4 — the section shape changed, so a v4 brainllm.json is
-// NOT forward-merged. Only version-5 configs load; anything older falls through
-// to discovery/bootstrap against the (fresh) V5 instance.
+// The config file schema is version 5 — unchanged in V6. V5 brainllm.json files
+// load without any migration. Only version-5 configs load; anything older falls
+// through to discovery/bootstrap.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { existsSync, readFileSync, writeFileSync } from "fs";

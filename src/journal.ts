@@ -12,7 +12,7 @@
 import { type TriliumClient, type Note, ownedLabel } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { isStructural } from "./lifecycle.js";
-import { escapeHtml } from "./normalize.js";
+import { escapeHtml, safeAppend } from "./normalize.js";
 
 export interface LogReport {
   date: string;
@@ -76,7 +76,7 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
     const id = existing.results[0].noteId;
     const current = await trilium.getNoteContent(id).catch(() => "");
     if (current.trim() === body.trim()) return { date, noteId: id, ...counts, action: "unchanged" };
-    await trilium.updateNoteContent(id, `${current}\n<h2>Addendum — ${date}</h2>\n${body}`);
+    await trilium.updateNoteContent(id, safeAppend(current, `<h2>Addendum — ${date}</h2>`, body));
     return { date, noteId: id, ...counts, action: "updated" };
   }
 

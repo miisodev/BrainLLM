@@ -14,7 +14,7 @@
 | A dormant item becomes relevant again | Any `revise()` touch reactivates it to `active` automatically |
 | Two notes turn out to be the same subject | `revise()` the better one with the other's content (append), then `forget(worseId, reason="merged into <id>")` |
 | `resolve()` on a note with no Resolution section | Works — the section is appended |
-| Structural note passed to revise/resolve/forget | Refused server-side with an error — pick the right noteId |
+| Structural note passed to revise/resolve/forget | Returns `{error, detail, hint}` — read `hint` and call again with a content noteId, not a container |
 | Long conversation, no natural end | Call `close` when the work *topic* wraps, even if chat continues; a later wrap-up appends |
 | User edited notes directly in Trilium | Fine — that's a feature. Run `maintain(deep=true)` next session to re-check the tree |
 | Sweep flags a stray you can't classify | Tell the user what it is and where; flags are conversation starters, not auto-fixes |

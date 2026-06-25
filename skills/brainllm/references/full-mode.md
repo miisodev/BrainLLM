@@ -1,8 +1,8 @@
-# Full Mode — Raw ETAPI Reference (V5.2)
+# Full Mode — Raw ETAPI Reference (V6.0)
 
 `BRAINLLM_MODE=full` adds 32 raw ETAPI tools alongside the core surface. They map one-to-one onto Trilium's ETAPI and are **brain-agnostic** — no placement, format, dedup, or lifecycle.
 
-**Ground rule:** use the core surface (`remember`, `recall`, the `<surface>` reads, `revise`, `resolve`, `connect`, `explore`, `forget`) for all routine work. Reach for full-mode only when the high-level path genuinely cannot do the job — these bypass every server guarantee, so correctness is on you.
+**Ground rule:** use the core surface (`start`, `session`, `close`, `remember`, `recall`, the `<surface>` reads, `revise`, `resolve`, `connect`, `explore`, `forget`) for all routine work. Reach for full-mode only when the high-level path genuinely cannot do the job — these bypass every server guarantee, so correctness is on you.
 
 ---
 
@@ -12,7 +12,7 @@ Full-mode tools place nothing, label nothing — so when you reach past the core
 
 - **A note is only a "memory" once it carries `#noteType`.** `recall` and every `<surface>` read filter out untyped notes, so a note you `create_note` without labelling is invisible to them. For a new memory, use core `remember` — it places the note, writes `#noteType` + `#created`/`#updated`, and dedups by title. Reach for `create_note` only for shapes core can't make (a `code` / `canvas` / `mermaid` note, a deliberate placement), then replicate the labels yourself: `add_label noteType <kind>`.
 - **Overwrites don't snapshot; labels don't dedup.** `update_note_content` replaces the body with no revision — `create_revision` first when the content matters. `add_label` always adds (it can leave you with two `#status` labels); change an existing one with `update_attribute`. `delete_note` deletes the whole subtree when it's the last branch — prefer core `forget`, which archives and checks backlinks.
-- **Find structure by its marker, not a hardcoded id.** There is no `get_brain_config` in V5. To locate a container, `search_notes("#brainLlmRoot")` for the root, then `get_note` and walk `children` to the area / book you need; or lift a `parents` id from any note a surface read already returned.
+- **Find structure by its marker, not a hardcoded id.** There is no `get_brain_config` in V6. To locate a container, `search_notes("#brainLlmRoot")` for the root, then `get_note` and walk `children` to the area / book you need; or lift a `parents` id from any note a surface read already returned.
 
 ### Raw artifacts (code, images, files)
 
