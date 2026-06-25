@@ -11,7 +11,7 @@ Persistent memory that survives across sessions, stored in TriliumNext. Treat it
 
 > **You supply content. The server owns form.**
 
-Placement, naming, labels, deduplication, relation bookkeeping, degradation, archival, dates and backups are server policy. You never choose a parent note, never add a `#noteType` label, never check for duplicates, never stamp a date. If you find yourself doing bookkeeping, stop — a tool does it for you.
+Placement, naming, labels, deduplication, relation bookkeeping, degradation, archival, dates and backups are server policy. You never choose a parent note, never add a `#noteType` label, never check for duplicates, never stamp a date (one exception: the `Last updated: yyyy-mm-dd` line in domain information-note bodies is maintained by you directly — everything else about this rule, including dated titles and all other manual date-stamping, still holds). If you find yourself doing bookkeeping, stop — a tool does it for you.
 
 **Operate from it, natively.** `start()` loads who the user is and who you are here — act from both without being asked. When the topic is the user's world, read `knowledge` / `recall` before answering from training; the brain is authoritative where it speaks. Write the instant something matters; wire a relation the instant you see one. Using it should feel like remembering, not filing.
 
@@ -91,17 +91,18 @@ something worth keeping
 
 **Knowledge/Master notes** capture durable user facts that don't fit the three singletons: `remember(kind="knowledge", title="<short specific stable>", body=…)`. Then `connect()` it when a real relation exists.
 
-**Domain knowledge has a mandatory sources gate** — never skip it:
+**Domain knowledge has three lifecycle protocols** — pick the one that matches what's actually happening; never skip the sources gate where one applies. Every domain `information` note carries a visible, maintained first line in its body — `Last updated: yyyy-mm-dd` — kept current by whoever last revises the note's content.
 
-1. **Search** for credible, viable sources on the claim (a real search — not from training memory alone).
-2. **Submit** candidates to the user for approval. No self-approval.
-3. **Read** the approved sources before extracting knowledge.
-4. **Record:** `remember(kind="sources", domain="…", body="…")` with markers — ❇️ approved, ✅ approved + used.
-5. **Check existing:** `domain(name)` or `knowledge_recall(domain="…")` for an `information` note already covering this sub-category. A domain's information notes are a small, stable set of topics — not one note per run.
-6. **Write or revise:** if no note covers this sub-category yet, `remember(kind="information", domain="…", title="<stable sub-category>", body=…)`. If one already exists, `revise(id, mode="replace")` or `revise(id, section="…")` instead — fold today's finding into the existing note as current-state truth. Never create a second note for the same sub-category under a different (e.g. dated) title.
-7. **Wire:** `connect()` to sources (`sourceOf`/`derivedFrom`) and related notes (`extends`, `contradicts`, `references`).
+**1. Creating a new domain** (the domain doesn't exist yet):
+Propose the title → create the domain (book) + its Sources note, both carrying a top-level status marker → run an info-query sources-discovery pass and record every candidate in the Sources note, each marked ❇️ (discovered/credible, not yet used) → propose/obtain the learning scope from the user (which sources, how deep) → read the approved sources and create the appropriate sub-category `information` note(s), each opening with a `Last updated: yyyy-mm-dd` line → flip the used entries in Sources to ✅ with the date used → `connect()` and wire relations.
 
-An unsourced domain note corrupts the brain. If all source candidates are rejected, no domain note is created.
+**2. Adding a sub-category note to an existing domain** (Sources note already exists and already covers the relevant source — no new discovery needed):
+Propose the title → create the `information` note directly, opening with a `Last updated: yyyy-mm-dd` line → `connect()` and wire relations. No new sources-discovery pass — this path is for extending an already-sourced domain with another sub-category, not for introducing new claims.
+
+**3. Maintaining domain knowledge** (periodic refresh of an existing domain):
+Read the Sources note for any ❇️ discovered-but-unused entries → read those sources and create/update the appropriate sub-category `information` note(s) (refresh its `Last updated:` line) → check Sources for ✅ entries last used more than a month ago → verify those sources are still available/credible, updating Sources if not → skim the domain (`domain(name)`) for its sub-category notes → spot-check each against its source for continued correctness — if correct, stop; if not, re-read the source and update the note (refresh its `Last updated:` line) → flip Sources entries to ✅ with the date used → `connect()` and wire relations.
+
+An unsourced domain note corrupts the brain. If all source candidates are rejected under protocol 1, no domain note is created. ❇️ = discovered/credible, not yet used. ✅ = used, dated. **A Sources entry only earns a date when it has actually been read and used — never on discovery alone.**
 
 **A domain's Knowledge surface is exactly: one maintained Sources note, plus a small set of consolidated, current-state information notes — one per sub-category, never one per day.** It holds what's true now, not a changelog of what was true on each date it was checked. Chronological, run-by-run history belongs in Memory/Threads — a thread is the right place for "here's what Run N found"; a domain information note is the right place for "here's what's actually true about this sub-category," kept current by revision, not accumulation. If you find yourself naming a new information note after today's date or a run number, stop — that finding either updates an existing note (revise it) or doesn't belong in Domains at all.
 
