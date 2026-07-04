@@ -171,27 +171,55 @@ export async function sweep(
   // ── Deep: orphan + sink report ──────────────────────────────────────────────
   // orphan = no outbound AND not pointed to by anything (truly isolated).
   // sink   = no outbound BUT has inbound (consumed but never connected forward).
-  const kNotes = await trilium
-    .searchNotes("#noteType", { ancestorNoteId: cfg.knowledge.root, fastSearch: true, limit: 200 })
-    .catch(() => ({ results: [] as Note[] }));
-  report.scanned += kNotes.results.length;
+  //
+  // Inbound detection ("targets") is brain-wide, so a candidate referenced
+  // from outside its own area (e.g. a thread an LLM singleton points at)
+  // isn't misclassified as an orphan just because the pointer lives
+  // elsewhere — an inbound-only note is a sink, never an orphan, regardless
+  // of which area the inbound edge originates in.
+  //
+  // The candidates actually flagged are scoped to Memory/Threads and
+  // Knowledge (master + domains-and-below) — the two areas holding
+  // connectable, non-structural, non-record content. Master and the LLM
+  // singletons are maintained/structural (excluded via isStructural, which
+  // also protects the BrainLLM meta-thread); sessions, diary, and logs are
+  // records, not graph nodes to connect.
+  const [allNotes, threadNotes, knowledgeNotes] = await Promise.all([
+    trilium.searchNotes("#noteType", { ancestorNoteId: cfg.root, fastSearch: true, limit: 500 }).catch(() => ({ results: [] as Note[] })),
+    cfg.memory.threads
+      ? trilium.searchNotes("#noteType", { ancestorNoteId: cfg.memory.threads, fastSearch: true, limit: 200 }).catch(() => ({ results: [] as Note[] }))
+      : Promise.resolve({ results: [] as Note[] }),
+    cfg.knowledge.root
+      ? trilium.searchNotes("#noteType", { ancestorNoteId: cfg.knowledge.root, fastSearch: true, limit: 200 }).catch(() => ({ results: [] as Note[] }))
+      : Promise.resolve({ results: [] as Note[] }),
+  ]);
+  report.scanned += allNotes.results.length;
+
   const targets = new Set<string>();
-  for (const n of kNotes.results) {
+  for (const n of allNotes.results) {
     for (const a of n.attributes) if (a.type === "relation" && a.name !== "template") targets.add(a.value);
   }
+
+  const seenCandidates = new Set<string>();
+  const candidates = [...threadNotes.results, ...knowledgeNotes.results].filter((n) => {
+    if (seenCandidates.has(n.noteId)) return false;
+    seenCandidates.add(n.noteId);
+    return true;
+  });
+
   let orphans = 0;
   let sinks = 0;
-  for (const n of kNotes.results) {
+  for (const n of candidates) {
     const kind = ownedLabel(n, "noteType");
-    if (!kind || kind === "domain" || kind === "sources") continue;
+    if (!kind || kind === "domain" || kind === "sources" || isStructural(cfg, n.noteId)) continue;
     const hasOut = n.attributes.some((a) => a.type === "relation" && a.name !== "template");
     const hasIn = targets.has(n.noteId);
     if (!hasOut && !hasIn && orphans < 10) {
       orphans++;
-      report.flagged.push(`unconnected: ${n.title} [${n.noteId}] — connect() it`);
+      report.flagged.push(`unconnected: ${n.title} [${n.noteId}] (${kind}) — connect() it`);
     } else if (!hasOut && hasIn && sinks < 5) {
       sinks++;
-      report.flagged.push(`sink: ${n.title} [${n.noteId}] — has inbound relations but no outbound`);
+      report.flagged.push(`sink: ${n.title} [${n.noteId}] (${kind}) — has inbound relations but no outbound`);
     }
   }
 

@@ -1371,9 +1371,11 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
     "maintain",
     `Run the maintenance sweep. start and close run the lite sweep automatically (ages stale
 threads active → dormant → archived). deep=true also surfaces stale notes (untouched past the
-policy window) and unconnected knowledge notes to wire with connect(). dryRun previews only.`,
+policy window) and unconnected threads/knowledge notes (orphan = no connections at all; sink =
+has inbound but no outbound) to wire with connect() — inbound detection is brain-wide, so a
+note referenced from another area is never misflagged as an orphan. dryRun previews only.`,
     {
-      deep: z.boolean().optional().describe("Deep pass: stale-review + orphan report (default: false)"),
+      deep: z.boolean().optional().describe("Deep pass: stale-review + orphan/sink report across Memory/Threads and Knowledge (default: false)"),
       dryRun: z.boolean().optional().describe("Report what would change without changing it"),
     },
     async ({ deep, dryRun }) => {
