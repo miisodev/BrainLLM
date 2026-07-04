@@ -1248,7 +1248,8 @@ calling twice is safe. Use remove=true to delete an edge.`,
     `Walk the relation graph around a note.
   mode=links         what this note points to (one hop)
   mode=backlinks     what points to this note (one hop)
-  mode=neighborhood  everything within N hops (depth, optional relation filter)
+  mode=neighborhood  everything within N hops, both directions (depth, optional relation filter);
+                     via is prefixed ← for edges walked inbound
   mode=path          shortest connection between noteId and toNoteId`,
     {
       noteId: z.string().describe("Starting note"),

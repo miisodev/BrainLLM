@@ -612,7 +612,14 @@ export class TriliumClient {
     return null;
   }
 
-  // BFS neighborhood: all notes reachable within `depth` relation hops
+  // BFS neighborhood: all notes reachable within `depth` hops, walking BOTH
+  // outbound relations and inbound backlinks. A note wired only via inbound
+  // edges (e.g. a domain/hub container its members point at, but which points
+  // at nothing itself) is otherwise invisible to forward traversal even
+  // though explore(mode="backlinks") clearly shows it's connected — "within N
+  // hops" means reachable in either direction, not outbound-only. `via` is
+  // prefixed with ← for inbound edges so direction stays visible in the walk.
+  // The start node itself is always included (depth 0, no via/fromNoteId).
   async getNeighborhood(
     noteId: string,
     depth: number = 2,
@@ -622,6 +629,10 @@ export class TriliumClient {
     const queue: Array<{ id: string; dist: number; via?: string; from?: string }> = [
       { id: noteId, dist: 0 },
     ];
+    // Relation-name universe for backlink queries — discovered once up front
+    // (only when there's actually a hop to take) so inbound expansion doesn't
+    // re-scan the brain at every node.
+    const inboundNames = depth > 0 ? backlinkRelationNames(await this.listRelationTypes()) : [];
 
     while (queue.length > 0) {
       const current = queue.shift()!;
@@ -649,6 +660,17 @@ export class TriliumClient {
           if (rel.value && !visited.has(rel.value)) {
             queue.push({ id: rel.value, dist: current.dist + 1, via: rel.name, from: current.id });
           }
+        }
+
+        try {
+          const backlinks = await this.getBacklinks(current.id, inboundNames);
+          for (const bl of backlinks) {
+            if ((!relationType || bl.relationName === relationType) && !visited.has(bl.noteId)) {
+              queue.push({ id: bl.noteId, dist: current.dist + 1, via: `←${bl.relationName}`, from: current.id });
+            }
+          }
+        } catch {
+          // Backlink search unavailable for this hop — outbound edges still walked above.
         }
       }
     }
