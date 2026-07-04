@@ -168,10 +168,17 @@ export function registerTools(
    *  status=eternal, exempt from the active → dormant → archived aging timeline
    *  and structurally protected (see lifecycle.ts) against resolve/reopen/forget.
    *  Caches the id on brainRef.config (and persists it) so it's free after the
-   *  first call. Returns null only when Memory/Threads itself isn't bootstrapped. */
+   *  first call — but the cache is verified live, not trusted blindly: if the
+   *  note was deleted directly in Trilium (bypassing forget()'s protection),
+   *  the stale id is dropped and re-discovery/re-creation runs as if unset.
+   *  Returns null only when Memory/Threads itself isn't bootstrapped. */
   async function ensureMetaThread(): Promise<string | null> {
     const cfg = b();
-    if (cfg.memory.metaThread) return cfg.memory.metaThread;
+    if (cfg.memory.metaThread) {
+      const alive = await trilium.getNote(cfg.memory.metaThread).then(() => true).catch(() => false);
+      if (alive) return cfg.memory.metaThread;
+      // Deleted out from under us — fall through to re-discover or re-create.
+    }
     if (!cfg.memory.threads) return null;
 
     const found = await trilium
@@ -1470,8 +1477,9 @@ Structural containers are excluded; only content notes appear.`,
   server.tool(
     "bootstrap",
     `Initialize the BrainLLM structure in Trilium (idempotent — safe to re-run; refreshes config
-if the structure already exists). Creates the five areas — Master (Biography/Goals/Preferences),
-LLM (Responsibilities/Protocols/Diary), Memory (Sessions/Threads), Knowledge (Master/Domains),
+if the structure already exists, and re-creates the standing BrainLLM meta-thread if it was
+deleted). Creates the five areas — Master (Biography/Goals/Preferences), LLM
+(Responsibilities/Protocols/Diary), Memory (Sessions/Threads), Knowledge (Master/Domains),
 Insights (Logs) — each engraved with its purpose, and writes brainllm.json. Active
 immediately, no restart needed.`,
     {},
@@ -1485,12 +1493,14 @@ immediately, no restart needed.`,
               return { id: child.noteId, title: child.title };
             })
           );
+          const metaThreadId = await ensureMetaThread().catch(() => null);
           const saved = saveConfig(brainRef.config);
           return txt({
             status: "already_initialized",
             message: `BrainLLM structure exists. Config refreshed at: ${saved}`,
             root: { id: existing.noteId, title: existing.title },
             children,
+            ...(metaThreadId ? { metaThread: metaThreadId } : {}),
           });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
