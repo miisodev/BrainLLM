@@ -154,6 +154,17 @@ export function registerTools(
 ): void {
   const b = () => brainRef.config;
 
+  // ── Pre-close protocol gate ───────────────────────────────────────────────
+  // In-memory only — never persisted, resets with the process/connection.
+  // Tracks which pre-close steps actually ran (by tool invocation, not by
+  // narration) so close() can refuse until each one has been individually,
+  // verifiably called. This is what makes the protocol enforceable rather
+  // than a docstring convention the model can silently skip under time
+  // pressure. Cleared on a successful close() so the next day's session
+  // re-arms the gate from scratch.
+  const preCloseSteps = new Set<string>();
+  const REQUIRED_PRECLOSE_STEPS = ["diary", "session", "remarks", "addendum", "maintain"] as const;
+
   /** Find an existing same-kind note with the same (normalized) title. */
   async function findExisting(kind: AnyKind, title: string): Promise<Note | null> {
     const scope = dedupScope(b(), kind);
@@ -339,14 +350,17 @@ current.
 
 Idempotent: fetches are read-only, the sweep is non-destructive, safe to call multiple times.
 
-After session() returns, follow this protocol in order:
+After session() returns, work through this protocol — order doesn't matter mechanically (each
+step is tracked by the tool call itself, not by sequence), but close() enforces that every one
+of diary(), session() [this call], remarks(), addendum(), and maintain() actually ran before it
+will commit the log:
 1. Update master singletons (biography / goals / preferences) via revise() with session observations about the user.
 2. Update LLM singletons (responsibilities / protocols) via revise() with session observations about yourself.
-3. Call diary() — record today's diary entry (optional).
+3. Call diary() — even a one-line entry counts; an honest "quiet session" is a valid entry.
 4. Call addendum() — find and merge pending addendums.
 5. Call maintain() — full brain hygiene audit.
 6. Call remarks() — self-analyze your BrainLLM usage this session and log it to the BrainLLM thread.
-7. Call close() — commit the session log (mandatory, last).`,
+7. Call close() — commit the session log (mandatory, last). Refuses until 3–6 have run; pass force=true only when there is genuinely nothing to log for a skipped step.`,
     {
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
     },
@@ -355,6 +369,7 @@ After session() returns, follow this protocol in order:
       const cfg = b();
       if (!cfg.master.root || !cfg.llm.root)
         throw new Error("BrainLLM not bootstrapped — run bootstrap.");
+      preCloseSteps.add("session");
 
       const fetchSingleton = async (id: string) => {
         const [note, content] = await Promise.all([
@@ -400,11 +415,11 @@ After session() returns, follow this protocol in order:
         next: [
           "Update master singletons (biography / goals / preferences) via revise() with session observations about the user.",
           "Update LLM singletons (responsibilities / protocols) via revise() with session observations about yourself.",
-          "Call diary() — record today's diary entry (optional).",
+          "Call diary() — even a one-line entry counts.",
           "Call addendum() — find and merge any pending addendums.",
           "Call maintain() — audit and fix brain hygiene.",
           "Call remarks() — self-analyze your BrainLLM usage this session and log it to the BrainLLM thread.",
-          "Call close() — commit the session log (mandatory, last).",
+          "Call close() — commit the session log (mandatory, last). Refuses until diary/addendum/maintain/remarks have each run this session; pass force=true only when a skipped step genuinely has nothing to log.",
         ],
       });
     }
@@ -412,64 +427,122 @@ After session() returns, follow this protocol in order:
 
   server.tool(
     "remarks",
-    `Pre-close self-analysis — call as the LAST step of the session() protocol, right before
-close(). Doesn't perform the analysis itself (it has no view of the conversation); it returns
-the standing BrainLLM thread (creating or discovering it on first use, id + current preview +
-relation snippet) and a checklist of what to honestly assess about your own use of BrainLLM
-this session, before you fold your findings into that thread with revise() and then call close().
+    `Pre-close self-analysis — the default write tool for the standing BrainLLM thread, and the
+last step of the session() protocol before close(). Two modes, same call:
 
-The BrainLLM thread is a standing note under Memory → Threads (status=eternal) that never ages,
-goes dormant, or archives like other threads — it's the one place tracking BrainLLM's own
-capabilities, issues/bugs, usability, memory/token efficiency, performance, and hygiene, in
-service of building it into the best possible native memory/brain system for LLMs.`,
-    {},
-    async () => {
+  no params filled   → returns the thread (id/preview/relations) and 8 cue questions to
+                        honestly assess your own BrainLLM usage this session.
+  any param filled   → writes everything you pass as ONE structured, dated addendum block
+                        (mirrors diary/session/log — a chronological record you add to, not a
+                        section you edit in place) and satisfies this step for close()'s gate.
+
+Call it twice: once bare for the cues, once with your answers as named params to log them —
+one call per session, all findings in a single dated block. Skip a param outright rather than
+padding it; two real findings beat eight forced ones.`,
+    {
+      capabilities: z.string().optional().describe("Cue: did you hit a wall this session because a tool/capability didn't exist? What would you have used?"),
+      issuesAndBugs: z.string().optional().describe("Cue: what broke, misbehaved, or returned something wrong or confusing this session?"),
+      usability: z.string().optional().describe("Cue: which tools, or skill/tool descriptions, could have served you better — and specifically how?"),
+      memoryEfficiency: z.string().optional().describe("Cue: any redundant reads/searches for something that should already have surfaced (via start(), a prior recall, etc.)? Duplicate writes, missed dedup, or content that should've been merged rather than appended?"),
+      tokenEfficiency: z.string().optional().describe("Cue: did any tool return carry more (or less) than you needed to act on — full content where a preview would do, or a preview you immediately had to re-fetch in full?"),
+      performance: z.string().optional().describe("Cue: did any call feel slow, need several round-trips that could've been one, or fail/retry?"),
+      hygieneAndMaintenance: z.string().optional().describe("Cue: any tools you'd add, prune, or consolidate this session — and why/how?"),
+      roadmap: z.string().optional().describe("Cue: does BrainLLM feel like the best possible LLM-equivalent of a human brain right now? Why or why not, and what's the next concrete step?"),
+      date: z.string().optional().describe("ISO date override (default: today)"),
+    },
+    async ({ capabilities, issuesAndBugs, usability, memoryEfficiency, tokenEfficiency, performance, hygieneAndMaintenance, roadmap, date }) => {
       const cfg = b();
       if (!cfg.root) return txt({ status: "uninitialized", action: "Run bootstrap first." });
       const id = await ensureMetaThread();
-      if (!id) return txt({ error: "not_bootstrapped", detail: "Memory → Threads doesn't exist yet — run bootstrap first." });
+      if (!id) return err("not_bootstrapped", "Memory → Threads doesn't exist yet — run bootstrap first.");
 
-      const [note, content] = await Promise.all([trilium.getNote(id), trilium.getNoteContent(id).catch(() => "")]);
-      const relations = relationSnippet(note);
+      const sections: Array<[string, string | undefined]> = [
+        ["Capabilities", capabilities],
+        ["Issues &amp; Bugs", issuesAndBugs],
+        ["Usability", usability],
+        ["Memory Efficiency", memoryEfficiency],
+        ["Token Efficiency", tokenEfficiency],
+        ["Performance", performance],
+        ["Hygiene &amp; Maintenance", hygieneAndMaintenance],
+        ["Roadmap — Native Memory/Brain System", roadmap],
+      ];
+      const provided = sections.filter((s): s is [string, string] => !!s[1] && s[1].trim().length > 0);
+
+      // No content given — cue mode: hand back the thread + the questions to answer.
+      if (!provided.length) {
+        const [note, content] = await Promise.all([trilium.getNote(id), trilium.getNoteContent(id).catch(() => "")]);
+        const relations = relationSnippet(note);
+        return txt({
+          metaThread: { id, title: "BrainLLM", preview: toText(content, 300), ...(relations ? { relations } : {}) },
+          cues: [
+            "1. Capabilities — did you hit a wall this session because a tool or capability didn't exist? What would you have used if it did?",
+            "2. Issues & Bugs — what broke, misbehaved, or returned something wrong or confusing this session?",
+            "3. Usability — which tools, or skill/tool descriptions, could have served you better — and specifically how?",
+            "4. Memory Efficiency — any redundant reads/searches for something that should already have surfaced (via start(), a prior recall, etc.)? Duplicate writes, missed dedup, or content that should've been merged rather than appended?",
+            "5. Token Efficiency — did any tool return carry more (or less) than you needed to act on — full content where a preview would do, or a preview you immediately had to re-fetch in full?",
+            "6. Performance — did any call feel slow, need several round-trips that could've been one, or fail/retry?",
+            "7. Hygiene & Maintenance — any tools you'd add, prune, or consolidate this session — and why/how?",
+            "8. Roadmap — does BrainLLM feel like the best possible LLM-equivalent of a human brain right now? Why or why not, and what's the next concrete step?",
+          ],
+          next: ["Call remarks() again with your answers as named params — one call writes a single dated addendum. Skip any cue with nothing new to say. Then call close()."],
+        });
+      }
+
+      // Content given — write mode: one dated addendum block, sub-headed per section provided.
+      const d = date ?? today();
+      const blockInner = provided
+        .map(([heading, body]) => `<h3>${heading}</h3>\n${sanitizeHtml(toHtml(body)).html}`)
+        .join("\n");
+
+      const current = await trilium.getNoteContent(id).catch(() => "");
+      if (isDuplicateAppend(current, blockInner)) return txt({ action: "already_written", noteId: id, date: d });
+
+      await trilium.createRevision(id).catch(() => null);
+      await trilium.updateNoteContent(id, safeAppend(current, `<h2>Addendum — ${d}</h2>`, blockInner));
+      await trilium.updateLabelValue(id, "updated", d);
+      preCloseSteps.add("remarks");
 
       return txt({
-        metaThread: { id, title: "BrainLLM", preview: toText(content, 300), ...(relations ? { relations } : {}) },
-        instructions: [
-          "Before close(), honestly analyze your own use of BrainLLM this session. Be specific and substantive — skip a question outright rather than padding it with nothing new to say.",
-          "1. What difficulties did you run into using BrainLLM this session? → fold into 'Issues & Bugs' (or 'Usability' if it wasn't a bug).",
-          "2. Which tools could have served you better, and specifically how? → fold into 'Usability'.",
-          "3. Any tools you'd add — and for what purpose? → fold into 'Capabilities'.",
-          "4. Any tools you'd prune or consolidate — why, and how? → fold into 'Hygiene & Maintenance'.",
-          "5. Could the skill or tool descriptions have served you better? → fold into 'Usability'.",
-          "6. Does BrainLLM — its structure, architecture, tool inventory, skill, and practice — feel like the best possible LLM-equivalent implementation of a human brain? Why or why not? → fold into 'Roadmap — Native Memory/Brain System'.",
-          "Use revise(noteId, section='<heading>', mode='append') per finding so the thread stays organized by topic instead of becoming a stacked log — the same merge discipline as the Master/LLM singletons.",
-        ],
-        next: [
-          "revise() the BrainLLM thread above with this session's self-analysis, one call per section that has something new to say.",
-          "Call close() to commit the session log.",
-        ],
+        action: "logged",
+        noteId: id,
+        date: d,
+        sections: provided.map(([heading]) => heading),
+        next: ["Call close() to commit the session log."],
       });
     }
   );
 
   server.tool(
     "close",
-    `Commit the session log — call ONCE, last, after completing the session() pre-close protocol
-(singleton updates → diary → addendum → maintain → remarks()). Idempotent per date: a second
-call the same day appends an addendum to the existing session note. The session note title is
-always [yyyy-mm-dd]; the title param appears as an <h2> heading above Summary. Generates the
-daily log and triggers a database backup.
+    `Commit the session log — call ONCE, last, after completing the session() pre-close protocol.
+Enforced, not just documented: refuses (returns an informational error, doesn't throw) unless
+diary(), session(), remarks(), addendum(), and maintain() have each actually been called at
+least once this session — order doesn't matter, only that each ran. Pass force=true only when a
+listed step genuinely has nothing to do this session (e.g. a trivial one-message exchange); the
+return will say which steps were bypassed.
 
-Requires session() to have been called first — session() surfaces singletons, runs
-maintenance, and drives singleton updates before the log is written.`,
+Idempotent per date: a second call the same day appends an addendum to the existing session
+note. The session note title is always [yyyy-mm-dd]; the title param appears as an <h2> heading
+above Summary. Generates the daily log and triggers a database backup. On success, the gate
+resets for the next session.`,
     {
       summary: z.string().describe("What happened this session — factual, concise prose"),
       title: z.string().optional().describe("Short session title — appears as an <h2> heading above Summary"),
       learned: z.array(z.string()).optional().describe("Durable things learned (also remember() them as knowledge)"),
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
       backup: z.boolean().optional().describe("Trigger DB backup (default: true)"),
+      force: z.boolean().optional().describe("Bypass the pre-close gate — only when a missing step truly has nothing to log"),
     },
-    async ({ summary, title, learned, date, backup }) => {
+    async ({ summary, title, learned, date, backup, force }) => {
+      const missing = REQUIRED_PRECLOSE_STEPS.filter((step) => !preCloseSteps.has(step));
+      if (missing.length && !force) {
+        return err(
+          "preclose_incomplete",
+          `close() refused — these pre-close steps haven't run yet this session: ${missing.join(", ")}.`,
+          `Call ${missing.map((s) => `${s}()`).join(", ")} first, or pass force=true if one of them genuinely has nothing to log.`
+        );
+      }
+
       const d = date ?? today();
       const cfg = b();
       const parentId = cfg.memory.sessions;
@@ -521,12 +594,15 @@ maintenance, and drives singleton updates before the log is written.`,
       let backedUp = false;
       if (backup !== false) backedUp = await trilium.createBackup(d).then(() => true).catch(() => false);
 
+      preCloseSteps.clear();
+
       return txt({
         action,
         noteId,
         date: d,
         backup: backedUp ? `brainllm-${d}.db` : "skipped",
         log: logReport ? `${logReport.action} (${logReport.created}c/${logReport.updated}u/${logReport.deleted}d)` : "skipped",
+        ...(missing.length ? { bypassed: missing } : {}),
         ...(warnings.length ? { sanitized: warnings } : {}),
       });
     }
@@ -566,6 +642,7 @@ start() creates today's entry (empty) automatically; use this tool to write cont
       const cfg = b();
       const parentId = cfg.llm.diary;
       if (!parentId) throw new Error('BrainLLM not bootstrapped — run bootstrap.');
+      preCloseSteps.add("diary");
       const { html, warnings } = sanitizeHtml(toHtml(body));
 
       const found = await trilium
@@ -1236,6 +1313,7 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
     async () => {
       const cfg = b();
       if (!cfg.root) return txt({ error: "BrainLLM not bootstrapped — run bootstrap." });
+      preCloseSteps.add("addendum");
 
       const searchIn = (ancestorNoteId: string) =>
         trilium.searchNotes("Addendum", { ancestorNoteId, limit: 50 }).catch(() => ({ results: [] as Note[] }));
@@ -1293,6 +1371,7 @@ policy window) and unconnected knowledge notes to wire with connect(). dryRun pr
       dryRun: z.boolean().optional().describe("Report what would change without changing it"),
     },
     async ({ deep, dryRun }) => {
+      preCloseSteps.add("maintain");
       const report = await sweep(trilium, b(), { deep: deep ?? false, dryRun: dryRun ?? false });
       return txt(report);
     }
