@@ -8,7 +8,7 @@ An MCP (Model Context Protocol) server that turns [TriliumNext Notes](https://gi
 
 </div>
 
-**v6.0: a five-area mind with a typed tool surface and HTML-native writes.** The brain is organised into five purpose-built areas (Master, LLM, Memory, Knowledge, Insights), and the model works through a clean surface: per-area read tools, single-word universal verbs, and a raw ETAPI escape hatch. Placement, format, lifecycle, dates and backups are server policy — the model supplies content, the server owns form.
+**v7.0: relation-aware, self-tracking, and self-repairing.** Every core read/write/search tool now surfaces a relation snippet for free, a standing "BrainLLM" thread tracks the project's own development every session under an enforced pre-close protocol, and `label()`/`inspect()` close the gap to raw mode for direct attribute work. Underneath, the brain is still organised into five purpose-built areas (Master, LLM, Memory, Knowledge, Insights), worked through a clean surface — per-area read tools, single-word universal verbs, and a raw ETAPI escape hatch now reserved for genuine edge cases. Placement, format, lifecycle, dates and backups are server policy — the model supplies content, the server owns form.
 
 <div align="center">
 
@@ -23,10 +23,11 @@ An MCP (Model Context Protocol) server that turns [TriliumNext Notes](https://gi
 ## Features
 
 - **Five-area structure** — Master (the user), LLM (the assistant's self-model), Memory (sessions + threads), Knowledge (learned domains), Insights (per-session logs). Built and labelled at bootstrap.
-- **Typed tool surface** — **surface reads** (`master`/`master_recall`, `memory`/`memory_recall`, …), **universal verbs** (`start`, `session`, `remarks`, `close`, `brain`, `bootstrap`, `remember`, `diary`, `recall`, `domain`, `addendum`, `revise`, `resolve`, `reopen`, `recover`, `connect`, `explore`, `maintain`, `forget`, `backup`), and **raw ETAPI** behind `BRAINLLM_MODE=full`.
+- **Typed tool surface** — **surface reads** (`master`/`master_recall`, `memory`/`memory_recall`, …), **universal verbs** (`start`, `session`, `remarks`, `close`, `brain`, `bootstrap`, `remember`, `diary`, `recall`, `domain`, `addendum`, `revise`, `resolve`, `reopen`, `recover`, `label`, `connect`, `explore`, `inspect`, `maintain`, `forget`, `backup`), and **raw ETAPI** behind `BRAINLLM_MODE=full` — kept as a true edge-case fallback now that `label()`/`inspect()` cover direct attribute surgery natively.
 - **Relation snippets everywhere** — every core read, write, and search tool returns a `relations` snippet (outbound `{relation, toNoteId}` edges) alongside its usual payload, for free — the attributes are already loaded from the same fetch. `explore()` remains the tool for target titles or deeper traversal.
 - **A standing self-analysis thread** — the "BrainLLM" thread under Memory → Threads carries `status=eternal`: exempt from the active → dormant → archived timeline and structurally protected against `resolve()`/`reopen()`/`forget()`, so it stays open indefinitely. Its body is a chronological stack of dated addendum blocks, same shape as diary/session/log. `start()` surfaces it every session; `remarks()` is its default write tool — call bare for 8 cue questions (capabilities, issues/bugs, usability, memory/token efficiency, performance, hygiene/tool inventory, roadmap), call again with answers to log them as one dated block.
 - **Enforced pre-close gate** — `close()` refuses (an informational error, not a throw) unless `diary()`, `session()`, `remarks()` (write mode), `addendum()`, and `maintain()` have each actually been called this session — narrating that you did them doesn't count, only the tool call does. `force=true` bypasses a step with genuinely nothing to log, reported back as `bypassed` rather than silently skipped. The gate is in-memory, resets each connection, and clears itself after a successful `close()`.
+- **`label()` and `inspect()` close the gap to full mode** — `label(noteId, name, value?, remove?)` is the guarded core path for direct label surgery (fixing a stray or drifted value): refused on containers, `noteType` untouchable, `status` validated against the closed vocabulary, `domain`/`topic` auto-slugged. `inspect(noteId)` is the full raw read — every label, every outbound relation, type/mime/parent/child ids — for debugging drift or confirming a fix landed. Raw ETAPI attribute tools (`BRAINLLM_MODE=full`) are now a true edge-case fallback rather than something routine BrainLLM operation needs to reach for.
 - **Full orientation on start** — `start()` returns the user's **goals in full**, **preferences in full**, and the model's **protocols in full**, plus today's diary note and a delta of notes changed since the last session. No separate reads needed to act from them.
 - **Dedicated diary tool** — `diary(body)` writes to today's LLM diary entry (one note per day, created empty by `start()`; same-day calls append a timestamped addendum).
 - **Retry-safe writes** — all append-mode write tools (`diary`, `remember`, `revise`, `reopen`, `recover`) detect duplicate content on retries and return `action: "already_written"` instead of double-writing. `connect()` and `resolve()` are idempotent by design.
@@ -184,7 +185,7 @@ The model never chooses placement — `remember(kind=…)` routes it. Domains ar
 
 ### Core — universal verbs
 
-`start` · `session` · `remarks` · `close` · `brain` · `bootstrap` · `remember` · `diary` · `recall` · `domain` · `addendum` · `revise` · `resolve` · `reopen` · `recover` · `connect` · `explore` · `maintain` · `forget` · `backup`
+`start` · `session` · `remarks` · `close` · `brain` · `bootstrap` · `remember` · `diary` · `recall` · `domain` · `addendum` · `revise` · `resolve` · `reopen` · `recover` · `label` · `connect` · `explore` · `inspect` · `maintain` · `forget` · `backup`
 
 ### Core — surface reads (dual-mode)
 

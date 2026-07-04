@@ -3,7 +3,7 @@ name: brainllm
 description: "Persistent memory and knowledge graph via the BrainLLM (Trilium) MCP. Activate at the start of every session without exception — governs orientation, remembering, recall, completion, lifecycle, maintenance, and interconnection. Trigger immediately on any first user message. Also trigger whenever: memory is referenced, something needs to be remembered or recalled, a durable fact or decision emerges, context from a prior session is needed, a knowledge domain is introduced, content goes stale, or any Trilium operation is requested. Do not improvise memory operations without reading this skill."
 ---
 
-# BrainLLM — Operational Skill (v6.0)
+# BrainLLM — Operational Skill (v7.0)
 
 Persistent memory that survives across sessions, stored in TriliumNext. Treat it as your own mind: orient at session start, write the moment something matters, complete things when they complete, log the session at the end.
 
@@ -30,6 +30,7 @@ DURING          remember(...)           ← the moment something worth keeping a
                 resolve(...)             ← close a thread with its outcome
                 reopen(noteId)           ← re-activate an archived/resolved thread
                 recover(noteId)          ← restore any archived/resolved note (undo forget)
+                label(noteId, name, …)   ← fix a stray/drifted label directly — the guarded escape hatch
                 connect(...)             ← wire a real relation the moment you notice it
                 backup(name?)            ← milestone snapshot before a large restructure
 SESSION END     session()               ← mandatory pre-close; fetches singletons + diary + sweep; follow next[]
@@ -42,6 +43,7 @@ SESSION END     session()               ← mandatory pre-close; fetches singlet
                 close(summary, title?)  ← refuses until diary/addendum/maintain/remarks all ran; force=true to override
 PERIODIC        maintain(deep=true)      ← when start flags items, or ~weekly
 ANYTIME         brain()                  ← surface the full content tree (all areas, sub-containers)
+                inspect(noteId)          ← every label + relation on one note — debugging, not routine reads
 ```
 
 `start()` runs maintenance, creates today's diary and session stubs if they don't exist yet, ensures the standing **BrainLLM thread** exists (see below), then returns: **today + weekday**, the full **Master digest** (biography / goals / preferences — all in full), the full **LLM digest** (responsibilities / protocols in full, plus today's diary note with its ID in the `llm` array as `{slot:"diary", id, preview}`), **this session's note** as `{id, preview}`, the **metaThread** as `{id, title, preview}`, **activeThreads** (with idle ages — the BrainLLM thread appears here too, status `eternal`), **dormantThreads** for review, and the **lastSession** summary. Don't re-derive any of this with extra calls.
@@ -225,10 +227,12 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `resolve(noteId, outcome, …)` | Close a thread: outcome + terminal status + archive-in-place. |
 | `reopen(noteId, reason?, …)` | Re-activate an archived/resolved thread (thread kind only — use recover() for other note kinds). |
 | `recover(noteId, reason?, …)` | Restore any archived or resolved note: removes #archived, clears #closed, resets status. The canonical undo for forget(). |
+| `label(noteId, name, value?, remove?)` | Guarded direct label edit/removal — refused on containers, noteType is untouchable, status validated against the closed vocabulary, domain/topic auto-slugged. The core path for fixing a stray or drifted label instead of raw attribute tools. |
 | `backup(name?)` | On-demand DB backup (close() already backs up; use this for milestone snapshots). |
 | `domain(name, …)` | Surface all content for a named domain/topic/project, grouped by kind. |
 | `connect(from, relation, to, remove?)` | Typed edge from the closed vocabulary; symmetric handled; idempotent. |
 | `explore(noteId, mode, …)` | Graph: links / backlinks / neighborhood / path. |
+| `inspect(noteId)` | Full raw read of one note: every label (not just noteType/status), every outbound relation, type/mime/parent/child ids, dates. The deep-dive counterpart to explore() and the surface reads — for debugging drift or confirming a fix landed. |
 | `addendum()` | Search Master, LLM singletons (responsibilities + protocols, not diary), and Knowledge for pending addendum blocks. These notes must be clean and structured — fold each block into the relevant section with revise(section=…, mode=replace), then leave no addendum marker. Only sessions, diary, and logs accumulate addendum history. |
 | `maintain(deep?, dryRun?)` | Lite: thread aging + unlabeled-node check per typed container. Deep adds: stale-review + orphan/sink report (Memory/Threads + Knowledge, brain-wide inbound detection) + duplicate-title detection. Report includes `policy` (active thresholds). |
 | `forget(noteId, reason?, hard?)` | Archive (default) or hard-delete (blocked while backlinked). Undo with recover(). |
@@ -237,11 +241,11 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 
 ## Full Mode (`BRAINLLM_MODE=full`)
 
-When the raw ETAPI tools (`search_notes`, `get_note`, `create_note`, `add_label`, `clone_note`, attachments, calendar, revisions, …) are in your toolset, full mode is on. They're **brain-agnostic** — they place nothing, label nothing, dedup nothing. Keep the core surface as your default; reach here only for what core can't express: a precise `search_notes` query, exact attributes, attachments/images, code·canvas·mermaid notes, journal notes, revision recovery, or attribute surgery.
+When the raw ETAPI tools (`search_notes`, `get_note`, `create_note`, `add_label`, `clone_note`, attachments, calendar, revisions, …) are in your toolset, full mode is on. They're **brain-agnostic** — they place nothing, label nothing, dedup nothing. Keep the core surface as your default — `inspect(noteId)` gives the full label/relation/metadata read `get_note` used to be reached for, and `label(noteId, name, value?, remove?)` gives guarded label surgery (status validated, noteType untouchable) in place of `update_attribute`/`add_label`/`delete_attribute`. Reach into full mode only for what core genuinely can't express: a precise `search_notes` query, attachments/images, code·canvas·mermaid notes, journal notes, revision recovery, or creating a note shape core has no kind for.
 
 Three rules keep raw edits native and safe:
 - **A note is a memory only once it carries `#noteType`** — until then `recall` and the surface reads can't see it. For new memories use `remember` (it labels, places, dedups); use `create_note` only for shapes core can't make, then label it yourself.
-- **Overwrites don't snapshot, labels don't dedup.** `create_revision` before `update_note_content`; change an existing label with `update_attribute`, not a second `add_label`; prefer `forget` over `delete_note` (subtree-recursive).
+- **Overwrites don't snapshot.** `create_revision` before `update_note_content` if you must edit content raw — but a targeted `revise(noteId, section=...)` usually gets there without dropping to full mode at all.
 - **Find structure by marker** — there's no `get_brain_config`. `search_notes("#brainLlmRoot")` → `get_note` to walk to the container you need.
 
 **Raw artifacts** (a code file, an image, a PDF) sit best *inside* the typed-note model — embed a snippet fenced in an `information` note's body (core `remember` — conformant and searchable), or `create_attachment` a file/image onto a typed note. Make a free-standing `type=code`/`file` note only when you need Trilium's native handling, then label it `#noteType` (closest kind) and `connect` it to a typed anchor so it stays discoverable.

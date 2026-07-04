@@ -21,7 +21,7 @@ The user will say "commit and push" or "fix, update skill and readme if needed a
 
 ## Conventions
 
-- Commits are signed with `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`.
+- Commits are signed with `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`.
 - One logical change per commit; don't batch unrelated fixes.
 - SKILL.md is the operational guide for the LLM using BrainLLM — keep it precise and action-oriented.
 - README.md is the user-facing feature summary — update the relevant bullet/section only.

@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — structured note content generators (V6, minimal)
+// BrainLLM — structured note content generators (V7, minimal)
 //
 // Structure-phase scope: enough to seed the tree and produce well-formed notes.
 // The rich per-kind blueprint protocols (structure, format, lifecycle and

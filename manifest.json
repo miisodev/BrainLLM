@@ -2,7 +2,7 @@
   "dxt_version": "0.1",
   "name": "brainllm",
   "display_name": "BrainLLM",
-  "version": "5.2.0",
+  "version": "7.0.0",
   "description": "Turns TriliumNext Notes into a persistent, graph-structured second brain for Claude and other LLM clients.",
   "long_description": "BrainLLM is an MCP server that organises memory into five purpose-built areas (Master, LLM, Memory, Knowledge, Insights). The model supplies content while the server owns placement, format, lifecycle, dates and backups. Includes a full raw ETAPI surface for advanced use. Requires a running TriliumNext instance and the Bun runtime.",
   "author": {

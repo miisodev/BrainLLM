@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — shared domain types (V6)
+// BrainLLM — shared domain types (V7)
 //
 // The enums in this file are the single canonical vocabulary. Tool schemas, the
 // router, the structure builder, and placement all derive from these constants —

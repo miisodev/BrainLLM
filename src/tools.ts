@@ -1,5 +1,5 @@
 /**
- * tools.ts — BrainLLM core tool surface (V6)
+ * tools.ts — BrainLLM core tool surface (V7)
  *
  * The model supplies content; the server owns form. Placement, naming, labels,
  * blueprint wiring, dedup, lifecycle and archival are policy implemented here.
@@ -19,6 +19,7 @@ import {
   Kinds,
   RelationTypes,
   SymmetricRelations,
+  Statuses,
   type AnyKind,
 } from "./types.js";
 import {
@@ -1211,6 +1212,51 @@ or dormant thread resurfaces as live work.`,
     }
   );
 
+  server.tool(
+    "label",
+    `Set or remove a single label on a note — the guarded, BrainLLM-native path for direct
+label surgery (fixing a stray value, correcting drift) so a real edge case doesn't need the
+raw full-mode attribute tools. Refused on containers (same rule as revise()); noteType can
+never be touched here — it defines a note's kind and is owned by remember()/bootstrap().
+status is validated against the closed vocabulary (${Statuses.join(" | ")}); domain and topic
+are slugged automatically, matching remember()'s routing. Bumps updated to today unless you're
+setting updated itself.`,
+    {
+      noteId: z.string().describe("Note to edit"),
+      name: z.string().describe("Label name, no # prefix (e.g. status, domain, topic, created)"),
+      value: z.string().optional().describe("New value — required unless remove=true"),
+      remove: z.boolean().optional().describe("Delete this label instead of setting it"),
+    },
+    async ({ noteId, name, value, remove }) => {
+      if (isContainer(b(), noteId))
+        return err("protected_note", `Note ${noteId} is a container — its labels cannot be edited directly.`);
+      if (name === "noteType")
+        return err("protected_label", "noteType defines a note's kind and is owned by remember()/bootstrap() — it cannot be edited directly.", "To change what a note represents, create it fresh with remember() under the right kind.");
+
+      const note = await trilium.getNote(noteId);
+
+      if (remove) {
+        const attr = note.attributes.find((a) => a.type === "label" && a.name === name);
+        if (!attr) return txt({ ok: true, noteId, name, action: "not_found" });
+        await trilium.deleteAttribute(attr.attributeId);
+        if (name !== "updated") await trilium.updateLabelValue(noteId, "updated", today()).catch(() => null);
+        return txt({ ok: true, noteId, name, action: "removed" });
+      }
+
+      if (value === undefined)
+        return err("missing_param", "label() requires value unless remove=true.", 'Add value="..." or set remove=true.');
+
+      if (name === "status" && !(Statuses as readonly string[]).includes(value))
+        return err("invalid_value", `"${value}" is not a valid status.`, `Use one of: ${Statuses.join(", ")}.`);
+
+      const finalValue = name === "domain" || name === "topic" ? slugify(value) : value;
+      await trilium.updateLabelValue(noteId, name, finalValue);
+      if (name !== "updated") await trilium.updateLabelValue(noteId, "updated", today()).catch(() => null);
+
+      return txt({ ok: true, noteId, name, value: finalValue, action: "set" });
+    }
+  );
+
   // ════════════════════════════════════════════════════════════════════════════
   // GRAPH
   // ════════════════════════════════════════════════════════════════════════════
@@ -1296,6 +1342,38 @@ calling twice is safe. Use remove=true to delete an edge.`,
           return txt(path ? { mode, found: true, hops: path.length - 1, path } : { mode, found: false });
         }
       }
+    }
+  );
+
+  server.tool(
+    "inspect",
+    `Read everything BrainLLM's tools track about a single note by id — every label (not just
+noteType/status) and every outbound relation, plus type/mime/parent/child ids and dates. The
+deep-dive counterpart to the surface reads and explore(): reach for it when you need the raw
+label set itself — confirming a fix landed, debugging drift — rather than a kind-specific
+summary. Read-only, safe on any note including structural containers.`,
+    { noteId: z.string().describe("Note to inspect") },
+    async ({ noteId }) => {
+      const note = await trilium.getNote(noteId);
+      const labels = note.attributes
+        .filter((a) => a.type === "label")
+        .map((a) => ({ name: a.name, value: a.value, ...(a.isInheritable ? { inheritable: true } : {}) }));
+      const relations = relationSnippet(note, 50);
+      return txt({
+        id: note.noteId,
+        title: note.title,
+        kind: labelOf(note, "noteType"),
+        type: note.type,
+        mime: note.mime,
+        status: labelOf(note, "status"),
+        ...(hasLabel(note, "archived") ? { archived: true } : {}),
+        created: note.dateCreated.slice(0, 10),
+        modified: note.dateModified.slice(0, 10),
+        labels,
+        ...(relations ? { relations } : {}),
+        parentNoteIds: note.parentNoteIds,
+        childNoteIds: note.childNoteIds,
+      });
     }
   );
 

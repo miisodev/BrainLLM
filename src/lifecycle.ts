@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — lifecycle engine (V6)
+// BrainLLM — lifecycle engine (V7)
 //
 // Provides: structural-note protection (containers vs. editable singletons),
 // the resolution content surgery for closing threads, the maintenance sweep
@@ -75,7 +75,7 @@ function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** The V6 maintenance sweep.
+/** The V7 maintenance sweep.
  *  Lite (auto, inside start/close): age stale threads + unlabeled-node check.
  *  Deep: stale-review, orphan/sink report, duplicate-title detection. */
 export async function sweep(

@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — runtime configuration (V6)
+// BrainLLM — runtime configuration (V7)
 //
 // IDs are stored in brainllm.json next to the bundle. On startup:
 //   load file → auto-discover from Trilium (via #brainLlmRoot) → empty (bootstrap).
 // bootstrap writes this file; no manual editing required.
 //
-// The config file schema is version 5 — unchanged in V6. V5 brainllm.json files
+// The config file schema is version 5 — unchanged since V6, including V7's additions (e.g. memory.metaThread). V5 brainllm.json files
 // load without any migration. Only version-5 configs load; anything older falls
 // through to discovery/bootstrap.
 // ─────────────────────────────────────────────────────────────────────────────
