@@ -398,3 +398,47 @@ export function sanitizeHtml(html: string): SanitizeResult {
 export function safeAppend(current: string, ...blocks: string[]): string {
   return [closeDangling(current.trimEnd()), ...blocks].filter(Boolean).join("\n");
 }
+
+/** Replace or append within a heading section (h2/h3/h4 tried in order, first
+ *  match wins). Appends as a new h2 section if the heading isn't found at any
+ *  level. The match tolerates attributes on the heading tag and surrounding/
+ *  case-different whitespace in the heading text (a plain string ===
+ *  '<h3>Heading</h3>' comparison silently missed either of those and fell
+ *  through to the append-new-section fallback — which is how a "replace"
+ *  could silently produce a duplicate heading instead of erroring). Reports
+ *  whether a match was found and how many same-text headings exist at the
+ *  matched level, so the caller can surface ambiguity instead of guessing.
+ *  Closes dangling open tags in `html` before slicing — prevents string
+ *  surgery from cutting inside an unclosed element. */
+export function setSection(
+  html: string,
+  heading: string,
+  content: string,
+  mode: "replace" | "append"
+): { html: string; matched: boolean; headingCount: number } {
+  html = closeDangling(html);
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const level of [2, 3, 4]) {
+    const tag = `h${level}`;
+    const openRe = new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*${escaped}\\s*</${tag}>`, "i");
+    const match = openRe.exec(html);
+    if (!match) continue;
+
+    const headingCount = html.split(openRe).length - 1;
+    const after = match.index + match[0].length;
+    const nextMatch = html.slice(after).search(new RegExp(`<h[2-${level}]`));
+    const end = nextMatch === -1 ? html.length : after + nextMatch;
+    const existing = html.slice(after, end).trim();
+    const inner = mode === "append" && existing ? `${existing}\n${content}` : content;
+    return {
+      html: `${html.slice(0, after)}\n${inner}\n${html.slice(end)}`,
+      matched: true,
+      headingCount,
+    };
+  }
+  return {
+    html: `${html}\n<h2>${heading}</h2>\n${content}`,
+    matched: false,
+    headingCount: 0,
+  };
+}

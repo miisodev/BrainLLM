@@ -33,6 +33,7 @@ import {
   sanitizeHtml,
   safeAppend,
   closeDangling,
+  setSection,
 } from "./normalize.js";
 import { contentFor, RESOLUTION_ANCHOR, metaThreadContent } from "./templates.js";
 import {
@@ -80,27 +81,6 @@ function insertBeforeResolution(html: string, section: string): string {
   const idx = html.indexOf(RESOLUTION_ANCHOR);
   if (idx >= 0) return html.slice(0, idx) + section + "\n" + html.slice(idx);
   return html + "\n" + section;
-}
-
-/** Replace or append within a heading section (h2/h3/h4 tried in order).
- *  Appends as a new h2 section if the heading is not found at any level.
- *  Closes dangling open tags in `html` before slicing — prevents string surgery
- *  from cutting inside an unclosed element. */
-function setSection(html: string, heading: string, content: string, mode: "replace" | "append"): string {
-  html = closeDangling(html);
-  for (const level of [2, 3, 4]) {
-    const tag = `h${level}`;
-    const open = `<${tag}>${heading}</${tag}>`;
-    const start = html.indexOf(open);
-    if (start === -1) continue;
-    const after = start + open.length;
-    const nextMatch = html.slice(after).search(new RegExp(`<h[2-${level}]>`));
-    const end = nextMatch === -1 ? html.length : after + nextMatch;
-    const existing = html.slice(after, end).trim();
-    const inner = mode === "append" && existing ? `${existing}\n${content}` : content;
-    return `${html.slice(0, after)}\n${inner}\n${html.slice(end)}`;
-  }
-  return `${html}\n<h2>${heading}</h2>\n${content}`;
 }
 
 async function ensureArchivedFlag(trilium: TriliumClient, note: Note): Promise<void> {
@@ -1057,7 +1037,13 @@ Use recall() for keyword or full-text search instead.`,
     "revise",
     `Update an existing note by id. Append a dated addendum (default), replace the body
 (mode=replace), or edit a heading section in place (pass section — targets h2/h3/h4 in that
-order; appends as h2 if not found). A revision snapshot is always taken first. Also logs thread progress.`,
+order, tolerant of attributes/whitespace/case on the heading; appends a new h2 if not found).
+A revision snapshot is always taken first. Also logs thread progress.
+
+When section is used, the return includes matched (false if no existing heading was found —
+the content was appended as a new h2 instead) and headingCount (>1 means several headings
+shared that text and only the first was touched) — check these rather than assuming the target
+was hit; a mismatched heading string silently produces a duplicate otherwise.`,
     {
       noteId: z.string().describe("Note to update"),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML"),
@@ -1072,6 +1058,7 @@ order; appends as h2 if not found). A revision snapshot is always taken first. A
       const d = date ?? today();
       const note = await trilium.getNote(noteId);
       const warnings: string[] = [];
+      let sectionResult: { matched: boolean; headingCount: number } | null = null;
 
       if (body) {
         const sanitized = sanitizeHtml(toHtml(body));
@@ -1080,7 +1067,9 @@ order; appends as h2 if not found). A revision snapshot is always taken first. A
         const current = await trilium.getNoteContent(noteId).catch(() => "");
         if (section) {
           await trilium.createRevision(noteId).catch(() => null);
-          await trilium.updateNoteContent(noteId, setSection(current, section, html, mode === "append" ? "append" : "replace"));
+          const result = setSection(current, section, html, mode === "append" ? "append" : "replace");
+          await trilium.updateNoteContent(noteId, result.html);
+          sectionResult = { matched: result.matched, headingCount: result.headingCount };
         } else if (mode === "replace") {
           await trilium.createRevision(noteId).catch(() => null);
           await trilium.updateNoteContent(noteId, html);
@@ -1098,7 +1087,23 @@ order; appends as h2 if not found). A revision snapshot is always taken first. A
       if (labelOf(note, "status") === "dormant") await trilium.updateLabelValue(noteId, "status", "active");
 
       const relations = relationSnippet(note);
-      return txt({ ok: true, noteId, mode: body ? (section ? `section:${section}` : (mode ?? "append")) : "metadata-only", date: d, ...(relations ? { relations } : {}), ...(warnings.length ? { sanitized: warnings } : {}) });
+      const sectionHint = !sectionResult
+        ? undefined
+        : !sectionResult.matched
+        ? `No existing "${section}" heading found at h2/h3/h4 — appended a new h2 section instead of replacing anything.`
+        : sectionResult.headingCount > 1
+        ? `${sectionResult.headingCount} headings matched "${section}" — only the first was ${mode === "append" ? "appended to" : "replaced"}.`
+        : undefined;
+      return txt({
+        ok: true,
+        noteId,
+        mode: body ? (section ? `section:${section}` : (mode ?? "append")) : "metadata-only",
+        date: d,
+        ...(sectionResult ? { matched: sectionResult.matched, headingCount: sectionResult.headingCount } : {}),
+        ...(sectionHint ? { hint: sectionHint } : {}),
+        ...(relations ? { relations } : {}),
+        ...(warnings.length ? { sanitized: warnings } : {}),
+      });
     }
   );
 

@@ -10,6 +10,7 @@ import {
   toText,
   queryTokens,
   looksLikeHtml,
+  setSection,
 } from "./normalize.js";
 
 describe("decodeEntities", () => {
@@ -133,5 +134,64 @@ describe("looksLikeHtml", () => {
   test("detects tags", () => {
     expect(looksLikeHtml("<p>x</p>")).toBe(true);
     expect(looksLikeHtml("a < b")).toBe(false);
+  });
+});
+
+describe("setSection", () => {
+  const doc = "<h3>Operating</h3><p>old 1</p><p>old 2</p><h3>Self-correction</h3><p>other</p>";
+
+  test("replaces an h3 section in place, leaving the heading and later sections intact", () => {
+    const r = setSection(doc, "Operating", "<p>new</p>", "replace");
+    expect(r.matched).toBe(true);
+    expect(r.headingCount).toBe(1);
+    expect(r.html).toContain("<h3>Operating</h3>");
+    expect(r.html).toContain("<p>new</p>");
+    expect(r.html).not.toContain("old 1");
+    expect(r.html).toContain("<h3>Self-correction</h3>");
+    expect(r.html).toContain("<p>other</p>");
+    // Exactly one "Operating" heading — not duplicated.
+    expect(r.html.match(/Operating/g)).toHaveLength(1);
+  });
+
+  test("matches a heading carrying attributes on the tag — the literal bug report", () => {
+    // Trilium/CKEditor can emit e.g. <h3 dir="auto">Operating</h3>; a plain
+    // '<h3>Operating</h3>' string match misses this and used to silently
+    // fall through to appending a brand-new duplicate heading.
+    const withAttrs = doc.replace("<h3>Operating</h3>", '<h3 dir="auto">Operating</h3>');
+    const r = setSection(withAttrs, "Operating", "<p>new</p>", "replace");
+    expect(r.matched).toBe(true);
+    expect(r.html.match(/Operating/g)).toHaveLength(1);
+  });
+
+  test("matches case-insensitively and tolerates surrounding whitespace", () => {
+    const messy = doc.replace("<h3>Operating</h3>", "<h3> operating </h3>");
+    const r = setSection(messy, "Operating", "<p>new</p>", "replace");
+    expect(r.matched).toBe(true);
+    expect(r.html).toContain("<p>new</p>");
+  });
+
+  test("flags ambiguity when multiple headings share the same text", () => {
+    const dup = doc + "<h3>Operating</h3><p>old 3</p>";
+    const r = setSection(dup, "Operating", "<p>new</p>", "replace");
+    expect(r.matched).toBe(true);
+    expect(r.headingCount).toBe(2);
+  });
+
+  test("reports matched:false and appends a new h2 when no heading is found at any level", () => {
+    const r = setSection(doc, "Nonexistent Section", "<p>new</p>", "replace");
+    expect(r.matched).toBe(false);
+    expect(r.headingCount).toBe(0);
+    expect(r.html).toContain("<h2>Nonexistent Section</h2>");
+    expect(r.html).toContain("<p>new</p>");
+    // Original content is untouched, not duplicated under the fallback heading.
+    expect(r.html).toContain("<h3>Operating</h3>");
+    expect(r.html.match(/Operating/g)).toHaveLength(1);
+  });
+
+  test("append mode preserves existing content under the section instead of discarding it", () => {
+    const r = setSection(doc, "Operating", "<p>added</p>", "append");
+    expect(r.matched).toBe(true);
+    expect(r.html).toContain("old 1");
+    expect(r.html).toContain("<p>added</p>");
   });
 });

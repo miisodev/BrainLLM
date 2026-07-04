@@ -167,9 +167,11 @@ All append operations are retry-safe — if the last block already carries the s
 `revise(noteId, body?, title?, section?, mode?)`:
 - default — append a dated addendum (right for threads, knowledge notes, information notes, and any note that is a record — new detail accumulates alongside the existing body);
 - `mode=replace` — rewrite the body;
-- `section="Overview"` — edit one heading section in place (tries h2 → h3 → h4; appends as h2 if absent). The efficient path for a singleton: read it, then revise the one section.
+- `section="Overview"` — edit one heading section in place (tries h2 → h3 → h4, matched case- and whitespace-insensitively, tolerant of attributes on the heading tag; appends as a new h2 if absent). The efficient path for a singleton: read it, then revise the one section.
 
 A revision snapshot is always taken first. Containers are refused; the maintained singletons are editable.
+
+**Check `matched` and `headingCount` on a section call — don't assume the target was hit.** `matched: false` means no existing heading matched `section` at any level and the content was appended as a brand-new h2 instead of replacing anything — a mismatched heading string silently produces a duplicate section otherwise. `headingCount > 1` means several headings shared that text and only the first was touched. Both come back with a `hint` explaining what happened; read it before assuming the edit landed where intended.
 
 **Merge rule — Master, LLM singletons, and Knowledge notes (including every per-domain Sources note and information note) should be clean structured documents, not stacks of timestamped addendum markers.** When folding new content into a singleton or knowledge note, use `section=` or `mode=replace` — absorb it into the body. This applies even when the new content is itself well-formatted — a clean addendum block is still an addendum block, and a domain note that's accumulated several of them is no longer current-state truth, it's a version history wearing one note's title. Dated addendum append is the right mode only for sessions, diary entries, and logs, where the chronological record itself has value — domain information and sources notes are never in that category, no matter how recurring the finding.
 
@@ -219,7 +221,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `diary(body, date?)` | Write/append to today's [yyyy-mm-dd] diary (stub created by start; same-day calls add a timestamped addendum). |
 | `recall(query, …)` | BrainLLM-wide ranked search. `orderBy` / `orderDirection` for temporal ordering; `fastSearch` for title/label-only (faster). |
 | `<surface>` / `<surface>_recall` | Read a surface in full / skim it (master, llm, memory, knowledge, insights). |
-| `revise(noteId, …)` | Append / replace / section-edit a note (h2/h3/h4); snapshot taken on content writes (not metadata-only). |
+| `revise(noteId, …)` | Append / replace / section-edit a note (h2/h3/h4, attribute/case/whitespace-tolerant match); snapshot taken on content writes (not metadata-only). Section calls return `matched`/`headingCount` — check them. |
 | `resolve(noteId, outcome, …)` | Close a thread: outcome + terminal status + archive-in-place. |
 | `reopen(noteId, reason?, …)` | Re-activate an archived/resolved thread (thread kind only — use recover() for other note kinds). |
 | `recover(noteId, reason?, …)` | Restore any archived or resolved note: removes #archived, clears #closed, resets status. The canonical undo for forget(). |
