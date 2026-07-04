@@ -8,7 +8,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { TriliumClient } from "./trilium.js";
+import { TriliumClient, relationSnippet, type RelationEdge } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { toText } from "./normalize.js";
 
@@ -23,27 +23,29 @@ export function registerMasterTools(server: McpServer, trilium: TriliumClient, b
 
   server.tool(
     "master",
-    "Read a Master singleton in full: biography, goals, or preferences. Returns its id and content.",
+    "Read a Master singleton in full: biography, goals, or preferences. Returns its id, content, and relation snippet.",
     { which: z.enum(AREAS) },
     async ({ which }) => {
       const id = b().master[which];
       if (!id) throw new Error("BrainLLM not bootstrapped — run bootstrap.");
-      const content = await trilium.getNoteContent(id).catch(() => "");
-      return txt({ which, id, content });
+      const [note, content] = await Promise.all([trilium.getNote(id), trilium.getNoteContent(id).catch(() => "")]);
+      const relations = relationSnippet(note);
+      return txt({ which, id, content, ...(relations ? { relations } : {}) });
     }
   );
 
   server.tool(
     "master_recall",
-    "Skim all three Master singletons — the opening lines of biography, goals, and preferences (with ids).",
+    "Skim all three Master singletons — the opening lines of biography, goals, and preferences (with ids and relation snippets).",
     {},
     async () => {
-      const out: Record<string, { id: string; preview: string }> = {};
+      const out: Record<string, { id: string; preview: string; relations?: RelationEdge[] }> = {};
       for (const which of AREAS) {
         const id = b().master[which];
         if (!id) continue;
-        const content = await trilium.getNoteContent(id).catch(() => "");
-        out[which] = { id, preview: toText(content, 200) };
+        const [note, content] = await Promise.all([trilium.getNote(id).catch(() => null), trilium.getNoteContent(id).catch(() => "")]);
+        const relations = note ? relationSnippet(note) : undefined;
+        out[which] = { id, preview: toText(content, 200), ...(relations ? { relations } : {}) };
       }
       return txt(out);
     }

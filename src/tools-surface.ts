@@ -6,7 +6,7 @@
 // universal tools (remember / revise / resolve / forget / connect).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { TriliumClient, type Note } from "./trilium.js";
+import { TriliumClient, type Note, relationSnippet, type RelationEdge } from "./trilium.js";
 import { toText } from "./normalize.js";
 
 export const txt = (obj: unknown) => ({
@@ -23,6 +23,7 @@ export interface Stub {
   status?: string;
   updated: string;
   preview: string;
+  relations?: RelationEdge[];
 }
 
 /** Skim a surface subtree → compact stubs with previews, newest first. */
@@ -48,19 +49,32 @@ export async function skim(
   return Promise.all(
     res.results.slice(0, limit).map(async (n) => {
       const content = await trilium.getNoteContent(n.noteId).catch(() => "");
-      return { id: n.noteId, title: n.title, kind: labelOf(n, "noteType"), status: labelOf(n, "status") ?? undefined, updated: n.dateModified.slice(0, 10), preview: toText(content, 160) };
+      const relations = relationSnippet(n);
+      return {
+        id: n.noteId, title: n.title, kind: labelOf(n, "noteType"), status: labelOf(n, "status") ?? undefined,
+        updated: n.dateModified.slice(0, 10), preview: toText(content, 160), ...(relations ? { relations } : {}),
+      };
     })
   );
 }
 
-/** Read a note in full (id + title + kind + content). */
-export async function readFull(trilium: TriliumClient, id: string): Promise<{ id: string; title: string; kind?: string; content: string }> {
+/** Read a note in full (id + title + kind + content + relation snippet). */
+export async function readFull(trilium: TriliumClient, id: string): Promise<{ id: string; title: string; kind?: string; content: string; relations?: RelationEdge[] }> {
   const [note, content] = await Promise.all([trilium.getNote(id), trilium.getNoteContent(id).catch(() => "")]);
-  return { id, title: note.title, kind: labelOf(note, "noteType"), content };
+  const relations = relationSnippet(note);
+  return { id, title: note.title, kind: labelOf(note, "noteType"), content, ...(relations ? { relations } : {}) };
 }
 
 /** A short text preview of a note by id. */
 export async function preview(trilium: TriliumClient, id: string, len = 200): Promise<string> {
   const content = await trilium.getNoteContent(id).catch(() => "");
   return toText(content, len);
+}
+
+/** A short text preview plus relation snippet — for singleton reads that want
+ *  both without paying for the full content body (see readFull). */
+export async function previewWithRelations(trilium: TriliumClient, id: string, len = 200): Promise<{ preview: string; relations?: RelationEdge[] }> {
+  const [note, content] = await Promise.all([trilium.getNote(id).catch(() => null), trilium.getNoteContent(id).catch(() => "")]);
+  const relations = note ? relationSnippet(note) : undefined;
+  return { preview: toText(content, len), ...(relations ? { relations } : {}) };
 }

@@ -38,16 +38,19 @@ SESSION END     session()               ← mandatory pre-close; fetches singlet
                 diary(body)              ← update today's diary entry (optional)
                 addendum()               ← find and merge any pending addendum blocks
                 maintain()               ← audit and fix brain hygiene
+                remarks()                ← self-analyze your BrainLLM usage this session; revise() the BrainLLM thread
                 close(summary, title?)  ← commit the session log (mandatory, once, last)
 PERIODIC        maintain(deep=true)      ← when start flags items, or ~weekly
 ANYTIME         brain()                  ← surface the full content tree (all areas, sub-containers)
 ```
 
-`start()` runs maintenance, creates today's diary and session stubs if they don't exist yet, then returns: **today + weekday**, the full **Master digest** (biography / goals / preferences — all in full), the full **LLM digest** (responsibilities / protocols in full, plus today's diary note with its ID in the `llm` array as `{slot:"diary", id, preview}`), **this session's note** as `{id, preview}`, **activeThreads** (with idle ages), **dormantThreads** for review, and the **lastSession** summary. Don't re-derive any of this with extra calls.
+`start()` runs maintenance, creates today's diary and session stubs if they don't exist yet, ensures the standing **BrainLLM thread** exists (see below), then returns: **today + weekday**, the full **Master digest** (biography / goals / preferences — all in full), the full **LLM digest** (responsibilities / protocols in full, plus today's diary note with its ID in the `llm` array as `{slot:"diary", id, preview}`), **this session's note** as `{id, preview}`, the **metaThread** as `{id, title, preview}`, **activeThreads** (with idle ages — the BrainLLM thread appears here too, status `eternal`), **dormantThreads** for review, and the **lastSession** summary. Don't re-derive any of this with extra calls.
 
-`session()` is the mandatory pre-close step — call it before `close()` when the session is wrapping. It fetches the **master singletons** (biography/goals/preferences) and **LLM singletons** (responsibilities/protocols) each in full with `{id, lastModified, content}`, today's **diary entry** with its id, and runs the **lightweight maintenance sweep**. Returns a `next[]` array that drives the full end-of-session protocol: update master singletons → update LLM singletons → `diary()` (optional) → `addendum()` → `maintain()` → `close()`. The goal is to evolve the singletons from this session's observations *before* the log is committed — ensuring logs are factual and singletons stay current. Idempotent: all reads are safe to repeat.
+`session()` is the mandatory pre-close step — call it before `close()` when the session is wrapping. It fetches the **master singletons** (biography/goals/preferences) and **LLM singletons** (responsibilities/protocols) each in full with `{id, lastModified, content}`, today's **diary entry** with its id, and runs the **lightweight maintenance sweep**. Returns a `next[]` array that drives the full end-of-session protocol: update master singletons → update LLM singletons → `diary()` (optional) → `addendum()` → `maintain()` → `remarks()` → `close()`. The goal is to evolve the singletons from this session's observations *before* the log is committed — ensuring logs are factual and singletons stay current. Idempotent: all reads are safe to repeat.
 
-`close(summary, title?, learned?, ...)` commits the session log — call it **once, last**, after completing the `session()` protocol. Idempotent per date — a second call the same day appends an addendum. The session note title is always `[yyyy-mm-dd]`; the `title` param appears as an `<h2>` heading above Summary in the body. Triggers a DB backup, generates the daily log, and links session↔log with `~references`. Returns `{action, noteId, date, backup, log}`.
+`remarks()` is the last step before `close()` — it returns the BrainLLM thread (id + preview + relations) and a checklist for honestly assessing your own use of BrainLLM this session (difficulties, tools that could've served better, tools to add or prune, description quality, and whether the whole system feels like the best possible LLM-equivalent of a human brain). It doesn't write anything itself — fold your findings into the thread's matching section with `revise(noteId, section=..., mode="append")`, then call `close()`.
+
+`close(summary, title?, learned?, ...)` commits the session log — call it **once, last**, after completing the `session()` protocol (including `remarks()`). Idempotent per date — a second call the same day appends an addendum. The session note title is always `[yyyy-mm-dd]`; the `title` param appears as an `<h2>` heading above Summary in the body. Triggers a DB backup, generates the daily log, and links session↔log with `~references`. Returns `{action, noteId, date, backup, log}`.
 
 **Write during the session, not at the end.** A fact remembered mid-conversation survives a crash; one you planned to write at the end does not.
 
@@ -67,6 +70,8 @@ BrainLLM
 Placement is server policy — there is no parent parameter. You choose the **kind**; the server routes it.
 
 **One-per-day notes:** diary, session, and log notes are each one per day, titled `[yyyy-mm-dd]`. `start()` creates today's diary and session stubs. `close()` fills the session stub with real content (or appends an addendum on a second call). Log notes are generated by `close()` and append an addendum if close is called again the same day.
+
+**The BrainLLM thread.** One standing note titled "BrainLLM" lives in Memory → Threads, carrying `status=eternal` instead of `active`/`dormant`/`resolved` — it never ages through the sweep and is structurally protected like a singleton (`resolve()`, `reopen()`, and `forget()` all refuse it with a specific explanation; `revise()` still works). `start()` surfaces it every session as `metaThread`; `remarks()` is the dedicated tool for updating it. Its fixed sections — Capabilities, Issues & Bugs, Usability, Memory Efficiency, Token Efficiency, Performance, Hygiene & Maintenance, Roadmap — Native Memory/Brain System — hold current-state findings about BrainLLM itself, maintained the same way as the Master/LLM singletons (`revise(section=..., mode="append")` per topic, not a stacked log). It exists so BrainLLM's own development — bugs, usability friction, missing or redundant tools, and progress toward being the best native memory system for LLMs — is tracked continuously across sessions instead of scattered across diaries no one revisits.
 
 ---
 
@@ -110,7 +115,7 @@ An unsourced domain note corrupts the brain. If all source candidates are reject
 
 ## Reading — surface tools (dual-mode) + recall
 
-Each surface has two read tools: `<surface>` reads in full, `<surface>_recall` skims/searches within it.
+Each surface has two read tools: `<surface>` reads in full, `<surface>_recall` skims/searches within it. Every core read, write, and search tool — the surfaces, `recall`, `domain`, `brain`, `remember`, `revise`, `resolve`, `reopen`, `recover`, `forget`, `addendum` — includes a `relations` snippet (outbound `{relation, toNoteId}` edges, capped and omitted when empty) alongside whatever else it returns, at no extra cost since the attributes are already loaded. Use `explore()` when you need target titles or a deeper traversal; the snippet is a free teaser, not a substitute.
 
 | Tool | Reads |
 |---|---|
@@ -190,7 +195,7 @@ Pick the most specific verb that's true; `relatesTo` is the last resort. `worksW
 
 ## Lifecycle & Maintenance
 
-Threads age: **active → dormant** (untouched past the policy window) **→ archived in place**. Degradation demotes, never deletes — archived notes keep their content and are retrievable with `includeArchived=true`. Singletons are maintained (they don't age); sessions, diary, and logs are records (one per day, not aged).
+Threads age: **active → dormant** (untouched past the policy window) **→ archived in place**. Degradation demotes, never deletes — archived notes keep their content and are retrievable with `includeArchived=true`. Singletons are maintained (they don't age); sessions, diary, and logs are records (one per day, not aged). The BrainLLM thread (`status=eternal`) is exempt from this whole timeline by design — it's meant to stay open indefinitely, not to be treated like ordinary multi-session work.
 
 `maintain()` lite runs automatically inside `start`/`close` and does two things: ages threads (active → dormant → archived) and checks every typed container (Threads, Sessions, Diary, Logs) for direct children missing their expected `#noteType` label (archived notes are skipped). `maintain(deep=true)` adds three more passes: **stale-review** (notes untouched past `staleAfterDays`), **orphan/sink report** (knowledge notes with no outbound relations — orphan = isolated, sink = has inbound but no outbound), and **duplicate-title detection** (all six flat containers — Sessions, Diary, Logs, Threads, Knowledge/Master, Knowledge/Domains — plus within-domain for information and sources; same title across different domains is not flagged). Act on `flagged`: `connect()` orphans/sinks, `revise()`/`resolve()` stale items, `forget()` duplicate extras. `dryRun=true` previews without writing. The report always includes `policy` (the active thresholds). Timings live in `brainllm.json → policy` — never hardcode them.
 
@@ -202,9 +207,10 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 
 | Tool | One-liner |
 |---|---|
-| `start()` | Orient: full master (bio/goals/prefs) + full LLM (responsibilities/protocols) + diary id + session id + active/dormant threads + last session + changesSinceLastSession. Creates today's diary + session stubs. Once, first. |
-| `session(date?)` | Mandatory pre-close step. Fetches master and LLM singletons in full with `{id, lastModified, content}`, today's diary entry, and runs the lite maintenance sweep. Returns `next[]` driving the full end-of-session protocol. Call before `close()`; idempotent. |
-| `close(summary, title?, learned?, …)` | Commit the session log ([yyyy-mm-dd] note, title param above Summary) + backup + daily log. Returns `{action, noteId, date, backup, log}`. Requires `session()` first. Once, last. |
+| `start()` | Orient: full master (bio/goals/prefs) + full LLM (responsibilities/protocols) + diary id + session id + the BrainLLM meta-thread (id + preview) + active/dormant threads + last session + changesSinceLastSession. Creates today's diary + session stubs and ensures the meta-thread exists. Once, first. |
+| `session(date?)` | Mandatory pre-close step. Fetches master and LLM singletons in full with `{id, lastModified, content}`, today's diary entry, and runs the lite maintenance sweep. Returns `next[]` driving the full end-of-session protocol, ending in `remarks()` → `close()`. Call before `close()`; idempotent. |
+| `remarks()` | Pre-close self-analysis, called last before `close()`. Returns the BrainLLM thread (id/preview/relations) and a 6-point checklist for assessing your own BrainLLM usage this session. Writes nothing itself — `revise()` the thread with findings, then `close()`. |
+| `close(summary, title?, learned?, …)` | Commit the session log ([yyyy-mm-dd] note, title param above Summary) + backup + daily log. Returns `{action, noteId, date, backup, log}`. Requires `session()` (and `remarks()`) first. Once, last. |
 | `brain(includeArchived?)` | Full content tree: every typed note across all five areas, grouped. |
 | `bootstrap()` | Initialize the structure if uninitialized, or verify and refresh config if it already exists. Only creates a new tree when the stored root note is confirmed deleted in Trilium (404). Any other error (network, auth, timeout) is surfaced rather than silently creating a duplicate tree. |
 | `remember(kind, …)` | Write a note — routed, formatted, deduped server-side. Rejects diary/session/log/domain — each has a dedicated path. |

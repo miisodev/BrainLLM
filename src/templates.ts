@@ -81,6 +81,28 @@ export function contentFor(kind: AnyKind, o: TemplateOpts): string {
   }
 }
 
+// The BrainLLM meta-thread — a standing, lifecycle-exempt (status=eternal)
+// thread for continuous self-analysis of BrainLLM itself. Unlike ordinary
+// threads it carries no Resolution anchor: it isn't meant to close, and
+// structural protection (see lifecycle.ts) blocks resolve()/reopen()/forget()
+// from touching it. Sections are fixed so findings accumulate by topic
+// (via revise(section=...)) instead of piling up as a dated log.
+export function metaThreadContent(date: string): string {
+  return [
+    metaLine(["thread", "eternal — exempt from lifecycle aging", `opened ${date}`]),
+    "<p><em>Standing, permanently-open thread for analyzing and building BrainLLM itself — updated every session via the remarks() pre-close protocol. Tracks capabilities, issues/bugs, usability, memory efficiency, token efficiency, performance, and hygiene/maintenance, in service of building BrainLLM into the best possible native memory/brain system for LLMs.</em></p>",
+    "<h2>Capabilities</h2>\n<p></p>",
+    "<h2>Issues &amp; Bugs</h2>\n<p></p>",
+    "<h2>Usability</h2>\n<p></p>",
+    "<h2>Memory Efficiency</h2>\n<p></p>",
+    "<h2>Token Efficiency</h2>\n<p></p>",
+    "<h2>Performance</h2>\n<p></p>",
+    "<h2>Hygiene &amp; Maintenance</h2>\n<p></p>",
+    "<h2>Roadmap — Native Memory/Brain System</h2>\n<p></p>",
+    `<h2>Log</h2>\n<h3>${escapeHtml(date)}</h3>\n<p>Thread opened.</p>`,
+  ].join("\n");
+}
+
 export function domainContent(name: string): string {
   return `<p><em>Knowledge domain: <strong>${escapeHtml(name)}</strong> — information notes and a sources note live in this book.</em></p>`;
 }

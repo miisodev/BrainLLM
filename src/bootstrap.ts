@@ -13,7 +13,7 @@
 import { TriliumClient } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { DEFAULT_POLICY, type AnyKind } from "./types.js";
-import { purposeContent, contentFor, STRUCTURED_SINGLETONS } from "./templates.js";
+import { purposeContent, contentFor, metaThreadContent, STRUCTURED_SINGLETONS } from "./templates.js";
 
 export async function createBrainLLMStructure(trilium: TriliumClient): Promise<BrainLLMConfig> {
   const d = new Date().toISOString().slice(0, 10);
@@ -70,6 +70,17 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
     book(memoryRoot, "Threads", "A collection of maintained thread notes, each tracking a line of multi-session running work.", "bx bx-git-branch"),
   ]);
 
+  // The BrainLLM meta-thread — standing, status=eternal, exempt from the
+  // active → dormant → archived aging timeline (see lifecycle.ts). Continuous
+  // self-analysis of BrainLLM itself, maintained every session via remarks().
+  const metaThreadNote = await trilium.createNote(threads, "BrainLLM", metaThreadContent(d), "text");
+  const metaThread = metaThreadNote.note.noteId;
+  await Promise.all([
+    trilium.addLabel(metaThread, "noteType", "thread"),
+    trilium.addLabel(metaThread, "status", "eternal"),
+    trilium.addLabel(metaThread, "created", d),
+  ]);
+
   // ── Knowledge ───────────────────────────────────────────────────────────────
   const knowledgeRoot = await book(rootId, "Knowledge", "The secondary memory system — learned knowledge that adds to or conflicts with the assistant's training data, about the master/user and across domains.", "bx bx-library");
   const [knowledgeMaster, domains] = await Promise.all([
@@ -86,7 +97,7 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
     root: rootId,
     master:    { root: masterRoot, biography, goals, preferences },
     llm:       { root: llmRoot, responsibilities, protocols, diary },
-    memory:    { root: memoryRoot, sessions, threads },
+    memory:    { root: memoryRoot, sessions, threads, metaThread },
     knowledge: { root: knowledgeRoot, master: knowledgeMaster, domains },
     insights:  { root: insightsRoot, logs },
     policy: { ...DEFAULT_POLICY },

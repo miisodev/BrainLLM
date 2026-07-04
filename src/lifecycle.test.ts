@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyResolution, isContainer } from "./lifecycle.js";
+import { applyResolution, isContainer, isStructural } from "./lifecycle.js";
 import { labelPlan } from "./router.js";
 import { RESOLUTION_ANCHOR } from "./templates.js";
 import { ownedLabel, type Note, type Attribute } from "./trilium.js";
@@ -108,5 +108,17 @@ describe("isContainer — revise() protection", () => {
   test("returns true for a structural container (revise should be refused)", () => {
     const cfg = { ...EMPTY_BRAINLLM, memory: { ...EMPTY_BRAINLLM.memory, threads: "THREADS_CONTAINER" } };
     expect(isContainer(cfg, "THREADS_CONTAINER")).toBe(true);
+  });
+});
+
+describe("BrainLLM meta-thread — structural but editable, like a singleton", () => {
+  const cfg = { ...EMPTY_BRAINLLM, memory: { ...EMPTY_BRAINLLM.memory, metaThread: "META_THREAD_001" } };
+
+  test("is structural (forget/resolve/reopen/recover all refuse it)", () => {
+    expect(isStructural(cfg, "META_THREAD_001")).toBe(true);
+  });
+
+  test("is not a container (revise still works on it, like the singletons)", () => {
+    expect(isContainer(cfg, "META_THREAD_001")).toBe(false);
   });
 });

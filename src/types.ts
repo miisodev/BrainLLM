@@ -72,7 +72,9 @@ export const DatedKinds: readonly Kind[] = ["diary", "session", "log"];
 // Lifecycle state. The V5 aging/maintenance model is authored in the templates
 // and interconnection phases; the vocabulary is fixed here.
 
-export const Statuses = ["active", "resolved", "superseded", "dormant"] as const;
+// "eternal" marks the one standing thread (BrainLLM's own self-analysis thread)
+// that is exempt from the active → dormant → archived aging timeline.
+export const Statuses = ["active", "resolved", "superseded", "dormant", "eternal"] as const;
 export type Status = (typeof Statuses)[number];
 
 // ── Relations ─────────────────────────────────────────────────────────────────

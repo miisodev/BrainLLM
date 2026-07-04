@@ -130,6 +130,25 @@ export function ownedLabel(note: Note, name: string): string | undefined {
   )?.value;
 }
 
+export interface RelationEdge {
+  relation: string;
+  toNoteId: string;
+}
+
+/** Compact outbound-relation snippet for a note — zero extra fetches, since
+ *  `note.attributes` is already populated on every Note returned by search or
+ *  get. Excludes Trilium's internal ~template relation and caps to `max` so a
+ *  heavily-connected note doesn't bloat a tool return. Returns undefined (not
+ *  an empty array) when there's nothing to show, so callers can spread it in
+ *  conditionally. */
+export function relationSnippet(note: Note, max = 8): RelationEdge[] | undefined {
+  const rels = note.attributes
+    .filter((a) => a.type === "relation" && a.name !== "template")
+    .slice(0, max)
+    .map((a) => ({ relation: a.name, toNoteId: a.value }));
+  return rels.length ? rels : undefined;
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 import { RelationTypes } from "./types.js";

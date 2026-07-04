@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { TriliumClient } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
-import { txt, skim, readFull, preview } from "./tools-surface.js";
+import { txt, skim, readFull, previewWithRelations } from "./tools-surface.js";
 
 export function registerLlmTools(server: McpServer, trilium: TriliumClient, brainRef: { config: BrainLLMConfig }): void {
   const b = () => brainRef.config;
@@ -30,18 +30,18 @@ export function registerLlmTools(server: McpServer, trilium: TriliumClient, brai
 
   server.tool(
     "llm_recall",
-    "Skim the LLM surface: responsibilities & protocols opening lines, plus recent diary entries.",
+    "Skim the LLM surface: responsibilities & protocols opening lines (with relation snippets), plus recent diary entries.",
     { limit: z.number().optional() },
     async ({ limit }) => {
       const cfg = b();
-      const [respPreview, protPreview, diary] = await Promise.all([
-        preview(trilium, cfg.llm.responsibilities),
-        preview(trilium, cfg.llm.protocols),
+      const [resp, prot, diary] = await Promise.all([
+        previewWithRelations(trilium, cfg.llm.responsibilities),
+        previewWithRelations(trilium, cfg.llm.protocols),
         skim(trilium, cfg.llm.diary, { kind: "diary", limit: limit ?? 7 }),
       ]);
       return txt({
-        responsibilities: { id: cfg.llm.responsibilities, preview: respPreview },
-        protocols: { id: cfg.llm.protocols, preview: protPreview },
+        responsibilities: { id: cfg.llm.responsibilities, ...resp },
+        protocols: { id: cfg.llm.protocols, ...prot },
         diary,
       });
     }

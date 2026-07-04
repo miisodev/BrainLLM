@@ -22,7 +22,10 @@ export interface BrainLLMConfig {
   root: string;
   master:    { root: string; biography: string; goals: string; preferences: string };
   llm:       { root: string; responsibilities: string; protocols: string; diary: string };
-  memory:    { root: string; sessions: string; threads: string };
+  // metaThread: the standing, lifecycle-exempt "BrainLLM" self-analysis thread
+  // (status=eternal) under Threads. "" until ensureMetaThread() lazily creates
+  // or discovers it — safe to be empty on configs saved before this field existed.
+  memory:    { root: string; sessions: string; threads: string; metaThread: string };
   knowledge: { root: string; master: string; domains: string };
   insights:  { root: string; logs: string };
   policy: LifecyclePolicy;
@@ -33,7 +36,7 @@ export const EMPTY_BRAINLLM: BrainLLMConfig = {
   root: "",
   master:    { root: "", biography: "", goals: "", preferences: "" },
   llm:       { root: "", responsibilities: "", protocols: "", diary: "" },
-  memory:    { root: "", sessions: "", threads: "" },
+  memory:    { root: "", sessions: "", threads: "", metaThread: "" },
   knowledge: { root: "", master: "", domains: "" },
   insights:  { root: "", logs: "" },
   policy:    { ...DEFAULT_POLICY },
@@ -60,6 +63,7 @@ export function loadConfig(): BrainLLMConfig | null {
     if (typeof parsed?.root === "string" && parsed?.version === 5) {
       return {
         ...parsed,
+        memory: { metaThread: "", ...(parsed.memory ?? {}) },
         policy: { ...DEFAULT_POLICY, ...(parsed.policy ?? {}) },
       } as BrainLLMConfig;
     }
@@ -118,7 +122,7 @@ export async function discoverBrainLLM(trilium: TriliumClient): Promise<BrainLLM
           config.llm = { root: id, responsibilities: g("Responsibilities"), protocols: g("Protocols"), diary: g("Diary") };
           break;
         case "Memory":
-          config.memory = { root: id, sessions: g("Sessions"), threads: g("Threads") };
+          config.memory = { root: id, sessions: g("Sessions"), threads: g("Threads"), metaThread: "" };
           break;
         case "Knowledge":
           config.knowledge = { root: id, master: g("Master"), domains: g("Domains") };
@@ -138,6 +142,21 @@ export async function discoverBrainLLM(trilium: TriliumClient): Promise<BrainLLM
     config.knowledge.root, config.insights.root,
   ];
   if (requiredIds.some((id) => !id)) return null;
+
+  // The meta-thread lives inside Threads (a grandchild of root), one level
+  // deeper than the child/grandchild walk above reaches — find it by its
+  // #status=eternal marker. Missing is non-fatal: ensureMetaThread() creates
+  // or re-discovers it lazily on the next start()/remarks() call.
+  if (config.memory.threads) {
+    try {
+      const found = await trilium.searchNotes("#noteType=thread #status=eternal", {
+        ancestorNoteId: config.memory.threads,
+        fastSearch: true,
+        limit: 1,
+      });
+      if (found.results[0]) config.memory.metaThread = found.results[0].noteId;
+    } catch { /* non-fatal */ }
+  }
 
   return config;
 }

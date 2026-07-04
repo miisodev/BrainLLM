@@ -8,7 +8,7 @@
 // knowledge), and the start orientation digest.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { type TriliumClient, type Note, ownedLabel } from "./trilium.js";
+import { type TriliumClient, type Note, ownedLabel, relationSnippet, type RelationEdge } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { toText, closeDangling } from "./normalize.js";
 import { RESOLUTION_ANCHOR } from "./templates.js";
@@ -23,7 +23,7 @@ export function structuralIds(cfg: BrainLLMConfig): string[] {
     cfg.root,
     cfg.master.root, cfg.master.biography, cfg.master.goals, cfg.master.preferences,
     cfg.llm.root, cfg.llm.responsibilities, cfg.llm.protocols, cfg.llm.diary,
-    cfg.memory.root, cfg.memory.sessions, cfg.memory.threads,
+    cfg.memory.root, cfg.memory.sessions, cfg.memory.threads, cfg.memory.metaThread,
     cfg.knowledge.root, cfg.knowledge.master, cfg.knowledge.domains,
     cfg.insights.root, cfg.insights.logs,
   ].filter(Boolean);
@@ -34,13 +34,14 @@ export function isStructural(cfg: BrainLLMConfig, noteId: string): boolean {
 }
 
 /** Containers — locked against content edits. The maintained singletons
- *  (biography/goals/preferences/responsibilities/protocols) are structural but
- *  editable in place, so they're excluded here (revise allows them; forget
- *  still refuses them via isStructural). */
+ *  (biography/goals/preferences/responsibilities/protocols) and the BrainLLM
+ *  meta-thread are structural but editable in place, so they're excluded here
+ *  (revise allows them; forget/resolve/reopen still refuse them via isStructural). */
 export function isContainer(cfg: BrainLLMConfig, noteId: string): boolean {
   const singletons = [
     cfg.master.biography, cfg.master.goals, cfg.master.preferences,
     cfg.llm.responsibilities, cfg.llm.protocols,
+    cfg.memory.metaThread,
   ];
   return isStructural(cfg, noteId) && !singletons.includes(noteId);
 }
@@ -258,8 +259,8 @@ export async function sweep(
 export interface SessionDigest {
   master: Array<{ slot: string; summary: string }>;
   llm: Array<{ slot: string; summary: string }>;
-  workingSet: Array<{ id: string; title: string; kind: string; status: string; idleDays: number }>;
-  reviewQueue: Array<{ id: string; title: string; kind: string; idleDays: number }>;
+  workingSet: Array<{ id: string; title: string; kind: string; status: string; idleDays: number; relations?: RelationEdge[] }>;
+  reviewQueue: Array<{ id: string; title: string; kind: string; idleDays: number; relations?: RelationEdge[] }>;
   lastSession?: { id: string; title: string; date: string; summary: string };
   counts: Record<string, number>;
 }
@@ -312,10 +313,11 @@ export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): 
   for (const n of live.results) {
     const status = label(n, "status") ?? "active";
     const idle = idleDays(n.dateModified);
+    const relations = relationSnippet(n);
     if (status === "dormant") {
-      digest.reviewQueue.push({ id: n.noteId, title: n.title, kind: "thread", idleDays: idle });
+      digest.reviewQueue.push({ id: n.noteId, title: n.title, kind: "thread", idleDays: idle, ...(relations ? { relations } : {}) });
     } else {
-      digest.workingSet.push({ id: n.noteId, title: n.title, kind: "thread", status, idleDays: idle });
+      digest.workingSet.push({ id: n.noteId, title: n.title, kind: "thread", status, idleDays: idle, ...(relations ? { relations } : {}) });
     }
     digest.counts["thread"] = (digest.counts["thread"] ?? 0) + 1;
   }

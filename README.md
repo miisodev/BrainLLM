@@ -23,13 +23,15 @@ An MCP (Model Context Protocol) server that turns [TriliumNext Notes](https://gi
 ## Features
 
 - **Five-area structure** — Master (the user), LLM (the assistant's self-model), Memory (sessions + threads), Knowledge (learned domains), Insights (per-session logs). Built and labelled at bootstrap.
-- **Typed tool surface** — **surface reads** (`master`/`master_recall`, `memory`/`memory_recall`, …), **universal verbs** (`start`, `session`, `close`, `brain`, `bootstrap`, `remember`, `diary`, `recall`, `domain`, `addendum`, `revise`, `resolve`, `reopen`, `recover`, `connect`, `explore`, `maintain`, `forget`, `backup`), and **raw ETAPI** behind `BRAINLLM_MODE=full`.
+- **Typed tool surface** — **surface reads** (`master`/`master_recall`, `memory`/`memory_recall`, …), **universal verbs** (`start`, `session`, `remarks`, `close`, `brain`, `bootstrap`, `remember`, `diary`, `recall`, `domain`, `addendum`, `revise`, `resolve`, `reopen`, `recover`, `connect`, `explore`, `maintain`, `forget`, `backup`), and **raw ETAPI** behind `BRAINLLM_MODE=full`.
+- **Relation snippets everywhere** — every core read, write, and search tool returns a `relations` snippet (outbound `{relation, toNoteId}` edges) alongside its usual payload, for free — the attributes are already loaded from the same fetch. `explore()` remains the tool for target titles or deeper traversal.
+- **A standing self-analysis thread** — the "BrainLLM" thread under Memory → Threads carries `status=eternal`: exempt from the active → dormant → archived timeline and structurally protected against `resolve()`/`reopen()`/`forget()`, so it stays open indefinitely. `start()` surfaces it every session; `remarks()` (the last step before `close()`) returns a checklist for honestly assessing BrainLLM's own capabilities, bugs, usability, efficiency, and tool inventory, and where to fold findings.
 - **Full orientation on start** — `start()` returns the user's **goals in full**, **preferences in full**, and the model's **protocols in full**, plus today's diary note and a delta of notes changed since the last session. No separate reads needed to act from them.
 - **Dedicated diary tool** — `diary(body)` writes to today's LLM diary entry (one note per day, created empty by `start()`; same-day calls append a timestamped addendum).
 - **Retry-safe writes** — all append-mode write tools (`diary`, `remember`, `revise`, `reopen`, `recover`) detect duplicate content on retries and return `action: "already_written"` instead of double-writing. `connect()` and `resolve()` are idempotent by design.
 - **Full brain tree** — `brain()` surfaces every typed note across all five content areas, grouped by area with id/title/kind/status/dates — audit the whole brain in one call.
 - **One-per-day discipline** — diary, session, and log notes are each limited to one per day; subsequent writes on the same day append. Session and log notes are linked with `~references` after each `close()`.
-- **Mandatory pre-close step** — `session()` runs before `close()`: fetches all master and LLM singletons in full with last-modified dates, today's diary entry, and the maintenance sweep — then returns a `next[]` protocol driving singleton updates → `diary()` → `addendum()` → `maintain()` → `close()`. Ensures singletons are evolved from the session before the log is committed.
+- **Mandatory pre-close step** — `session()` runs before `close()`: fetches all master and LLM singletons in full with last-modified dates, today's diary entry, and the maintenance sweep — then returns a `next[]` protocol driving singleton updates → `diary()` → `addendum()` → `maintain()` → `remarks()` → `close()`. Ensures singletons are evolved from the session before the log is committed.
 - **HTML-native writes** — all write tools enforce Trilium/CKEditor 5 rules: `<h1>` demoted to `<h2>`, `<h5>`/`<h6>` to `<h4>`, `<div>` replaced with `<p>`, forbidden elements stripped, dangling tags closed. Mutations are reported as `sanitized: string[]` in the tool return. Informational error returns (`{error, detail, hint}`) replace thrown exceptions for user-input mistakes.
 - **Interconnection** — a closed relation vocabulary, `connect` to wire, `explore` to traverse (links / backlinks / neighborhood / path), and `maintain` to surface unconnected notes.
 - **Graceful lifecycle** — threads degrade active → dormant → archived-in-place; nothing is deleted. The maintenance sweep (lite: thread aging + unlabeled-node check; deep: stale-review, orphan/sink report, duplicate-title detection across all six typed containers plus per-domain information/sources) keeps the brain tidy. `recover()` undoes `forget()`.
@@ -168,7 +170,7 @@ None of these change how the brain works — they're just the seams where one pe
 BrainLLM  (#brainLlmRoot)
 ├── 👤 Master       biography · goals · preferences              (maintained singletons)
 ├── 🤖 LLM          responsibilities · protocols · Diary/        (singletons + daily diary)
-├── 🗂️ Memory       Sessions/ · Threads/                         (daily summaries + running work)
+├── 🗂️ Memory       Sessions/ · Threads/ (+ the standing "BrainLLM" thread)   (daily summaries + running work)
 ├── 📚 Knowledge    Master/ · Domains/[domain]/{ Sources, info } (learned, beyond/contra training)
 └── 💡 Insights     Logs/                                        (per-session change logs)
 ```
@@ -181,7 +183,7 @@ The model never chooses placement — `remember(kind=…)` routes it. Domains ar
 
 ### Core — universal verbs
 
-`start` · `session` · `close` · `brain` · `bootstrap` · `remember` · `diary` · `recall` · `domain` · `addendum` · `revise` · `resolve` · `reopen` · `recover` · `connect` · `explore` · `maintain` · `forget` · `backup`
+`start` · `session` · `remarks` · `close` · `brain` · `bootstrap` · `remember` · `diary` · `recall` · `domain` · `addendum` · `revise` · `resolve` · `reopen` · `recover` · `connect` · `explore` · `maintain` · `forget` · `backup`
 
 ### Core — surface reads (dual-mode)
 
@@ -206,7 +208,7 @@ See `skills/brainllm/SKILL.md` for the operational guide.
      ▼
 ```
 
-Threads age on this timeline; singletons are maintained; sessions/diary/logs are records. Timings are configurable in `brainllm.json`:
+Threads age on this timeline; singletons are maintained; sessions/diary/logs are records. The one exception is the standing **BrainLLM** thread (`status=eternal`) — it never ages and is structurally protected against `resolve()`/`reopen()`/`forget()`, so it stays open indefinitely for continuous self-analysis. Timings are configurable in `brainllm.json`:
 
 ```json
 "policy": { "dormantAfterDays": 21, "archiveDormantAfterDays": 45, "staleAfterDays": 7 }
