@@ -173,6 +173,8 @@ All append operations are retry-safe — if an existing append-block already car
 - `mode=replace` — rewrite the body;
 - `section="Overview"` — edit one heading section in place (tries h2 → h3 → h4, matched case- and whitespace-insensitively, tolerant of attributes on the heading tag; appends as a new h2 if absent). The efficient path for a singleton: read it, then revise the one section.
 
+**Section replace is whole-section, not per-paragraph.** `section=` + `mode=replace` swaps *everything* under that heading — targeting one paragraph inside a multi-paragraph section silently wipes its siblings. Re-supply the full section content with the one paragraph edited.
+
 A revision snapshot is always taken first. Containers are refused; the maintained singletons are editable.
 
 **Check `matched` and `headingCount` on a section call — don't assume the target was hit.** `matched: false` means no existing heading matched `section` at any level and the content was appended as a brand-new h2 instead of replacing anything — a mismatched heading string silently produces a duplicate section otherwise. `headingCount > 1` means several headings shared that text and only the first was touched. Both come back with a `hint` explaining what happened; read it before assuming the edit landed where intended.
@@ -235,7 +237,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `connect(from, relation, to, remove?)` | Typed edge from the closed vocabulary; symmetric handled; idempotent. |
 | `explore(noteId, mode, …)` | Graph: links / backlinks / neighborhood / path. |
 | `inspect(noteId)` | Full raw read of one note: every label (not just noteType/status), every outbound relation, type/mime/parent/child ids, dates. The deep-dive counterpart to explore() and the surface reads — for debugging drift or confirming a fix landed. |
-| `addendum()` | Search Master, LLM singletons (responsibilities + protocols, not diary), and Knowledge for pending addendum blocks. These notes must be clean and structured — fold each block into the relevant section with revise(section=…, mode=replace), then leave no addendum marker. Only sessions, diary, and logs accumulate addendum history. |
+| `addendum()` | Search Master, LLM singletons (responsibilities + protocols, not diary), and Knowledge for pending addendum blocks. These notes must be clean and structured — fold each block into the relevant section with revise(section=…, mode=replace), then leave no addendum marker. Only sessions, diary, and logs accumulate addendum history. Scoped/autonomous agents fold only what's in their lane — leaving personal/out-of-scope addendums for the next interactive session is correct; the call itself satisfies the gate. |
 | `maintain(deep?, dryRun?)` | Lite: thread aging + unlabeled-node check per typed container. Deep adds: stale-review + orphan/sink report (Memory/Threads + Knowledge, brain-wide inbound detection) + duplicate-title detection. Report includes `policy` (active thresholds). |
 | `forget(noteId, reason?, hard?)` | Archive (default) or hard-delete (blocked while backlinked). Undo with recover(). |
 

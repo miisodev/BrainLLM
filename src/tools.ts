@@ -1091,7 +1091,11 @@ A revision snapshot is always taken first. Also logs thread progress.
 When section is used, the return includes matched (false if no existing heading was found —
 the content was appended as a new h2 instead) and headingCount (>1 means several headings
 shared that text and only the first was touched) — check these rather than assuming the target
-was hit; a mismatched heading string silently produces a duplicate otherwise.`,
+was hit; a mismatched heading string silently produces a duplicate otherwise.
+
+Granularity warning: section + mode=replace swaps the ENTIRE section body — everything under
+that heading, not one paragraph within it. To change a single paragraph, re-supply the full
+section content with that paragraph edited.`,
     {
       noteId: z.string().describe("Note to update"),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML"),
@@ -1495,7 +1499,7 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
         notes: found,
         ...(found.length === 0
           ? { note: "No notes with pending addendums." }
-          : { hint: "Fold each addendum into its note: read the block, then revise(noteId, section='<heading>', body='<merged content>', mode='replace') to absorb it into the right section. These notes must be left clean — no addendum markers. Addendum-style history belongs only in sessions, diary, and logs." }),
+          : { hint: "Fold each addendum into its note: read the block, then revise(noteId, section='<heading>', body='<merged content>', mode='replace') to absorb it into the right section. These notes must be left clean — no addendum markers. Addendum-style history belongs only in sessions, diary, and logs. Scoped/autonomous agents: fold only what's in your lane — leaving personal or out-of-scope addendums for the next interactive session is correct, and calling this tool is what satisfies the pre-close gate." }),
       });
     }
   );

@@ -445,7 +445,7 @@ Update an existing note. Refused on containers (`{error:"protected_note"}`); the
 | `mode=replace` | Full body rewrite |
 | `section="<heading>"` | In-place section surgery via `setSection` — matches h2 → h3 → h4 in order, tolerant of tag attributes/case/whitespace; appends a new h2 if not found |
 
-Section calls return `matched` (false = heading not found, content appended as a new h2) and `headingCount` (>1 = ambiguous match, only the first touched) plus a plain-language `hint`. Also: normalizes a new `title`, bumps `#updated`, and **reactivates a dormant note to `active`** on any touch. `body` omitted → metadata-only.
+Section calls return `matched` (false = heading not found, content appended as a new h2) and `headingCount` (>1 = ambiguous match, only the first touched) plus a plain-language `hint`. Note the granularity: `section` + `mode=replace` swaps the **entire section body**, not a single paragraph within it. Also: normalizes a new `title`, bumps `#updated`, and **reactivates a dormant note to `active`** on any touch. `body` omitted → metadata-only.
 
 #### `resolve(noteId, outcome, status?, supersededBy?, date?)`
 
@@ -895,13 +895,13 @@ The skill is the **human/model-facing contract**; `CLAUDE.md`'s dev workflow req
 | **Full mode — raw ETAPI** | 33 | 9 notes · 5 attributes · 4 branches · 3 revisions · 5 attachments · 5 calendar · 2 system |
 | **Total (full mode on)** | **65** | |
 
-## Appendix B — Known Documentation Discrepancies
+## Appendix B — Documentation Discrepancies (resolved 2026-07-09)
 
-Findings from this analysis worth reconciling in a future docs pass:
+Findings from the original analysis, all reconciled in the 2026-07-09 docs pass:
 
-1. **Raw tool count** — `README.md` and `references/full-mode.md` say "32 raw ETAPI tools"; `tools-advanced.ts` actually registers **33** (`update_attachment` appears to be the uncounted addition).
-2. **`create_backup` signature drift** — `full-mode.md` documents it as `(date?)`, but the tool accepts `(name?, date?)` with milestone-name support.
-3. **`config.ts` version-comment nuance** — the config schema is labeled "version 5" while carrying V7 additions (`memory.metaThread`); intentional (V5 files load without migration) but worth a clarifying line for future readers.
+1. **Raw tool count** — `README.md` and `references/full-mode.md` said "32 raw ETAPI tools"; `tools-advanced.ts` registers **33**. ✅ Both docs now say 33.
+2. **`create_backup` signature drift** — `full-mode.md` documented it as `(date?)`; the tool accepts `(name?, date?)` with milestone-name support. ✅ Corrected.
+3. **`config.ts` version-comment nuance** — the schema number stays 5 as a compatibility contract while V6/V7 added optional fields (`memory.metaThread`). ✅ Comment rewritten to say so explicitly.
 
 ---
 

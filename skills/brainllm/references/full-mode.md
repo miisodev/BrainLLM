@@ -1,6 +1,6 @@
 # Full Mode — Raw ETAPI Reference (V7.0)
 
-`BRAINLLM_MODE=full` adds 32 raw ETAPI tools alongside the core surface. They map one-to-one onto Trilium's ETAPI and are **brain-agnostic** — no placement, format, dedup, or lifecycle.
+`BRAINLLM_MODE=full` adds 33 raw ETAPI tools alongside the core surface. They map one-to-one onto Trilium's ETAPI and are **brain-agnostic** — no placement, format, dedup, or lifecycle.
 
 **Ground rule:** use the core surface (`start`, `session`, `close`, `remember`, `recall`, the `<surface>` reads, `revise`, `resolve`, `connect`, `explore`, `label`, `inspect`, `forget`) for all routine work. `label()` covers direct label fixes and `inspect()` covers full attribute/relation reads — reach for full-mode only when the high-level path genuinely cannot do the job — these bypass every server guarantee, so correctness is on you.
 
@@ -106,4 +106,4 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | Tool | Signature |
 |---|---|
 | `get_app_info` | `()` — Trilium version, DB version, runtime metadata |
-| `create_backup` | `(date?)` — named DB backup (`brainllm-{date}.db`) |
+| `create_backup` | `(name?, date?)` — named DB backup (`<name>.db`, default `brainllm-{date}`); use a descriptive name for milestone snapshots |

@@ -193,7 +193,7 @@ The model never chooses placement — `remember(kind=…)` routes it. Domains ar
 
 ### Full mode (`BRAINLLM_MODE=full`)
 
-32 raw ETAPI tools — notes, attributes, branches, revisions, attachments, calendar, and system — brain-agnostic, for surgery the core can't do.
+33 raw ETAPI tools — notes, attributes, branches, revisions, attachments, calendar, and system — brain-agnostic, for surgery the core can't do.
 
 See `skills/brainllm/SKILL.md` for the operational guide.
 

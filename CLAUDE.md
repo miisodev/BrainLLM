@@ -6,7 +6,7 @@ For every code change, in order:
 
 1. **Fix** the code.
 2. **Build** — `bun run build` (must pass clean before committing).
-3. **Update docs** — if the change affects observable behaviour, update `skills/brainllm/SKILL.md` and `README.md`. No update needed for pure bug fixes with no user-visible contract change.
+3. **Update docs** — if the change affects observable behaviour, update `skills/brainllm/SKILL.md`, `README.md`, and `BLUEPRINT.md` (the architecture/tool-surface reference). No update needed for pure bug fixes with no user-visible contract change.
 4. **Commit** with a conventional commit message (`fix:`, `feat:`, `docs:`, `refactor:`).
 5. **Push** to `origin/main`.
 

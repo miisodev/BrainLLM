@@ -5,9 +5,10 @@
 //   load file → auto-discover from Trilium (via #brainLlmRoot) → empty (bootstrap).
 // bootstrap writes this file; no manual editing required.
 //
-// The config file schema is version 5 — unchanged since V6, including V7's additions (e.g. memory.metaThread). V5 brainllm.json files
-// load without any migration. Only version-5 configs load; anything older falls
-// through to discovery/bootstrap.
+// The schema number stays 5 as a compatibility contract: V6 and V7 added only
+// optional fields (e.g. memory.metaThread) that default to "" when absent, so
+// a V5-era brainllm.json loads without migration. Only version-5 configs load;
+// anything older falls through to discovery/bootstrap.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
