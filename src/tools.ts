@@ -1418,11 +1418,19 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
       const seen = new Set<string>();
       const unique = allRaw.filter((n) => { if (seen.has(n.noteId)) return false; seen.add(n.noteId); return true; });
 
+      // A pending addendum is a structural marker block (an h2–h4 heading
+      // starting with "Addendum —"), not the bare word — the full-text search
+      // above matches prose mentions too (e.g. the Protocols singleton
+      // describing the addendum() tool), which produced recurring false
+      // positives. Only notes carrying the actual marker are surfaced.
+      const ADDENDUM_MARKER = /<h[2-4][^>]*>\s*Addendum\s*(?:—|–|-|&mdash;|&ndash;)/i;
+
       const notes = await Promise.all(
         unique.map(async (n) => {
           const kind = labelOf(n, "noteType");
           if (!kind) return null;
           const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+          if (!ADDENDUM_MARKER.test(content)) return null; // prose mention, not a pending block
           const relations = relationSnippet(n);
           return {
             id: n.noteId,
