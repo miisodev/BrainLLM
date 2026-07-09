@@ -327,7 +327,9 @@ LLM singleton notes in full with their last-modified dates, today's diary entry,
 lightweight maintenance sweep. Gives the LLM everything it needs to evolve the master
 (biography/goals/preferences) and LLM (responsibilities/protocols) singletons with observations
 from this session BEFORE the log is committed — ensuring logs stay factual and singletons stay
-current.
+current. Pass light=true to skip singleton content ({id, lastModified, relations} only) when
+the session produced no singleton-worthy observations — e.g. autonomous or narrowly-scoped
+runs; it satisfies the gate identically.
 
 Idempotent: fetches are read-only, the sweep is non-destructive, safe to call multiple times.
 
@@ -344,8 +346,9 @@ will commit the log:
 7. Call close() — commit the session log (mandatory, last). Refuses until 3–6 have run; pass force=true only when there is genuinely nothing to log for a skipped step.`,
     {
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
+      light: z.boolean().optional().describe("Skip singleton content — return {id, lastModified, relations} only. For sessions that won't revise the singletons (e.g. autonomous/scoped runs); fetch full content via master()/llm() only where lastModified says something changed."),
     },
-    async ({ date }) => {
+    async ({ date, light }) => {
       const d = date ?? today();
       const cfg = b();
       if (!cfg.master.root || !cfg.llm.root)
@@ -353,6 +356,11 @@ will commit the log:
       preCloseSteps.add("session");
 
       const fetchSingleton = async (id: string) => {
+        if (light) {
+          const note = await trilium.getNote(id);
+          const relations = relationSnippet(note);
+          return { id, lastModified: note.dateModified.slice(0, 10), ...(relations ? { relations } : {}) };
+        }
         const [note, content] = await Promise.all([
           trilium.getNote(id),
           trilium.getNoteContent(id).catch(() => ""),
@@ -387,6 +395,7 @@ will commit the log:
 
       return txt({
         date: d,
+        ...(light ? { mode: "light", note: "Singleton content omitted — fetch via master()/llm() only where lastModified indicates a revision is needed." } : {}),
         master: { biography, goals, preferences },
         llm: { responsibilities, protocols },
         diary: diaryEntry,

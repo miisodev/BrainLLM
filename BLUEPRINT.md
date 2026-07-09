@@ -353,9 +353,9 @@ Boot the brain; call once at session start, before responding to anything.
 | `changesSinceLastSession` | `{id, title, changed, deleted?}` entries |
 | `hygiene` | Sweep summary `{scanned, fixed, transitions, flagged}` |
 
-#### `session(date?)` — the mandatory pre-close step
+#### `session(date?, light?)` — the mandatory pre-close step
 
-Marks the `session` gate step. Fetches the five singletons (biography, goals, preferences, responsibilities, protocols) each **in full** as `{id, lastModified, content, relations?}`, today's diary entry `{id, content}`, and runs the lite sweep. Returns a `next[]` protocol array driving: update master singletons → update LLM singletons → `diary()` → `addendum()` → `maintain()` → `remarks()` → `close()`. Idempotent (all reads; sweep is non-destructive).
+Marks the `session` gate step. Fetches the five singletons (biography, goals, preferences, responsibilities, protocols) each **in full** as `{id, lastModified, content, relations?}`, today's diary entry `{id, content}`, and runs the lite sweep. `light=true` skips singleton content — `{id, lastModified, relations?}` only — for autonomous/scoped runs that won't revise singletons (the gate is satisfied identically; the return carries `mode: "light"` and a note to fetch full content via `master()`/`llm()` where `lastModified` warrants it). Returns a `next[]` protocol array driving: update master singletons → update LLM singletons → `diary()` → `addendum()` → `maintain()` → `remarks()` → `close()`. Idempotent (all reads; sweep is non-destructive).
 
 #### `remarks(capabilities?, issuesAndBugs?, usability?, memoryEfficiency?, tokenEfficiency?, performance?, hygieneAndMaintenance?, roadmap?, date?)`
 
