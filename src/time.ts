@@ -54,3 +54,9 @@ export function localNowDateTime(): string {
 export function localToday(): string {
   return localNowDateTime().slice(0, 10);
 }
+
+/** Local wall-clock time — HH:mm, in the same timezone as localNowDateTime().
+ *  Used for intra-day addendum headers so they match the user's clock, not UTC. */
+export function localNowTime(): string {
+  return localNowDateTime().slice(11, 16);
+}

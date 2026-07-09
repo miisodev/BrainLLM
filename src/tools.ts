@@ -50,7 +50,7 @@ import {
 import { sweep, buildDigest, applyResolution, isStructural, isContainer } from "./lifecycle.js";
 import { createBrainLLMStructure } from "./bootstrap.js";
 import { generateDailyLog } from "./journal.js";
-import { localToday } from "./time.js";
+import { localToday, localNowTime } from "./time.js";
 import { registerMasterTools } from "./tools-master.js";
 import { registerLlmTools } from "./tools-llm.js";
 import { registerMemoryTools } from "./tools-memory.js";
@@ -547,7 +547,7 @@ resets for the next session.`,
       if (existing.results[0]) {
         noteId = existing.results[0].noteId;
         const current = await trilium.getNoteContent(noteId).catch(() => "");
-        const time = new Date().toISOString().slice(11, 16);
+        const time = localNowTime();
         const hasContent = current.includes("<h2>Summary</h2>") || /<h2>addendum/i.test(current);
         if (hasContent) {
           await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Addendum — ${time}</h2>`, contentBlock));
@@ -633,22 +633,19 @@ start() creates today's entry (empty) automatically; use this tool to write cont
       if (found.results[0]) {
         const noteId = found.results[0].noteId;
         const current = await trilium.getNoteContent(noteId).catch(() => "");
-        const time = new Date().toISOString().slice(11, 16);
+        const time = localNowTime();
 
-        // Idempotency guard: same normalised content within 5 min → skip retry.
+        // Idempotency guard: the diary note is one-per-day, so every addendum
+        // block in it is today's. If ANY block already carries this exact
+        // normalised content, the call is a retry — skip the write. Scanning
+        // all blocks (rather than only the last within a time window) also
+        // catches a duplicate that landed behind an interleaved write, the
+        // double-append observed on 2026-07-05.
         const norm = (s: string) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().toLowerCase();
-        const lastIdx = current.lastIndexOf("<h2>Addendum —");
-        if (lastIdx !== -1) {
-          const afterHeader = current.slice(lastIdx);
-          const headerMatch = afterHeader.match(/^<h2>Addendum — (\d{2}:\d{2})<\/h2>\n?/);
-          if (headerMatch) {
-            const [hh, mm] = headerMatch[1].split(":").map(Number);
-            const now = new Date();
-            const diffMins = Math.abs(now.getUTCHours() * 60 + now.getUTCMinutes() - (hh * 60 + mm));
-            if (diffMins <= 5 && norm(afterHeader.slice(headerMatch[0].length)) === norm(html)) {
-              return txt({ action: "already_written", noteId, date: d });
-            }
-          }
+        const incoming = norm(html);
+        const blocks = current.split(/<h2>Addendum — \d{2}:\d{2}<\/h2>\n?/i).slice(1);
+        if (incoming && blocks.some((b) => norm(b) === incoming)) {
+          return txt({ action: "already_written", noteId, date: d });
         }
 
         await trilium.createRevision(noteId).catch(() => null);

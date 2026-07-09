@@ -156,7 +156,7 @@ Your LLM singletons are *yours*: **responsibilities** derive from the user's goa
 
 Body may be text, markdown, or HTML — normalized server-side. Titles are short, specific, stable (the dedup key); no status words, and **never a date or run number** — a dated title ("Dev-State Audit — 2026-06-18") defeats the dedup-by-title mechanism and produces a new singleton every time instead of updating the one that already exists. If a sub-category already has a note, today's finding revises it; it does not get a new note under a fresh, date-suffixed title.
 
-All append operations are retry-safe — if the last block already carries the same content, the tool returns `action: "already_written"` and skips the write.
+All append operations are retry-safe — if an existing append-block already carries the same content, the tool returns `action: "already_written"` and skips the write (diary checks every block in today's entry; other appends check the last block).
 
 **HTML-native writes.** All write tools (`close`, `diary`, `remember`, `revise`, `resolve`, `reopen`, `recover`) enforce Trilium/CKEditor 5 HTML rules on any body you supply: `<h1>` is demoted to `<h2>` (h1 is the Trilium note title), `<h5>`/`<h6>` are demoted to `<h4>`, `<div>` is replaced with `<p>`, `<br>` runs become paragraph separators, forbidden elements (script/style/iframe/form/input/…) are stripped, and `style=`/`on*` attributes are removed. Dangling unclosed tags are closed before any append or splice. If any of these mutations occur the return includes `sanitized: string[]` listing each change — read it and prefer clean HTML in future calls. **Body may be text, markdown, or HTML**; the server normalises all three. Markdown converts cleanly; supply HTML when you need precise structure.
 
