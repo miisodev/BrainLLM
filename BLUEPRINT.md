@@ -383,7 +383,7 @@ On-demand named Trilium DB snapshot (default `brainllm-{today}`); for milestone 
 
 The dedicated path for the daily diary. Idempotent per date: first call of the day fills/creates `[yyyy-mm-dd]`; later calls append `<h2>Addendum — HH:mm</h2>` blocks. Retry guard: identical normalized content within 5 minutes of the last addendum returns `action:"already_written"`. Marks the `diary` gate step. Returns `{action, noteId, date, location?, sanitized?}`.
 
-#### `remember(kind, title?, body?, domain?, topics?, supersedes?, date?)`
+#### `remember(kind, title?, body?, domain?, topics?, supersedes?, connect?, date?)`
 
 The universal write verb — the server owns placement, naming, labels and dedup. Routing by kind:
 
@@ -395,7 +395,7 @@ The universal write verb — the server owns placement, naming, labels and dedup
 | **Generic collection** | `thread`, `knowledge` | Dedup by title across the area scope; existing → addendum inserted **before the Resolution anchor** (threads); new → created from template with the full label plan. |
 | **Rejected** | `diary`, `session`, `log`, `domain` | `{error:"rejected_kind"}` with a redirect hint — each has a dedicated path (`diary()`, `close()`, auto-generation, `information` respectively). |
 
-`supersedes=<noteId>`: wires `new ~supersedes→ old`, sets the old note's status to `superseded` + `#closed`, archives it, and reports `wired[]`. `topics[]` are slugged and added as `#topic` labels (deduped). Every create runs the `labelPlan` (`#noteType`, `#created`, `#status` for threads, `#domain`, `#topic`s).
+`supersedes=<noteId>`: wires `new ~supersedes→ old`, sets the old note's status to `superseded` + `#closed`, archives it, and reports `wired[]`. `connect=[{relation, toNoteId}]`: wires relations from the note in the same call (connect() semantics — idempotent, `worksWith` bidirectional), reported as `connected[]`; a freshly-created connectable note with no relations returns an orphan-prevention `hint` instead. `topics[]` are slugged and added as `#topic` labels (deduped). Every create runs the `labelPlan` (`#noteType`, `#created`, `#status` for threads, `#domain`, `#topic`s).
 
 ### 7.3 Reading & search
 

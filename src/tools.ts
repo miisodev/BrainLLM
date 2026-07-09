@@ -680,6 +680,8 @@ Kinds by area:
 
 Singletons and the per-domain Sources note upsert (content is appended). Collection kinds
 dedup by title, so duplicates are impossible. Body may be text, markdown, or HTML.
+Pass connect=[{relation, toNoteId}, …] to wire relations in the same call — a new
+information/knowledge/thread note left unconnected is an orphan until wired.
 For diary entries use the dedicated diary() tool — remember(kind="diary") is rejected.`,
     {
       kind: z.enum(Kinds).describe("What kind of memory this is"),
@@ -688,9 +690,13 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       domain: z.string().optional().describe("knowledge: the domain name for information/sources (auto-created)"),
       topics: z.array(z.string()).optional().describe("Topic tags — slugged server-side"),
       supersedes: z.string().optional().describe("noteId this replaces — old note is archived and wired supersedes"),
+      connect: z.array(z.object({
+        relation: z.enum(RelationTypes),
+        toNoteId: z.string(),
+      })).optional().describe("Relations to wire from this note in the same call — same semantics as connect() (idempotent, worksWith wired both ways)"),
       date: z.string().optional().describe("ISO date override (default: today)"),
     },
-    async ({ kind, title, body, domain, topics, supersedes, date }) => {
+    async ({ kind, title, body, domain, topics, supersedes, connect: connectRels, date }) => {
       const opts: RememberOpts = { domain, topics, date };
       const d = date ?? today();
       const { html, warnings: sanitizeWarnings } = sanitizeHtml(toHtml(body ?? ""));
@@ -706,13 +712,41 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         return true;
       };
 
+      /** Wire caller-requested relations from a note — same semantics as connect():
+       *  idempotent, symmetric relations wired both ways. Returns the edges wired
+       *  (or already present) so receipts can surface them. */
+      const wireRequested = async (noteId: string): Promise<RelationEdge[]> => {
+        if (!connectRels?.length) return [];
+        const from = await trilium.getNote(noteId).catch(() => null);
+        if (!from) return [];
+        const wiredEdges: RelationEdge[] = [];
+        for (const { relation, toNoteId } of connectRels) {
+          if (toNoteId === noteId) continue;
+          const exists = from.attributes.some((a) => a.type === "relation" && a.name === relation && a.value === toNoteId);
+          if (!exists) await trilium.addRelation(noteId, relation, toNoteId).catch(() => null);
+          if (SymmetricRelations.includes(relation)) {
+            const to = await trilium.getNote(toNoteId).catch(() => null);
+            if (to && !to.attributes.some((a) => a.type === "relation" && a.name === relation && a.value === noteId)) {
+              await trilium.addRelation(toNoteId, relation, noteId).catch(() => null);
+            }
+          }
+          wiredEdges.push({ relation, toNoteId });
+        }
+        return wiredEdges;
+      };
+
+      /** Orphan-prevention nudge for a freshly-created connectable note. */
+      const ORPHAN_HINT =
+        "Unconnected — wire a real relation now with connect() (or pass connect=[{relation, toNoteId}] on remember) so this note doesn't surface as an orphan in maintain(deep=true).";
+
       // 1 ── Global singletons: one fixed maintained note (biography, goals, …).
       if (isSingleton(kind)) {
         const id = kindHome(b(), kind);
         if (!id) throw new Error(`BrainLLM not bootstrapped for "${kind}" — run bootstrap`);
         const wrote = await upsertInto(id);
+        const connected = await wireRequested(id);
         const relations = relationSnippet(await trilium.getNote(id));
-        return txt({ action: wrote ? "maintained" : "already_written", noteId: id, kind, location: locationLabel(kind), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+        return txt({ action: wrote ? "maintained" : "already_written", noteId: id, kind, location: locationLabel(kind), ...(connected.length ? { connected } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
       }
 
       // 2 ── Per-domain singleton: the one Sources note in a domain.
@@ -734,8 +768,9 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           }
         }
         const wrote = await upsertInto(sid);
+        const connected = await wireRequested(sid);
         const relations = sidNote ? relationSnippet(sidNote) : undefined;
-        return txt({ action: wrote ? "maintained" : "already_written", noteId: sid, kind, location: locationLabel(kind, domainTitle), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+        return txt({ action: wrote ? "maintained" : "already_written", noteId: sid, kind, location: locationLabel(kind, domainTitle), ...(connected.length ? { connected } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
       }
 
       // 3 ── Domain collection: sub-category information notes (many per domain),
@@ -757,14 +792,16 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           await trilium.createRevision(existing.noteId).catch(() => null);
           await trilium.updateNoteContent(existing.noteId, safeAppend(current, `<h2>Addendum — ${d}</h2>`, html));
           await trilium.updateLabelValue(existing.noteId, "updated", d);
+          const connected = await wireRequested(existing.noteId);
           const relations = relationSnippet(existing);
-          return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title, ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+          return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
         }
         const created = await trilium.createNote(domainId, subTitle, contentFor("information", { date: d, body: html, domain: domainTitle }));
         const nid = created.note.noteId;
         for (const l of labelPlan("information", opts, d)) {
           await trilium.addLabel(nid, l.name, l.value, l.inheritable ?? false);
         }
+        const connected = await wireRequested(nid);
         return txt({
           action: "created",
           noteId: nid,
@@ -772,6 +809,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           title: subTitle,
           location: locationLabel(kind, domainTitle),
           ...(createdDomain ? { createdDomain: domainTitle } : {}),
+          ...(connected.length ? { connected } : { hint: ORPHAN_HINT }),
           ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}),
         });
       }
@@ -804,8 +842,9 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
             await trilium.addLabel(existing.noteId, "topic", slug);
           }
         }
+        const connected = await wireRequested(existing.noteId);
         const relations = relationSnippet(existing);
-        return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title, ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+        return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
       }
 
       const resolved = await resolveParent(trilium, b(), kind, opts);
@@ -830,6 +869,8 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           extraRelations.push({ relation: "supersedes", toNoteId: supersedes });
         }
       }
+      const connected = await wireRequested(nid);
+      extraRelations.push(...connected);
       const relations = [...(relationSnippet(created.note) ?? []), ...extraRelations];
 
       return txt({
@@ -840,7 +881,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         location: locationLabel(kind, resolved.domainTitle),
         ...(resolved.createdDomain ? { createdDomain: resolved.domainTitle } : {}),
         ...(wired.length ? { wired } : {}),
-        ...(relations.length ? { relations } : {}),
+        ...(relations.length ? { relations } : { hint: ORPHAN_HINT }),
         ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}),
       });
     }
