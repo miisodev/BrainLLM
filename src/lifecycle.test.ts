@@ -22,10 +22,10 @@ describe("applyResolution", () => {
   });
 });
 
-describe("labelPlan (V7)", () => {
+describe("labelPlan (V8)", () => {
   test("every note gets noteType and created", () => {
-    const flat = labelPlan("knowledge", {}, "2026-06-10").map((l) => `${l.name}=${l.value}`);
-    expect(flat).toContain("noteType=knowledge");
+    const flat = labelPlan("user", {}, "2026-06-10").map((l) => `${l.name}=${l.value}`);
+    expect(flat).toContain("noteType=user");
     expect(flat).toContain("created=2026-06-10");
   });
   test("thread gets an active status; non-thread kinds do not", () => {
@@ -39,7 +39,7 @@ describe("labelPlan (V7)", () => {
     expect(flat).toContain("domain=distributed-systems");
   });
   test("topics are slugged and deduped", () => {
-    const flat = labelPlan("knowledge", { topics: ["AI Tooling", "ai-tooling", "Infra"] }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
+    const flat = labelPlan("user", { topics: ["AI Tooling", "ai-tooling", "Infra"] }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
     expect(flat.filter((f) => f === "topic=ai-tooling")).toHaveLength(1);
     expect(flat).toContain("topic=infra");
   });
@@ -111,14 +111,14 @@ describe("isContainer — revise() protection", () => {
   });
 });
 
-describe("BrainLLM meta-thread — structural but editable, like a singleton", () => {
+describe("vestigial metaThread id grants no structural protection", () => {
   const cfg = { ...EMPTY_BRAINLLM, memory: { ...EMPTY_BRAINLLM.memory, metaThread: "META_THREAD_001" } };
 
-  test("is structural (forget/resolve/reopen/recover all refuse it)", () => {
-    expect(isStructural(cfg, "META_THREAD_001")).toBe(true);
+  test("is not structural", () => {
+    expect(isStructural(cfg, "META_THREAD_001")).toBe(false);
   });
 
-  test("is not a container (revise still works on it, like the singletons)", () => {
+  test("is not a container", () => {
     expect(isContainer(cfg, "META_THREAD_001")).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — lifecycle engine (V7)
+// BrainLLM — lifecycle engine (V8)
 //
 // Provides: structural-note protection (containers vs. editable singletons),
 // the resolution content surgery for closing threads, the maintenance sweep
@@ -23,7 +23,7 @@ export function structuralIds(cfg: BrainLLMConfig): string[] {
     cfg.root,
     cfg.master.root, cfg.master.biography, cfg.master.goals, cfg.master.preferences,
     cfg.llm.root, cfg.llm.responsibilities, cfg.llm.protocols, cfg.llm.diary,
-    cfg.memory.root, cfg.memory.sessions, cfg.memory.threads, cfg.memory.metaThread,
+    cfg.memory.root, cfg.memory.sessions, cfg.memory.threads,
     cfg.knowledge.root, cfg.knowledge.master, cfg.knowledge.domains,
     cfg.insights.root, cfg.insights.logs,
   ].filter(Boolean);
@@ -34,14 +34,13 @@ export function isStructural(cfg: BrainLLMConfig, noteId: string): boolean {
 }
 
 /** Containers — locked against content edits. The maintained singletons
- *  (biography/goals/preferences/responsibilities/protocols) and the BrainLLM
- *  meta-thread are structural but editable in place, so they're excluded here
- *  (revise allows them; forget/resolve/reopen still refuse them via isStructural). */
+ *  (biography/goals/preferences/responsibilities/protocols) are structural but
+ *  editable in place, so they're excluded here (revise allows them;
+ *  forget/resolve/withdraw still refuse them via isStructural). */
 export function isContainer(cfg: BrainLLMConfig, noteId: string): boolean {
   const singletons = [
     cfg.master.biography, cfg.master.goals, cfg.master.preferences,
     cfg.llm.responsibilities, cfg.llm.protocols,
-    cfg.memory.metaThread,
   ];
   return isStructural(cfg, noteId) && !singletons.includes(noteId);
 }
@@ -75,7 +74,7 @@ function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** The V7 maintenance sweep.
+/** The V8 maintenance sweep.
  *  Lite (auto, inside start/close): age stale threads + unlabeled-node check.
  *  Deep: stale-review, orphan/sink report, duplicate-title detection. */
 export async function sweep(
@@ -153,6 +152,22 @@ export async function sweep(
     } catch { /* non-fatal */ }
   }
 
+  // ── Kind migration: knowledge → user ────────────────────────────────────────
+  // The Knowledge/Master note kind was renamed "knowledge" → "user" in V8.
+  // Relabel any legacy notes so typed searches and recall keep seeing them.
+  // Self-healing and idempotent: once nothing carries the old kind, the search
+  // returns empty and this pass costs one fast query.
+  if (cfg.knowledge.master) {
+    const legacy = await trilium
+      .searchNotes("#noteType=knowledge", { ancestorNoteId: cfg.knowledge.master, fastSearch: true, limit: 100, includeArchivedNotes: true })
+      .catch(() => ({ results: [] as Note[] }));
+    report.scanned += legacy.results.length;
+    for (const n of legacy.results) {
+      if (!dryRun) await trilium.updateLabelValue(n.noteId, "noteType", "user").catch(() => null);
+      report.fixed.push(`migrated: ${n.title} [${n.noteId}] #noteType knowledge → user`);
+    }
+  }
+
   if (!deep) return report;
 
   // ── Deep: stale-review ──────────────────────────────────────────────────────
@@ -181,9 +196,8 @@ export async function sweep(
   // The candidates actually flagged are scoped to Memory/Threads and
   // Knowledge (master + domains-and-below) — the two areas holding
   // connectable, non-structural, non-record content. Master and the LLM
-  // singletons are maintained/structural (excluded via isStructural, which
-  // also protects the BrainLLM meta-thread); sessions, diary, and logs are
-  // records, not graph nodes to connect.
+  // singletons are maintained/structural (excluded via isStructural);
+  // sessions, diary, and logs are records, not graph nodes to connect.
   const [allNotes, threadNotes, knowledgeNotes] = await Promise.all([
     trilium.searchNotes("#noteType", { ancestorNoteId: cfg.root, fastSearch: true, limit: 500 }).catch(() => ({ results: [] as Note[] })),
     cfg.memory.threads
@@ -231,7 +245,7 @@ export async function sweep(
     { id: cfg.llm.diary,        kind: "diary",     label: "Diary"            },
     { id: cfg.insights.logs,    kind: "log",       label: "Logs"             },
     { id: cfg.memory.threads,   kind: "thread",    label: "Threads"          },
-    { id: cfg.knowledge.master,  kind: "knowledge", label: "Knowledge/Master"  },
+    { id: cfg.knowledge.master,  kind: "user",      label: "Knowledge/Master"  },
     { id: cfg.knowledge.domains, kind: "domain",    label: "Knowledge/Domains" },
   ];
   for (const { id, kind, label: containerLabel } of dupeContainers) {

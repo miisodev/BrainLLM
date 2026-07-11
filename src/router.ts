@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — the router (V7)
+// BrainLLM — the router (V8)
 //
 // Single source of truth for WHERE a note lives, WHICH labels it carries and
 // WHICH template it follows, derived from its kind. The model never chooses a
@@ -56,7 +56,7 @@ export function kindHome(cfg: BrainLLMConfig, kind: AnyKind): string {
     case "diary":            return cfg.llm.diary;
     case "session":          return cfg.memory.sessions;
     case "thread":           return cfg.memory.threads;
-    case "knowledge":        return cfg.knowledge.master;
+    case "user":             return cfg.knowledge.master;
     case "domain":           return cfg.knowledge.domains;
     case "information":      return ""; // domain-resolved
     case "sources":          return ""; // domain-resolved
@@ -114,7 +114,10 @@ export async function resolveDomain(
   domainName: string
 ): Promise<{ domainId: string; domainTitle: string; createdDomain: boolean }> {
   const slug = slugify(domainName) || "general";
-  const display = titleCaseSlug(slug);
+  // Preserve the caller's casing for the display title ("BrainLLM", not
+  // "Brainllm") — the slug stays canonical for routing and dedup. Fall back
+  // to the title-cased slug when the raw name is unusable.
+  const display = domainName.replace(/\s+/g, " ").trim() || titleCaseSlug(slug);
 
   const existing = await trilium.searchNotes(`#noteType=domain #domain=${slug}`, {
     ancestorNoteId: cfg.knowledge.domains,
@@ -174,7 +177,7 @@ export function locationLabel(kind: AnyKind, domainTitle?: string): string {
     case "diary":            return "LLM → Diary";
     case "session":          return "Memory → Sessions";
     case "thread":           return "Memory → Threads";
-    case "knowledge":        return "Knowledge → Master";
+    case "user":             return "Knowledge → Master";
     case "domain":           return "Knowledge → Domains";
     case "information":      return `Knowledge → Domains → ${domainTitle ?? "General"}`;
     case "sources":          return `Knowledge → Domains → ${domainTitle ?? "General"} → Sources`;

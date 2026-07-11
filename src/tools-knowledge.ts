@@ -35,7 +35,7 @@ export function registerKnowledgeTools(server: McpServer, trilium: TriliumClient
       }
       const domains = await skim(trilium, cfg.knowledge.domains, { kind: "domain", limit: 50 });
       return txt({
-        userKnowledge: await skim(trilium, cfg.knowledge.master, { kind: "knowledge", query, limit: 30 }),
+        userKnowledge: await skim(trilium, cfg.knowledge.master, { kind: "user", query, limit: 30 }),
         domains: domains.map((d) => ({ id: d.id, title: d.title })),
       });
     }

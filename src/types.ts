@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — shared domain types (V7)
+// BrainLLM — shared domain types (V8)
 //
 // The enums in this file are the single canonical vocabulary. Tool schemas, the
 // router, the structure builder, and placement all derive from these constants —
 // there is no second copy anywhere.
 //
-// V5 is a clean break: a fresh instance, no v3/v4 migration layer. The note
+// The note
 // vocabulary is organised by the five first-level areas of the brain tree.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -36,7 +36,7 @@ export const Kinds = [
   "session",          // dated entry under Memory/sessions
   "thread",           // titled entry under Memory/threads
   // Knowledge — learned information beyond/contradicting training
-  "knowledge",        // user-knowledge note under Knowledge/Master
+  "user",             // user-knowledge note under Knowledge/Master
   "domain",           // a domain book under Knowledge/Domains
   "information",      // an information note inside a domain
   "sources",          // the per-domain sources note
@@ -54,7 +54,7 @@ export const KIND_AREA: Record<Kind, Area> = {
   biography: "master", goals: "master", preferences: "master",
   responsibilities: "llm", protocols: "llm", diary: "llm",
   session: "memory", thread: "memory",
-  knowledge: "knowledge", domain: "knowledge", information: "knowledge", sources: "knowledge",
+  user: "knowledge", domain: "knowledge", information: "knowledge", sources: "knowledge",
   log: "insights",
 };
 
@@ -69,11 +69,11 @@ export const SingletonKinds: readonly Kind[] = [
 export const DatedKinds: readonly Kind[] = ["diary", "session", "log"];
 
 // ── Status ────────────────────────────────────────────────────────────────────
-// Lifecycle state. The V5 aging/maintenance model is authored in the templates
+// Lifecycle state. The aging/maintenance model is authored in the templates
 // and interconnection phases; the vocabulary is fixed here.
 
-// "eternal" marks the one standing thread (BrainLLM's own self-analysis thread)
-// that is exempt from the active → dormant → archived aging timeline.
+// "eternal" is a lifecycle-exempt status — never aged by the sweep. For
+// user-curated permanent threads that should stay open indefinitely.
 export const Statuses = ["active", "resolved", "superseded", "dormant", "eternal"] as const;
 export type Status = (typeof Statuses)[number];
 
@@ -119,53 +119,3 @@ export const DEFAULT_POLICY: LifecyclePolicy = {
   staleAfterDays: 7,
 };
 
-// ── Compact output shapes reused across tools ────────────────────────────────
-
-export interface NoteStub {
-  id: string;
-  title: string;
-  type?: string;
-}
-
-export interface AttrStub {
-  id: string;
-  noteId: string;
-  type: string;
-  name: string;
-  value: string;
-}
-
-export interface BranchStub {
-  id: string;
-  noteId: string;
-  parentNoteId: string;
-}
-
-export interface RevisionStub {
-  id: string;
-  noteId: string;
-  title: string;
-  date: string;
-  size: number;
-}
-
-export interface AttachmentStub {
-  id: string;
-  title: string;
-  mime: string;
-  size: number;
-}
-
-export interface BacklinkEntry {
-  noteId: string;
-  title: string;
-  relationName: string;
-}
-
-export interface GraphNode {
-  noteId: string;
-  title: string;
-  depth: number;
-  via?: string;        // relation name that led here
-  fromNoteId?: string; // which node expanded to reach this
-}

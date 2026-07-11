@@ -1,14 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — runtime configuration (V7)
+// BrainLLM — runtime configuration (V8)
 //
 // IDs are stored in brainllm.json next to the bundle. On startup:
 //   load file → auto-discover from Trilium (via #brainLlmRoot) → empty (bootstrap).
 // bootstrap writes this file; no manual editing required.
 //
-// The schema number stays 5 as a compatibility contract: V6 and V7 added only
-// optional fields (e.g. memory.metaThread) that default to "" when absent, so
-// a V5-era brainllm.json loads without migration. Only version-5 configs load;
-// anything older falls through to discovery/bootstrap.
+// The schema is version 8. Version-5 files (the long-lived prior contract —
+// every later release added only optional fields that default to "" when
+// absent) still load and are re-saved as 8 on the next write. Anything else
+// falls through to discovery/bootstrap.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
@@ -23,9 +23,9 @@ export interface BrainLLMConfig {
   root: string;
   master:    { root: string; biography: string; goals: string; preferences: string };
   llm:       { root: string; responsibilities: string; protocols: string; diary: string };
-  // metaThread: the standing, lifecycle-exempt "BrainLLM" self-analysis thread
-  // (status=eternal) under Threads. "" until ensureMetaThread() lazily creates
-  // or discovers it — safe to be empty on configs saved before this field existed.
+  // metaThread: vestigial — the former standing self-analysis thread's slot
+  // (self-analysis lives in the diary). Kept in the schema so legacy config
+  // files load unchanged; always "".
   memory:    { root: string; sessions: string; threads: string; metaThread: string };
   knowledge: { root: string; master: string; domains: string };
   insights:  { root: string; logs: string };
@@ -33,7 +33,7 @@ export interface BrainLLMConfig {
 }
 
 export const EMPTY_BRAINLLM: BrainLLMConfig = {
-  version: 5,
+  version: 8,
   root: "",
   master:    { root: "", biography: "", goals: "", preferences: "" },
   llm:       { root: "", responsibilities: "", protocols: "", diary: "" },
@@ -60,8 +60,9 @@ export function loadConfig(): BrainLLMConfig | null {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8"));
-    // Clean break: only V5 configs load. Older shapes fall through to discovery.
-    if (typeof parsed?.root === "string" && parsed?.version === 5) {
+    // Version 8, or legacy version 5 (re-saved as 8 on the next write).
+    // Older shapes fall through to discovery.
+    if (typeof parsed?.root === "string" && (parsed?.version === 8 || parsed?.version === 5)) {
       return {
         ...parsed,
         memory: { metaThread: "", ...(parsed.memory ?? {}) },
@@ -78,7 +79,7 @@ export function loadConfig(): BrainLLMConfig | null {
 
 export function saveConfig(config: BrainLLMConfig): string {
   const path = configFilePath();
-  writeFileSync(path, JSON.stringify({ ...config, version: 5 }, null, 2) + "\n", "utf-8");
+  writeFileSync(path, JSON.stringify({ ...config, version: 8 }, null, 2) + "\n", "utf-8");
   return path;
 }
 
@@ -143,21 +144,6 @@ export async function discoverBrainLLM(trilium: TriliumClient): Promise<BrainLLM
     config.knowledge.root, config.insights.root,
   ];
   if (requiredIds.some((id) => !id)) return null;
-
-  // The meta-thread lives inside Threads (a grandchild of root), one level
-  // deeper than the child/grandchild walk above reaches — find it by its
-  // #status=eternal marker. Missing is non-fatal: ensureMetaThread() creates
-  // or re-discovers it lazily on the next start()/remarks() call.
-  if (config.memory.threads) {
-    try {
-      const found = await trilium.searchNotes("#noteType=thread #status=eternal", {
-        ancestorNoteId: config.memory.threads,
-        fastSearch: true,
-        limit: 1,
-      });
-      if (found.results[0]) config.memory.metaThread = found.results[0].noteId;
-    } catch { /* non-fatal */ }
-  }
 
   return config;
 }

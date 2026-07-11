@@ -127,6 +127,22 @@ export function titleCaseSlug(slug: string): string {
     .join(" ");
 }
 
+// ── Icons ─────────────────────────────────────────────────────────────────────
+
+/** Normalize an icon request to a Trilium boxicons class. Accepts a full class
+ *  ("bx bx-brain", "bx bxs-heart", "bx bxl-github") or a bare name ("brain" →
+ *  "bx bx-brain"). Returns "" for blank/unusable input so callers can no-op. */
+export function normalizeIcon(raw: string): string {
+  const s = decodeEntities(raw).trim().toLowerCase().replace(/\s+/g, " ");
+  if (!s) return "";
+  if (/^bx bx[sl]?-[a-z0-9-]+$/.test(s)) return s;
+  const name = s
+    .replace(/^bx[sl]?-/, "")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return name ? `bx bx-${name}` : "";
+}
+
 // ── Body markup ───────────────────────────────────────────────────────────────
 
 const HTML_TAG = /<\/?[a-z][a-z0-9-]*(\s[^<>]*)?>/i;

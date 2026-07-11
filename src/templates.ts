@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — structured note content generators (V7, minimal)
+// BrainLLM — structured note content generators (V8)
 //
 // Structure-phase scope: enough to seed the tree and produce well-formed notes.
 // The rich per-kind blueprint protocols (structure, format, lifecycle and
@@ -10,7 +10,7 @@ import { escapeHtml } from "./normalize.js";
 import type { AnyKind } from "./types.js";
 
 export const RESOLUTION_ANCHOR = "<h2>Resolution</h2>";
-export const OPEN_RESOLUTION = `${RESOLUTION_ANCHOR}\n<p><em>— open —</em></p>`;
+const OPEN_RESOLUTION = `${RESOLUTION_ANCHOR}\n<p><em>— open —</em></p>`;
 
 function metaLine(parts: Array<string | undefined>): string {
   const cleaned = parts.filter((p): p is string => !!p && p.trim().length > 0);
@@ -23,7 +23,7 @@ export interface TemplateOpts {
   domain?: string;  // display name for domain-scoped notes
 }
 
-// Threads are the one kind that still resolves in V5, so they carry the anchor.
+// Threads are the one kind that resolves, so they carry the anchor.
 const RESOLVABLE = new Set<AnyKind>(["thread"]);
 
 // Singleton kinds whose enforced structure (a section skeleton) is seeded at
@@ -79,21 +79,6 @@ export function contentFor(kind: AnyKind, o: TemplateOpts): string {
       return parts.join("\n");
     }
   }
-}
-
-// The BrainLLM meta-thread — a standing, lifecycle-exempt (status=eternal)
-// thread for continuous self-analysis of BrainLLM itself. Unlike ordinary
-// threads it carries no Resolution anchor: it isn't meant to close, and
-// structural protection (see lifecycle.ts) blocks resolve()/reopen()/forget()
-// from touching it. Its body is a chronological stack of dated addendum
-// blocks written by remarks() — the same shape as diary/session/log — not a
-// fixed section skeleton revised in place, since the value here is seeing how
-// BrainLLM's own capabilities/bugs/efficiency evolve session over session.
-export function metaThreadContent(date: string): string {
-  return [
-    metaLine(["thread", "eternal — exempt from lifecycle aging", `opened ${date}`]),
-    "<p><em>Standing, permanently-open thread for analyzing and building BrainLLM itself. Logged every session via the remarks() pre-close tool as one dated addendum block — capabilities, issues/bugs, usability, memory efficiency, token efficiency, performance, hygiene/maintenance, and roadmap — in service of building BrainLLM into the best possible native memory/brain system for LLMs.</em></p>",
-  ].join("\n");
 }
 
 export function domainContent(name: string): string {

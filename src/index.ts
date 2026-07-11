@@ -65,7 +65,7 @@ function createServer(): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "7.0.0",
+    version: "8.0.0",
     icons: BRANDING_ICONS,
   });
   registerTools(s, trilium, brainRef, mode);

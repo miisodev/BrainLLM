@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — structure builder (V7)
+// BrainLLM — structure builder (V8)
 // Shared by the bootstrap tool and the init.ts CLI.
 //
 // Builds the six-area tree on a fresh instance. Collection containers are real
@@ -13,7 +13,7 @@
 import { TriliumClient } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { DEFAULT_POLICY, type AnyKind } from "./types.js";
-import { purposeContent, contentFor, metaThreadContent, STRUCTURED_SINGLETONS } from "./templates.js";
+import { purposeContent, contentFor, STRUCTURED_SINGLETONS } from "./templates.js";
 
 export async function createBrainLLMStructure(trilium: TriliumClient): Promise<BrainLLMConfig> {
   const d = new Date().toISOString().slice(0, 10);
@@ -60,7 +60,7 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
   const [responsibilities, protocols, diary] = await Promise.all([
     leaf(llmRoot, "Responsibilities", "responsibilities", "A single maintained note of the assistant's responsibilities to the master/user, derived from their goals and preferences."),
     leaf(llmRoot, "Protocols", "protocols", "A single maintained note of the assistant's operating and self-correctness protocols — how it maximises its value to the master/user by efficiently meeting its responsibilities."),
-    book(llmRoot, "Diary", "A collection of daily, day-lifecycle diary notes — the assistant's raw, unfiltered record of its experiences and being itself.", "bx bx-book-heart"),
+    book(llmRoot, "Diary", "A collection of daily maintained diary notes — the assistant's unfiltered first-person record of its experience, opinions, and remarks on its own existence during each session in the environment, plus its remarks and opinions on BrainLLM itself.", "bx bx-book-heart"),
   ]);
 
   // ── Memory ──────────────────────────────────────────────────────────────────
@@ -68,17 +68,6 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
   const [sessions, threads] = await Promise.all([
     book(memoryRoot, "Sessions", "A collection of daily, day-lifecycle session notes, each summarising that day's session.", "bx bx-calendar"),
     book(memoryRoot, "Threads", "A collection of maintained thread notes, each tracking a line of multi-session running work.", "bx bx-git-branch"),
-  ]);
-
-  // The BrainLLM meta-thread — standing, status=eternal, exempt from the
-  // active → dormant → archived aging timeline (see lifecycle.ts). Continuous
-  // self-analysis of BrainLLM itself, maintained every session via remarks().
-  const metaThreadNote = await trilium.createNote(threads, "BrainLLM", metaThreadContent(d), "text");
-  const metaThread = metaThreadNote.note.noteId;
-  await Promise.all([
-    trilium.addLabel(metaThread, "noteType", "thread"),
-    trilium.addLabel(metaThread, "status", "eternal"),
-    trilium.addLabel(metaThread, "created", d),
   ]);
 
   // ── Knowledge ───────────────────────────────────────────────────────────────
@@ -97,7 +86,7 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
     root: rootId,
     master:    { root: masterRoot, biography, goals, preferences },
     llm:       { root: llmRoot, responsibilities, protocols, diary },
-    memory:    { root: memoryRoot, sessions, threads, metaThread },
+    memory:    { root: memoryRoot, sessions, threads, metaThread: "" },
     knowledge: { root: knowledgeRoot, master: knowledgeMaster, domains },
     insights:  { root: insightsRoot, logs },
     policy: { ...DEFAULT_POLICY },

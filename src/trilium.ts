@@ -507,18 +507,9 @@ export class TriliumClient {
 
   // ── Graph traversal ────────────────────────────────────────────────────────
 
-  async getLinkedNotes(noteId: string): Promise<Note[]> {
-    const note = await this.getNote(noteId);
-    const relations = note.attributes.filter((a) => a.type === "relation");
-    const linked = await Promise.all(
-      relations.map((r) => this.getNote(r.value).catch(() => null))
-    );
-    return linked.filter((n): n is Note => n !== null);
-  }
-
   // Find notes that have a relation pointing TO this note (reverse traversal).
   // Trilium's search DSL has no generic "any relation → X" predicate, so we OR a
-  // `~name.noteId` clause per known relation name. Callers (e.g. traverseConnectome)
+  // `~name.noteId` clause per known relation name. Callers (e.g. getNeighborhood)
   // may pass a precomputed `relationNames` set to avoid rediscovering the vocabulary
   // on every hop; otherwise we discover it once per call.
   async getBacklinks(
@@ -681,88 +672,6 @@ export class TriliumClient {
     }));
   }
 
-  // Filtered graph traversal with direction and relation type controls
-  async traverseConnectome(
-    startId: string,
-    opts: {
-      maxDepth?: number;
-      relationType?: string;
-      direction?: "outbound" | "inbound" | "both";
-      maxNodes?: number;
-    } = {}
-  ): Promise<Array<{ noteId: string; title: string; depth: number; via: string; fromNoteId: string }>> {
-    const { maxDepth = 3, relationType, direction = "outbound", maxNodes = 50 } = opts;
-    // Discover the relation-name universe once up front so inbound hops don't each re-scan.
-    const inboundNames =
-      direction === "inbound" || direction === "both"
-        ? backlinkRelationNames(await this.listRelationTypes())
-        : [];
-    const visited = new Map<string, { title: string; depth: number; via: string; fromNoteId: string }>();
-    const queue: Array<{ id: string; dist: number; via: string; from: string }> = [
-      { id: startId, dist: 0, via: "start", from: "" },
-    ];
-
-    while (queue.length > 0 && visited.size < maxNodes) {
-      const current = queue.shift()!;
-      if (visited.has(current.id) || current.dist > maxDepth) continue;
-
-      let note: Note;
-      try {
-        note = await this.getNote(current.id);
-      } catch {
-        continue;
-      }
-
-      visited.set(current.id, {
-        title: note.title,
-        depth: current.dist,
-        via: current.via,
-        fromNoteId: current.from,
-      });
-
-      if (current.dist < maxDepth) {
-        if (direction === "outbound" || direction === "both") {
-          const rels = note.attributes.filter(
-            (a) => a.type === "relation" && (!relationType || a.name === relationType)
-          );
-          for (const rel of rels) {
-            if (rel.value && !visited.has(rel.value)) {
-              queue.push({ id: rel.value, dist: current.dist + 1, via: rel.name, from: current.id });
-            }
-          }
-        }
-
-        if (direction === "inbound" || direction === "both") {
-          try {
-            const backlinks = await this.getBacklinks(current.id, inboundNames);
-            for (const bl of backlinks) {
-              if (!relationType || bl.relationName === relationType) {
-                if (!visited.has(bl.noteId)) {
-                  queue.push({
-                    id: bl.noteId,
-                    dist: current.dist + 1,
-                    via: `←${bl.relationName}`,
-                    from: current.id,
-                  });
-                }
-              }
-            }
-          } catch {
-            // Backlink search unavailable
-          }
-        }
-      }
-    }
-
-    // Remove start node from results
-    visited.delete(startId);
-
-    return Array.from(visited.entries()).map(([id, data]) => ({
-      noteId: id,
-      ...data,
-    }));
-  }
-
   // ── Relation helpers ──────────────────────────────────────────────────────
 
   // Remove a specific named relation from fromNote to toNote
@@ -820,12 +729,5 @@ export class TriliumClient {
       return updated;
     }
     return this.addLabel(noteId, labelName, newValue);
-  }
-
-  // ── Convenience helpers ────────────────────────────────────────────────────
-
-  async getNotesByLabel(labelName: string, labelValue?: string): Promise<SearchResult> {
-    const query = labelValue != null ? `#${labelName}=${labelValue}` : `#${labelName}`;
-    return this.searchNotes(query);
   }
 }

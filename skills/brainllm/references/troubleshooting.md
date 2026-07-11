@@ -18,7 +18,7 @@
 | Long conversation, no natural end | Call `close` when the work *topic* wraps, even if chat continues; a later wrap-up appends |
 | User edited notes directly in Trilium | Fine — that's a feature. Run `maintain(deep=true)` next session to re-check the tree |
 | Sweep flags a stray you can't classify | Tell the user what it is and where; flags are conversation starters, not auto-fixes |
-| A task needs direct note surgery | Use the full-mode tools (`create_note`, `patch_note`, `delete_note`, `add_label`, …) — see `references/full-mode.md`. Prefer the high-level surface for routine memory. |
+| A task needs direct note surgery | Use the full-mode tools (`create_note`, `patch_note`, `delete_note`, `add_label`, …) — see `references/fullmode.md`. Prefer the high-level surface for routine memory. |
 
 ---
 
@@ -31,7 +31,7 @@
 | Deep maintenance flags the same items every session | Act on them — `connect()` orphans, `revise()`/`resolve()` stale notes — or accept them and let them age |
 | `recall` returns odd results | It already filters untyped notes; if it persists, `maintain(deep=true)` then retry |
 | Items going dormant too fast / too slow | User edits `policy` in `brainllm.json` (`dormantAfterDays` / `archiveDormantAfterDays` / `staleAfterDays`) |
-| Need raw Trilium access (attachments, calendar, custom queries) | Full-mode tools — see `references/full-mode.md` |
+| Need raw Trilium access (attachments, calendar, custom queries) | Full-mode tools — see `references/fullmode.md` |
 | Config IDs stale after restructuring in Trilium | `bootstrap` re-discovers and rewrites `brainllm.json` |
-| `bootstrap` created a duplicate brain tree | Caused by a transient network/auth error during the existence check — the old catch-all fell through to fresh create. Fixed in v5.2+: only a confirmed 404 (root deleted) now triggers a new tree. To recover: identify the newer duplicate by `dateCreated`, then `forget(rootId, hard=true)` its entire subtree or delete it directly in Trilium. |
+| `bootstrap` created a duplicate brain tree | Caused by a transient network/auth error during the existence check — the old catch-all fell through to fresh create. Fixed: only a confirmed 404 (root deleted) now triggers a new tree. To recover: identify the newer duplicate by `dateCreated`, then `forget(rootId, hard=true)` its entire subtree or delete it directly in Trilium. |
 | Hosted deploy: `ENOENT` on startup / auto-discovery fails with a file-path error | `BRAINLLM_CONFIG` is set to a directory path instead of a file path (e.g. `/home/node/trilium-data` instead of `/vol/brainllm.json`). Mount a persistent volume on the BrainLLM MCP service (not the Trilium service) and set `BRAINLLM_CONFIG` to a file path inside it, or remove `BRAINLLM_CONFIG` entirely to rely on auto-discovery each startup. |

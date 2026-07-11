@@ -95,14 +95,14 @@ if (testNoteId) {
   } catch (err) { fail("addLabel", err); }
 
   try {
-    await trilium.addLabel(testNoteId, "noteType", "knowledge");
+    await trilium.addLabel(testNoteId, "noteType", "user");
     pass("addLabel noteType");
   } catch (err) { fail("addLabel noteType", err); }
 
   try {
-    const byLabel = await trilium.getNotesByLabel("testLabel", "hello");
-    pass("getNotesByLabel", `${byLabel.results.length} notes found`);
-  } catch (err) { fail("getNotesByLabel", err); }
+    const byLabel = await trilium.searchNotes("#testLabel=hello");
+    pass("searchNotes byLabel", `${byLabel.results.length} notes found`);
+  } catch (err) { fail("searchNotes byLabel", err); }
 
   if (attrId) {
     try {
