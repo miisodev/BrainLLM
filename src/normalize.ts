@@ -415,6 +415,107 @@ export function safeAppend(current: string, ...blocks: string[]): string {
   return [closeDangling(current.trimEnd()), ...blocks].filter(Boolean).join("\n");
 }
 
+// ── Targeted-find helpers ─────────────────────────────────────────────────────
+
+/** Build an attribute-tolerant regex from an exact find string, for the
+ *  find= fallback path. CKEditor re-serializes stored HTML with injected
+ *  attributes (spellcheck="false" on <code>, data-list-item-id on <li>, …),
+ *  so text authored verbatim stops exact-matching after one storage
+ *  round-trip. This relaxes every OPENING tag in the find string to accept
+ *  any attributes; text segments and closing tags stay literal. Returns null
+ *  when the find string contains no tags (nothing to relax — an exact miss
+ *  is a genuine miss). */
+export function tolerantFindRegex(find: string): RegExp | null {
+  const OPEN_TAG = /<([a-zA-Z][a-zA-Z0-9-]*)((?:\s[^<>]*)?)(\/?)>/g;
+  if (!OPEN_TAG.test(find)) return null;
+  OPEN_TAG.lastIndex = 0;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let out = "";
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = OPEN_TAG.exec(find)) !== null) {
+    out += esc(find.slice(last, m.index));
+    out += `<${esc(m[1])}(?:\\s[^>]*)?${m[3] ? "\\/?" : ""}>`;
+    last = m.index + m[0].length;
+  }
+  out += esc(find.slice(last));
+  try {
+    return new RegExp(out, "g");
+  } catch {
+    return null;
+  }
+}
+
+// ── Dated-record headers ──────────────────────────────────────────────────────
+
+/** Correct the meta-line date of a dated record (diary/session/log) to the
+ *  note's canonical date. Guards against rewrite residue — a body replace
+ *  that carried a stale "<em>session · 2026-07-14</em>" header from an older
+ *  note. Only the header's date is touched; absent/unrecognized headers pass
+ *  through unchanged. */
+export function fixRecordHeader(html: string, kind: string, date: string): { html: string; fixed: boolean } {
+  const re = new RegExp(`^(\\s*<p><em>${kind}\\s*·\\s*)(\\d{4}-\\d{2}-\\d{2})(</em></p>)`, "i");
+  const m = re.exec(html);
+  if (!m || m[2] === date) return { html, fixed: false };
+  return { html: html.replace(re, `$1${date}$3`), fixed: true };
+}
+
+// ── Last-updated stamps ───────────────────────────────────────────────────────
+
+/** Bump a note's "Last updated" line to `date`, preserving the note's own
+ *  separator and date style (ISO "2026-07-16" or US "7/16/2026"). Server-owned
+ *  in V9: any content write through the tools keeps the stamp current, so the
+ *  model never hand-maintains dates. No-op when the note has no such line. */
+export function bumpLastUpdated(html: string, date: string): { html: string; bumped: boolean } {
+  const re = /(Last updated\s*(?:[-:–]|&ndash;|&mdash;)\s*)(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})/i;
+  const m = re.exec(html);
+  if (!m) return { html, bumped: false };
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(m[2]);
+  const [y, mo, d] = date.split("-");
+  const formatted = iso ? date : `${Number(mo)}/${Number(d)}/${y}`;
+  if (m[2] === formatted) return { html, bumped: false };
+  return { html: html.replace(re, `$1${formatted}`), bumped: true };
+}
+
+// ── Structure checks ──────────────────────────────────────────────────────────
+
+/** True when the body opens with the canonical identification line — an h3
+ *  whose text carries the "LLM · environment · agent/mode" separator pattern.
+ *  The write tools for chronological records (diary, session via close, thread
+ *  addendums) require either identity= or a body that already leads with this. */
+export function leadingIdentification(html: string): boolean {
+  const m = /^(?:\s|<p>(?:\s|&nbsp;)*<\/p>)*<h3(?:\s[^>]*)?>([\s\S]*?)<\/h3>/i.exec(html);
+  if (!m) return false;
+  const text = decodeEntities(m[1].replace(/<[^>]+>/g, "")).trim();
+  return text.includes("·");
+}
+
+/** Duplicated heading texts (h2–h4, normalized) in an HTML body — the tell of
+ *  a template/body collision or a section edit that appended instead of
+ *  replacing. Addendum/Withdrawn/Recovered markers are exempt, and detection is
+ *  scoped WITHIN each addendum block: chronological records legitimately repeat
+ *  identification lines and section names across blocks (every addendum carries
+ *  its own h3 identity and its own h4 sections) — only a heading duplicated
+ *  inside one block, or in the pre-addendum head, is a real collision. */
+export function duplicateHeadings(html: string): string[] {
+  const MARKER = /<h2(?:\s[^>]*)?>\s*(?:Addendum|Withdrawn|Recovered|Reopened)\s*(?:—|–|-)[^<]*<\/h2>/gi;
+  const segments = html.split(MARKER);
+  const dupes = new Set<string>();
+  const re = /<h([2-4])(?:\s[^>]*)?>([\s\S]*?)<\/h\1>/gi;
+  for (const segment of segments) {
+    const seen = new Set<string>();
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(segment)) !== null) {
+      const text = decodeEntities(m[2].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase();
+      if (!text) continue;
+      if (seen.has(text)) dupes.add(text);
+      seen.add(text);
+    }
+  }
+  return [...dupes];
+}
+
 /** Replace or append within a heading section (h2/h3/h4 tried in order, first
  *  match wins). Appends as a new h2 section if the heading isn't found at any
  *  level. The match tolerates attributes on the heading tag and surrounding/

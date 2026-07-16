@@ -1,12 +1,15 @@
 /**
- * tools.ts — BrainLLM core tool surface (V8)
+ * tools.ts — BrainLLM core tool surface (V9)
  *
  * The model supplies content; the server owns form. Placement, naming, labels,
- * blueprint wiring, dedup, lifecycle and archival are policy implemented here.
+ * blueprint wiring, dedup, lifecycle, archival — and in V9 structure
+ * (canonical skeletons, heading rules, Last-updated stamps, thread
+ * Goal/Resolution enforcement) — are policy implemented here.
  *
- * Registers the universal verbs (start, close, backup, bootstrap, remember, diary,
- * domain, recall, addendum, revise, resolve, withdraw, recover, attach, detach, connect, explore,
- * maintain, forget), wires in the read-only per-surface modules
+ * Registers the universal verbs (start, session, remarks, close, backup, bootstrap,
+ * remember, diary, domain, recall, addendum, revise, resolve, withdraw, recover, label,
+ * attach, detach, connect, explore, inspect, template, graph, day, maintain, forget,
+ * brain), wires in the read-only per-surface modules
  * (tools-master/llm/memory/knowledge/insights),
  * and — under BRAINLLM_MODE=full — the raw ETAPI surface (tools-advanced).
  */
@@ -20,6 +23,7 @@ import {
   RelationTypes,
   SymmetricRelations,
   Statuses,
+  KIND_AREA,
   type AnyKind,
 } from "./types.js";
 import {
@@ -36,8 +40,13 @@ import {
   safeAppend,
   closeDangling,
   setSection,
+  tolerantFindRegex,
+  fixRecordHeader,
+  bumpLastUpdated,
+  duplicateHeadings,
+  leadingIdentification,
 } from "./normalize.js";
-import { contentFor, RESOLUTION_ANCHOR } from "./templates.js";
+import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES } from "./templates.js";
 import {
   dedupScope,
   labelPlan,
@@ -173,11 +182,14 @@ for topic-specific lookup.`,
       if (!cfg.root) {
         return txt({ status: "uninitialized", action: "Run bootstrap to create the BrainLLM structure." });
       }
-      const hygiene = await sweep(trilium, cfg, { deep: false, dryRun: false }).catch((e) => ({
-        scanned: 0, fixed: [], transitions: [], deleted: [], flagged: [`sweep failed: ${e}`], dryRun: false,
-        policy: { dormantAfterDays: cfg.policy.dormantAfterDays, archiveDormantAfterDays: cfg.policy.archiveDormantAfterDays, staleAfterDays: cfg.policy.staleAfterDays },
-      }));
-      const digest = await buildDigest(trilium, cfg);
+      // Sweep and digest are independent — run them concurrently.
+      const [hygiene, digest] = await Promise.all([
+        sweep(trilium, cfg, { deep: false, dryRun: false }).catch((e) => ({
+          scanned: 0, fixed: [], transitions: [], deleted: [], flagged: [`sweep failed: ${e}`], dryRun: false,
+          policy: { dormantAfterDays: cfg.policy.dormantAfterDays, archiveDormantAfterDays: cfg.policy.archiveDormantAfterDays, staleAfterDays: cfg.policy.staleAfterDays },
+        })),
+        buildDigest(trilium, cfg),
+      ]);
       const todayStr = today();
       const weekday = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${todayStr}T00:00:00Z`).getUTCDay()];
 
@@ -204,22 +216,26 @@ for topic-specific lookup.`,
         } catch { /* non-fatal */ }
       }
 
-      // Ensure today's session note exists (title [yyyy-mm-dd]).
-      // Use the digest's lastSession instead of a second Trilium search — avoids
-      // the unquoted-date parser issue and saves a round-trip.
+      // Ensure today's session note exists (title [yyyy-mm-dd]). The digest
+      // serves today's note and the previous session separately — lastSession
+      // is always the PREVIOUS session, never today's own stub.
       let sessionNoteId: string | null = null;
       let sessionPreview = "";
+      let newDay = false;
       if (cfg.memory.sessions) {
         try {
-          if (digest.lastSession?.date === todayStr) {
-            sessionNoteId = digest.lastSession.id;
+          if (digest.todaySession) {
+            sessionNoteId = digest.todaySession.id;
             const content = await trilium.getNoteContent(sessionNoteId).catch(() => "");
             sessionPreview = toText(content, 200);
+            // A session note without addendum blocks = nothing logged yet today.
+            newDay = !/<h2(?:\s[^>]*)?>\s*Addendum/i.test(content);
           } else {
             const created = await trilium.createNote(cfg.memory.sessions, `[${todayStr}]`, contentFor("session", { date: todayStr, body: "" }));
             sessionNoteId = created.note.noteId;
             await trilium.addLabel(sessionNoteId, "noteType", "session");
             await trilium.addLabel(sessionNoteId, "created", todayStr);
+            newDay = true;
           }
         } catch { /* non-fatal */ }
       }
@@ -264,6 +280,7 @@ for topic-specific lookup.`,
           : [],
         lastSession: digest.lastSession ?? null,
         changesSinceLastSession: changesSinceLastSession.length ? changesSinceLastSession : undefined,
+        ...(newDay ? { newDay: true, newDayHint: "First session of the day — call day() for the sweep payload (previous session + log + changes + monthly deliverables in one call)." } : {}),
         hygiene: { scanned: hygiene.scanned, fixed: hygiene.fixed.length, transitions: hygiene.transitions, flagged: hygiene.flagged },
       });
     }
@@ -272,13 +289,11 @@ for topic-specific lookup.`,
   server.tool(
     "session",
     `Mandatory pre-close step — call BEFORE close() to end a session. Fetches the master and
-LLM singleton notes in full with their last-modified dates, today's diary entry, and runs the
-lightweight maintenance sweep. Gives the LLM everything it needs to evolve the master
-(biography/goals/preferences) and LLM (responsibilities/protocols) singletons with observations
-from this session BEFORE the log is committed — ensuring logs stay factual and singletons stay
-current. Pass light=true to skip singleton content ({id, lastModified, relations} only) when
-the session produced no singleton-worthy observations — e.g. autonomous or narrowly-scoped
-runs; it satisfies the gate identically.
+LLM singletons as {id, lastModified, relations} stubs (LIGHT — the default), today's diary
+entry, and runs the lightweight maintenance sweep. start() already served every singleton in
+full at session open — fetch current content via master()/llm() only for the singletons you
+actually intend to revise (lastModified tells you what moved). Pass full=true to include every
+singleton's content inline instead (rarely needed; token-heavy).
 
 Idempotent: fetches are read-only, the sweep is non-destructive, safe to call multiple times.
 
@@ -295,9 +310,10 @@ will commit the log:
 7. Call close() — commit the session log (mandatory, last). Refuses until 3–6 have run in order (session → remarks → diary); pass force=true only when there is genuinely nothing to log for a skipped step.`,
     {
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
-      light: z.boolean().optional().describe("Skip singleton content — return {id, lastModified, relations} only. For sessions that won't revise the singletons (e.g. autonomous/scoped runs); fetch full content via master()/llm() only where lastModified says something changed."),
+      full: z.boolean().optional().describe("Include every singleton's full content inline (default: false — stubs only; fetch content via master()/llm() where lastModified moved)"),
+      light: z.boolean().optional().describe("Deprecated — light is now the default; accepted for compatibility and ignored"),
     },
-    async ({ date, light }) => {
+    async ({ date, full }) => {
       const d = date ?? today();
       const cfg = b();
       if (!cfg.master.root || !cfg.llm.root)
@@ -305,7 +321,7 @@ will commit the log:
       markStep("session");
 
       const fetchSingleton = async (id: string) => {
-        if (light) {
+        if (!full) {
           const note = await trilium.getNote(id);
           const relations = relationSnippet(note);
           return { id, lastModified: note.dateModified.slice(0, 10), ...(relations ? { relations } : {}) };
@@ -344,7 +360,7 @@ will commit the log:
 
       return txt({
         date: d,
-        ...(light ? { mode: "light", note: "Singleton content omitted — fetch via master()/llm() only where lastModified indicates a revision is needed." } : {}),
+        ...(!full ? { mode: "light", note: "Singleton content omitted (default) — fetch via master()/llm() only where lastModified indicates a revision is needed; start() already served all singletons in full." } : {}),
         master: { biography, goals, preferences },
         llm: { responsibilities, protocols },
         diary: diaryEntry,
@@ -423,13 +439,14 @@ resets for the next session.`,
     {
       summary: z.string().describe("What happened this session — factual, concise prose"),
       title: z.string().optional().describe("Short session title — appears as an <h2> heading above Summary"),
+      identity: z.string().optional().describe('Identification line for this addendum — "LLM · environment · agent/mode [· Run N]" (e.g. "Claude Fable 5 · Cowork · Interactive"); REQUIRED unless the summary already leads with the h3 — rendered as the block\'s h3 per the canonical session structure'),
       learned: z.array(z.string()).optional().describe("Durable things learned (also remember() them as knowledge)"),
       icon: z.string().optional().describe("Display icon for the session note — a boxicons class or bare name; normalized server-side"),
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
       backup: z.boolean().optional().describe("Trigger DB backup (default: true)"),
       force: z.boolean().optional().describe("Bypass the pre-close gate — only when a missing step truly has nothing to log"),
     },
-    async ({ summary, title, learned, icon, date, backup, force }) => {
+    async ({ summary, title, identity, learned, icon, date, backup, force }) => {
       const missing = REQUIRED_PRECLOSE_STEPS.filter((step) => !preCloseSteps.has(step));
       if (missing.length && !force) {
         return err(
@@ -461,8 +478,19 @@ resets for the next session.`,
       if (!parentId) throw new Error("BrainLLM not bootstrapped — run bootstrap.");
 
       const { html: summaryHtml, warnings } = sanitizeHtml(toHtml(summary));
+      // Canonical session structure: every addendum block opens with the
+      // identification line. Enforced — identity= or a summary that already
+      // leads with the h3.
+      if (!identity && !leadingIdentification(summaryHtml)) {
+        return err(
+          "missing_identity",
+          "Session addendums open with the canonical identification line (h3): \"LLM · environment · agent/mode [· Run N]\".",
+          'Pass identity="Claude … · <environment> · <agent/mode>" on close() — the server renders it as the block\'s h3.'
+        );
+      }
+      const identityBlock = identity && !leadingIdentification(summaryHtml) ? `<h3>${escapeHtml(identity)}</h3>\n` : "";
       const titleBlock = title ? `<h2>${escapeHtml(title)}</h2>\n` : "";
-      const sections: string[] = [`${titleBlock}<h2>Summary</h2>\n${summaryHtml}`];
+      const sections: string[] = [`${identityBlock}${titleBlock}<h2>Summary</h2>\n${summaryHtml}`];
       if (learned?.length) {
         sections.push(`<h2>Learned</h2><ul>${learned.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`);
       }
@@ -477,7 +505,9 @@ resets for the next session.`,
       let action: "created" | "appended";
       if (existing.results[0]) {
         noteId = existing.results[0].noteId;
-        const current = await trilium.getNoteContent(noteId).catch(() => "");
+        // Dated-record header guard: correct a stale meta-line date (rewrite
+        // residue) to the note's canonical date before appending.
+        const current = fixRecordHeader(await trilium.getNoteContent(noteId).catch(() => ""), "session", d).html;
         const time = localNowTime();
         const hasContent = current.includes("<h2>Summary</h2>") || /<h2>addendum/i.test(current);
         if (hasContent) {
@@ -502,10 +532,18 @@ resets for the next session.`,
 
       const logReport = await generateDailyLog(trilium, cfg, d).catch(() => null);
 
-      // Wire session ↔ log with ~references relations (idempotent).
+      // Wire session ↔ log with ~references relations — genuinely idempotent:
+      // check each side's existing edges first (the V8 unconditional adds
+      // stacked 8 duplicate edges per direction over a day of closes).
       if (logReport?.noteId) {
-        await trilium.addRelation(noteId, "references", logReport.noteId).catch(() => null);
-        await trilium.addRelation(logReport.noteId, "references", noteId).catch(() => null);
+        const hasEdge = (n: Note | null, to: string) =>
+          !!n?.attributes.some((a) => a.type === "relation" && a.name === "references" && a.value === to && a.noteId === n.noteId);
+        const [sessNote, logNote] = await Promise.all([
+          trilium.getNote(noteId).catch(() => null),
+          trilium.getNote(logReport.noteId).catch(() => null),
+        ]);
+        if (!hasEdge(sessNote, logReport.noteId)) await trilium.addRelation(noteId, "references", logReport.noteId).catch(() => null);
+        if (!hasEdge(logNote, noteId)) await trilium.addRelation(logReport.noteId, "references", noteId).catch(() => null);
       }
 
       let backedUp = false;
@@ -563,16 +601,29 @@ the day. Idempotent per date and retry-safe. start() creates today's entry (empt
 automatically.`,
     {
       body: z.string().describe("What to record — first-person prose, honest and unfiltered"),
+      identity: z.string().optional().describe('Identification line for this addendum — "LLM · environment · agent/mode [· Run N]" (e.g. "Claude Fable 5 · Cowork · Interactive"); REQUIRED unless the body already leads with the h3 — rendered as the block\'s h3 per the canonical diary structure'),
       icon: z.string().optional().describe('Display icon for the day\'s entry — a boxicons class or bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
     },
-    async ({ body, icon, date }) => {
+    async ({ body, identity, icon, date }) => {
       const d = date ?? today();
       const cfg = b();
       const parentId = cfg.llm.diary;
       if (!parentId) throw new Error('BrainLLM not bootstrapped — run bootstrap.');
       markStep("diary");
-      const { html, warnings } = sanitizeHtml(toHtml(body));
+      const sanitized = sanitizeHtml(toHtml(body));
+      const warnings = sanitized.warnings;
+      // Canonical diary structure: every addendum block opens with the
+      // identification line. Enforced — identity= or a body that already
+      // leads with the h3.
+      if (!identity && !leadingIdentification(sanitized.html)) {
+        return err(
+          "missing_identity",
+          "Diary addendums open with the canonical identification line (h3): \"LLM · environment · agent/mode [· Run N]\".",
+          'Pass identity="Claude … · <environment> · <agent/mode>" on diary() — the server renders it as the block\'s h3.'
+        );
+      }
+      const html = identity && !leadingIdentification(sanitized.html) ? `<h3>${escapeHtml(identity)}</h3>\n${sanitized.html}` : sanitized.html;
 
       const found = await trilium
         .searchNotes(`#noteType=diary #created='${d}'`, { ancestorNoteId: parentId, fastSearch: true, limit: 1 })
@@ -580,7 +631,8 @@ automatically.`,
 
       if (found.results[0]) {
         const noteId = found.results[0].noteId;
-        const current = await trilium.getNoteContent(noteId).catch(() => "");
+        // Dated-record header guard: correct a stale meta-line date before appending.
+        const current = fixRecordHeader(await trilium.getNoteContent(noteId).catch(() => ""), "diary", d).html;
         const time = localNowTime();
 
         // Idempotency guard: the diary note is one-per-day, so every addendum
@@ -640,7 +692,9 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       kind: z.enum(Kinds).describe("What kind of memory this is"),
       title: z.string().optional().describe("Title — collection kinds (thread/knowledge/information sub-category); ignored for singletons & sources"),
       body: z.string().optional().describe("Content: plain text, markdown, or HTML"),
-      domain: z.string().optional().describe("knowledge: the domain name for information/sources (auto-created)"),
+      goal: z.string().optional().describe("thread creation: the goal statement — REQUIRED for a new thread (query the user for it); becomes the Context → Goal section"),
+      identity: z.string().optional().describe('thread updates: the addendum\'s identification line — "LLM · environment · agent/mode [· Run N]"; REQUIRED when appending to a thread (unless the body already leads with the h3)'),
+      domain: z.string().optional().describe("knowledge: the domain name for information/sources (auto-created complete with its Sources note)"),
       topics: z.array(z.string()).optional().describe("Topic tags — slugged server-side"),
       supersedes: z.string().optional().describe("noteId this replaces — old note is archived and wired supersedes"),
       connect: z.array(z.object({
@@ -650,10 +704,20 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name ("brain"); normalized server-side'),
       date: z.string().optional().describe("ISO date override (default: today)"),
     },
-    async ({ kind, title, body, domain, topics, supersedes, connect: connectRels, icon, date }) => {
+    async ({ kind, title, body, goal, identity, domain, topics, supersedes, connect: connectRels, icon, date }) => {
       const opts: RememberOpts = { domain, topics, date };
       const d = date ?? today();
       const { html, warnings: sanitizeWarnings } = sanitizeHtml(toHtml(body ?? ""));
+
+      // Threads carry exactly one Resolution — the bottom section, owned by
+      // resolve(). A body smuggling its own is refused before any write.
+      if (kind === "thread" && /<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/i.test(html)) {
+        return err(
+          "structure_violation",
+          "Thread bodies must not carry a Resolution heading — a thread has exactly one Resolution, at the bottom, owned by resolve().",
+          "Remove the Resolution section from the body; close the thread with resolve(noteId, outcome) when the work completes."
+        );
+      }
 
       /** Append content into a single maintained note. Returns false (no-op) if the
        *  last addendum already carries the same normalised content — retry-safe. */
@@ -704,36 +768,45 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         return txt({ action: wrote ? "maintained" : "already_written", noteId: id, kind, location: locationLabel(kind), ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
       }
 
-      // 2 ── Per-domain singleton: the one Sources note in a domain.
+      // 2 ── Per-domain singleton: the one Sources note in a domain. Domains
+      //      are born complete (resolveDomain creates the canonical Sources
+      //      note with the book), so writes here MERGE into the Sources
+      //      section — a maintained clean document, never addendum stacks.
       if (kind === "sources") {
         if (!domain)
           return err("missing_param", 'kind="sources" requires a domain.', 'Call remember(kind="sources", domain="<domain name>", body="...")');
-        const { domainId, domainTitle } = await resolveDomain(trilium, b(), domain);
-        const found = await trilium
-          .searchNotes("#noteType=sources", { ancestorNoteId: domainId, fastSearch: true, limit: 1 })
-          .catch(() => ({ results: [] as Note[] }));
-        let sid = found.results[0]?.noteId;
-        let sidNote: Note | null = found.results[0] ?? null;
-        let wrote: boolean;
+        const { domainId, domainTitle, createdDomain, sourcesId } = await resolveDomain(trilium, b(), domain);
+        const found = sourcesId
+          ? { results: [] as Note[] }
+          : await trilium
+              .searchNotes("#noteType=sources", { ancestorNoteId: domainId, fastSearch: true, limit: 1 })
+              .catch(() => ({ results: [] as Note[] }));
+        let sid = sourcesId ?? found.results[0]?.noteId;
+        let wrote = false;
         if (!sid) {
-          // First write — the content is born inside the template body, not
-          // appended as a dated addendum block in the same call that created
-          // the note: a fresh Sources note must be a clean document from the
-          // start (the merge rule for Knowledge surfaces).
+          // Legacy domain without a Sources note — create the canonical one.
           const created = await trilium.createNote(domainId, "Sources", contentFor("sources", { date: d, body: html, domain: domainTitle }));
           sid = created.note.noteId;
-          sidNote = created.note;
           for (const l of labelPlan("sources", opts, d)) {
             await trilium.addLabel(sid, l.name, l.value, l.inheritable ?? false);
           }
           wrote = true;
-        } else {
-          wrote = await upsertInto(sid);
+        } else if (html && toText(html, 50)) {
+          const current = await trilium.getNoteContent(sid).catch(() => "");
+          if (!current.includes(html)) {
+            await trilium.createRevision(sid).catch(() => null);
+            const merged = setSection(current, "Sources", html, "append");
+            const stamped = bumpLastUpdated(merged.html, d);
+            await trilium.updateNoteContent(sid, stamped.html);
+            await trilium.updateLabelValue(sid, "updated", d);
+            wrote = true;
+          }
         }
         const connected = await wireRequested(sid);
         const iconSet = await applyIcon(sid, icon);
+        const sidNote = await trilium.getNote(sid).catch(() => null);
         const relations = sidNote ? relationSnippet(sidNote) : undefined;
-        return txt({ action: wrote ? "maintained" : "already_written", noteId: sid, kind, location: locationLabel(kind, domainTitle), ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+        return txt({ action: wrote ? "maintained" : "already_written", noteId: sid, kind, domainId, location: locationLabel(kind, domainTitle), ...(createdDomain ? { createdDomain: domainTitle } : {}), ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
       }
 
       // 3 ── Domain collection: sub-category information notes (many per domain),
@@ -751,14 +824,15 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         const existing = inDomain.results.find((n) => sameTitle(n.title, subTitle));
         if (existing) {
           const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
-          if (isDuplicateAppend(current, html)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title });
+          if (isDuplicateAppend(current, html)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title, domainId });
           await trilium.createRevision(existing.noteId).catch(() => null);
-          await trilium.updateNoteContent(existing.noteId, safeAppend(current, `<h2>Addendum — ${d}</h2>`, html));
+          const appended = bumpLastUpdated(safeAppend(current, `<h2>Addendum — ${d}</h2>`, html), d);
+          await trilium.updateNoteContent(existing.noteId, appended.html);
           await trilium.updateLabelValue(existing.noteId, "updated", d);
           const connected = await wireRequested(existing.noteId);
           const iconSet = await applyIcon(existing.noteId, icon);
           const relations = relationSnippet(existing);
-          return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+          return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title, domainId, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
         }
         const created = await trilium.createNote(domainId, subTitle, contentFor("information", { date: d, body: html, domain: domainTitle }));
         const nid = created.note.noteId;
@@ -772,6 +846,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           noteId: nid,
           kind,
           title: subTitle,
+          domainId,
           location: locationLabel(kind, domainTitle),
           ...(createdDomain ? { createdDomain: domainTitle } : {}),
           ...(connected.length ? { connected } : { hint: ORPHAN_HINT }),
@@ -797,10 +872,21 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
 
       const existing = await findExisting(kind, cleanTitle);
       if (existing) {
+        // Canonical thread structure: every addendum block opens with the
+        // identification line (h3). Enforced on thread appends.
+        if (kind === "thread" && !identity && !leadingIdentification(html)) {
+          return err(
+            "missing_identity",
+            "Thread addendums open with the canonical identification line (h3): \"LLM · environment · agent/mode [· Run N]\".",
+            'Pass identity="Claude … · <environment> · <agent/mode>" — the server renders it as the addendum\'s h3.'
+          );
+        }
+        const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
         const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
-        if (isDuplicateAppend(current, html)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title });
+        if (isDuplicateAppend(current, block)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title });
         await trilium.createRevision(existing.noteId).catch(() => null);
-        await trilium.updateNoteContent(existing.noteId, insertBeforeResolution(closeDangling(current), `<h2>Addendum — ${d}</h2>\n${html}`));
+        const updatedContent = bumpLastUpdated(insertBeforeResolution(closeDangling(current), `<h2>Addendum — ${d}</h2>\n${block}`), d);
+        await trilium.updateNoteContent(existing.noteId, updatedContent.html);
         await trilium.updateLabelValue(existing.noteId, "updated", d);
         for (const t of topics ?? []) {
           const slug = slugify(t);
@@ -811,11 +897,23 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         const connected = await wireRequested(existing.noteId);
         const iconSet = await applyIcon(existing.noteId, icon);
         const relations = relationSnippet(existing);
-        return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+        const dupes = duplicateHeadings(updatedContent.html);
+        return txt({ action: "updated", noteId: existing.noteId, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(dupes.length ? { duplicateHeadings: dupes, structureHint: "The note now carries duplicated section headings — merge them with revise(section=…, mode=replace)." } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+      }
+
+      // Thread structure enforcement: a new thread is born with its goal — the
+      // Context → Goal section is the canonical top, queried from the user at
+      // creation. A body already carrying the Context structure also passes.
+      if (kind === "thread" && !goal && !/<h2(?:\s[^>]*)?>\s*Context\s*<\/h2>/i.test(html)) {
+        return err(
+          "missing_goal",
+          "A new thread requires a goal — the Context → Goal section is queried from the user at creation.",
+          'Ask the user what this thread\'s goal is, then re-call remember(kind="thread", title, goal="<the goal statement>", body?).'
+        );
       }
 
       const resolved = await resolveParent(trilium, b(), kind, opts);
-      const content = contentFor(kind, { date: d, body: html, domain: resolved.domainTitle ?? domain });
+      const content = contentFor(kind, { date: d, body: html, goal, domain: resolved.domainTitle ?? domain });
       const created = await trilium.createNote(resolved.parentId, cleanTitle, content);
       const nid = created.note.noteId;
 
@@ -946,7 +1044,7 @@ label scans only — much faster on large brains when you know the query is a ti
       };
 
       const [byLabel, byTitle, byText] = await Promise.all([
-        slug.length >= 3 ? run(`#topic=${slug} OR #domain=${slug}`, true) : Promise.resolve([] as Note[]),
+        slug.length >= 3 ? run(`#topic='${slug}' OR #domain='${slug}'`, true) : Promise.resolve([] as Note[]),
         tokens.length && !fast
           ? run(tokens.map((t) => `note.title *=* '${escapeQueryValue(t)}'`).join(" AND "))
           : tokens.length
@@ -990,10 +1088,12 @@ Use recall() for keyword or full-text search instead.`,
               .catch(() => [] as Note[])
           : Promise.resolve([] as Note[]);
 
+      // Label values are quoted: Trilium's lexer treats "-" as an operator, so
+      // an unquoted hyphenated slug (wall-e) silently truncates to "wall".
       const [domainContainers, byTopic, byDomain] = await Promise.all([
-        runIn(cfg.knowledge.domains, `#noteType=domain #domain=${slug}`),
-        runIn(cfg.root, `#topic=${slug}`),
-        runIn(cfg.root, `#domain=${slug}`),
+        runIn(cfg.knowledge.domains, `#noteType=domain #domain='${slug}'`),
+        runIn(cfg.root, `#topic='${slug}'`),
+        runIn(cfg.root, `#domain='${slug}'`),
       ]);
 
       const knowledgeDomain = domainContainers[0]
@@ -1047,8 +1147,12 @@ Use recall() for keyword or full-text search instead.`,
 (mode=replace), edit a heading section in place (pass section — targets h2/h3/h4 in that
 order, tolerant of attributes/whitespace/case on the heading; appends a new h2 if not found),
 or do targeted string surgery (pass find — every occurrence of the exact raw string is
-replaced with body, no markdown conversion, no full read needed; returns replaced count).
-A revision snapshot is always taken first. Also logs thread progress.
+replaced with body, no markdown conversion, no full read needed; returns replaced count and
+matchMode — when the exact string misses, an attribute-tolerant pass retries with stored-HTML
+attribute injection ignored). title= composes with every mode, including find=. Retitling a
+domain book cascades the new #domain slug to the book and all its children. Notes carrying a
+"Last updated" line get it bumped server-side on every content write. A revision snapshot is
+always taken first.
 
 When section is used, the return includes matched (false if no existing heading was found —
 the content was appended as a new h2 instead) and headingCount (>1 means several headings
@@ -1065,16 +1169,43 @@ find= instead — that's exactly what it's for.`,
       section: z.string().optional().describe("Target an <h2> section by heading text; omit for whole-note append/replace"),
       mode: z.enum(["append", "replace"]).optional().describe("append (default) | replace"),
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
+      identity: z.string().optional().describe('append mode: the addendum\'s identification line — "LLM · environment · agent/mode [· Run N]"; REQUIRED when appending to a thread (unless the body already leads with the h3)'),
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
-    async ({ noteId, body, title, section, mode, find, icon, date }) => {
+    async ({ noteId, body, title, section, mode, find, identity, icon, date }) => {
       if (isContainer(b(), noteId))
         return err("protected_note", `Note ${noteId} is a container — its content cannot be edited directly.`, "Use remember() to write to singletons, or specify a content note id.");
       const d = date ?? today();
       const note = await trilium.getNote(noteId);
+      const noteKind = labelOf(note, "noteType");
       const warnings: string[] = [];
       let sectionResult: { matched: boolean; headingCount: number } | null = null;
+
+      /** Apply a title change — with the domain rename cascade: retitling a
+       *  domain book updates its #domain slug AND every descendant's, so
+       *  domain() gathering never breaks on a stale slug. */
+      const applyTitle = async (): Promise<{ retitled?: string; cascaded?: number }> => {
+        if (!title) return {};
+        const { title: cleanTitle } = normalizeTitle(title);
+        if (!cleanTitle || cleanTitle === note.title) return {};
+        await trilium.patchNote(noteId, { title: cleanTitle });
+        if (noteKind !== "domain") return { retitled: cleanTitle };
+        const newSlug = slugify(cleanTitle);
+        if (!newSlug) return { retitled: cleanTitle };
+        await trilium.updateLabelValue(noteId, "domain", newSlug).catch(() => null);
+        const children = await trilium
+          .searchNotes("#domain", { ancestorNoteId: noteId, fastSearch: true, limit: 200, includeArchivedNotes: true })
+          .catch(() => ({ results: [] as Note[] }));
+        let cascaded = 0;
+        for (const child of children.results) {
+          if (child.noteId === noteId) continue;
+          if (!child.attributes.some((a) => a.type === "label" && a.name === "domain" && a.noteId === child.noteId)) continue;
+          await trilium.updateLabelValue(child.noteId, "domain", newSlug).catch(() => null);
+          cascaded++;
+        }
+        return { retitled: cleanTitle, cascaded };
+      };
 
       // ── find/replace mode: exact-string surgery, raw in and raw out ────────
       if (find !== undefined) {
@@ -1083,56 +1214,102 @@ find= instead — that's exactly what it's for.`,
         if (body === undefined)
           return err("missing_param", "find requires body as the replacement string.", 'Call revise(noteId, find="<exact text>", body="<replacement>").');
         const current = await trilium.getNoteContent(noteId).catch(() => "");
-        const count = current.split(find).length - 1;
-        if (count === 0) {
+        let count = current.split(find).length - 1;
+        let matchMode: "exact" | "attribute-tolerant" = "exact";
+        let replacedHtml: string | null = null;
+        if (count > 0) {
+          replacedHtml = current.split(find).join(body);
+        } else {
+          // Attribute-tolerant fallback: CKEditor injects attributes into
+          // stored tags (spellcheck, data-list-item-id), defeating verbatim
+          // matches of previously-authored formatted text.
+          const rx = tolerantFindRegex(find);
+          if (rx) {
+            count = (current.match(rx) ?? []).length;
+            if (count > 0) {
+              replacedHtml = current.replace(rx, () => body);
+              matchMode = "attribute-tolerant";
+            }
+          }
+        }
+        if (count === 0 || replacedHtml === null) {
           return txt({
             ok: true, noteId, mode: "find-replace", replaced: 0, date: d,
-            hint: `"${find}" not found in the note body — nothing changed (already replaced on a retry, or verify the exact text with inspect(noteId, content=true)).`,
+            hint: `"${find}" not found in the note body (exact or attribute-tolerant) — nothing changed (already replaced on a retry, or verify the exact text with inspect(noteId, content=true)).`,
           });
         }
         await trilium.createRevision(noteId).catch(() => null);
-        const replacedResult = sanitizeHtml(current.split(find).join(body));
-        await trilium.updateNoteContent(noteId, replacedResult.html);
+        const replacedResult = sanitizeHtml(replacedHtml);
+        const stamped = bumpLastUpdated(replacedResult.html, d);
+        await trilium.updateNoteContent(noteId, stamped.html);
+        const titled = await applyTitle();
         const iconApplied = await applyIcon(noteId, icon);
         await trilium.updateLabelValue(noteId, "updated", d);
         if (labelOf(note, "status") === "dormant") await trilium.updateLabelValue(noteId, "status", "active");
         const rels = relationSnippet(note);
         return txt({
-          ok: true, noteId, mode: "find-replace", replaced: count, date: d,
+          ok: true, noteId, mode: "find-replace", replaced: count, matchMode, date: d,
+          ...(titled.retitled ? { retitled: titled.retitled } : {}),
+          ...(titled.cascaded ? { domainCascade: `#domain updated on ${titled.cascaded} descendant note(s)` } : {}),
           ...(iconApplied ? { icon: iconApplied } : {}),
           ...(rels ? { relations: rels } : {}),
           ...(replacedResult.warnings.length ? { sanitized: replacedResult.warnings } : {}),
         });
       }
 
+      let finalContent: string | null = null;
       if (body) {
         const sanitized = sanitizeHtml(toHtml(body));
         const html = sanitized.html;
         warnings.push(...sanitized.warnings);
+
+        // Threads carry exactly one Resolution, owned by resolve() — refuse an
+        // appended body that smuggles its own.
+        if (noteKind === "thread" && mode !== "replace" && /<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/i.test(html)) {
+          return err(
+            "structure_violation",
+            "Thread bodies must not carry a Resolution heading — a thread has exactly one Resolution, at the bottom, owned by resolve().",
+            "Remove the Resolution section from the body; close the thread with resolve(noteId, outcome) when the work completes."
+          );
+        }
+
         const current = await trilium.getNoteContent(noteId).catch(() => "");
         if (section) {
           await trilium.createRevision(noteId).catch(() => null);
           const result = setSection(current, section, html, mode === "append" ? "append" : "replace");
-          await trilium.updateNoteContent(noteId, result.html);
+          finalContent = bumpLastUpdated(result.html, d).html;
+          await trilium.updateNoteContent(noteId, finalContent);
           sectionResult = { matched: result.matched, headingCount: result.headingCount };
         } else if (mode === "replace") {
           await trilium.createRevision(noteId).catch(() => null);
-          await trilium.updateNoteContent(noteId, html);
+          finalContent = bumpLastUpdated(html, d).html;
+          await trilium.updateNoteContent(noteId, finalContent);
         } else {
-          if (isDuplicateAppend(current, html)) return txt({ ok: true, noteId, mode: "already_written", date: d });
+          // Canonical thread structure: every addendum block opens with the
+          // identification line (h3). Enforced on thread appends.
+          if (noteKind === "thread" && !identity && !leadingIdentification(html)) {
+            return err(
+              "missing_identity",
+              "Thread addendums open with the canonical identification line (h3): \"LLM · environment · agent/mode [· Run N]\".",
+              'Pass identity="Claude … · <environment> · <agent/mode>" — the server renders it as the addendum\'s h3.'
+            );
+          }
+          const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
+          if (isDuplicateAppend(current, block)) return txt({ ok: true, noteId, mode: "already_written", date: d });
           await trilium.createRevision(noteId).catch(() => null);
-          await trilium.updateNoteContent(noteId, insertBeforeResolution(closeDangling(current), `<h2>Addendum — ${d}</h2>\n${html}`));
+          finalContent = bumpLastUpdated(insertBeforeResolution(closeDangling(current), `<h2>Addendum — ${d}</h2>\n${block}`), d).html;
+          await trilium.updateNoteContent(noteId, finalContent);
         }
       }
-      if (title) {
-        const { title: cleanTitle } = normalizeTitle(title);
-        if (cleanTitle && cleanTitle !== note.title) await trilium.patchNote(noteId, { title: cleanTitle });
-      }
+      const titled = await applyTitle();
       const iconSet = await applyIcon(noteId, icon);
       await trilium.updateLabelValue(noteId, "updated", d);
       if (labelOf(note, "status") === "dormant") await trilium.updateLabelValue(noteId, "status", "active");
 
       const relations = relationSnippet(note);
+      const dupes = finalContent && noteKind !== "session" && noteKind !== "diary" && noteKind !== "log"
+        ? duplicateHeadings(finalContent)
+        : [];
       const sectionHint = !sectionResult
         ? undefined
         : !sectionResult.matched
@@ -1147,6 +1324,9 @@ find= instead — that's exactly what it's for.`,
         date: d,
         ...(sectionResult ? { matched: sectionResult.matched, headingCount: sectionResult.headingCount } : {}),
         ...(sectionHint ? { hint: sectionHint } : {}),
+        ...(titled.retitled ? { retitled: titled.retitled } : {}),
+        ...(titled.cascaded ? { domainCascade: `#domain updated on ${titled.cascaded} descendant note(s)` } : {}),
+        ...(dupes.length ? { duplicateHeadings: dupes, structureHint: "The note now carries duplicated section headings — merge them with revise(section=…, mode=replace)." } : {}),
         ...(iconSet ? { icon: iconSet } : {}),
         ...(relations ? { relations } : {}),
         ...(warnings.length ? { sanitized: warnings } : {}),
@@ -1395,17 +1575,53 @@ type/mime/parent/child ids and dates. Pass content=true to also get the raw note
 core path for a raw content read — no full mode needed). The deep-dive counterpart to the
 surface reads and explore(): reach for it when you need the raw label set, the body verbatim,
 or the attachment inventory — confirming a fix landed, debugging drift — rather than a
-kind-specific summary. Read-only, safe on any note including structural containers.`,
+kind-specific summary. Read-only, safe on any note including structural containers.
+
+Pass find="<literal>" to count occurrences of a literal string in the body — total plus a
+per-addendum-block breakdown. The staleness-escalation counter: "how many prior entries
+mention this carried flag" becomes one call instead of a full read + manual counting.`,
     {
       noteId: z.string().describe("Note to inspect"),
       content: z.boolean().optional().describe("Include the note's raw body content (default: false)"),
+      find: z.string().optional().describe("Literal string to count in the body — returns total occurrences + per-addendum-block counts (flag-staleness tracking)"),
     },
-    async ({ noteId, content }) => {
-      const [note, attachments, body] = await Promise.all([
+    async ({ noteId, content, find }) => {
+      const [note, attachments, rawBody] = await Promise.all([
         trilium.getNote(noteId),
         trilium.getNoteAttachments(noteId).catch(() => []),
-        content ? trilium.getNoteContent(noteId).catch(() => "") : Promise.resolve(undefined),
+        content || find ? trilium.getNoteContent(noteId).catch(() => "") : Promise.resolve(undefined),
       ]);
+      const body = content ? rawBody : undefined;
+
+      // Literal-occurrence count, total + per addendum block. Blocks are keyed
+      // by their marker heading; content before the first marker is "(head)".
+      let findReport: { find: string; total: number; blocks: Array<{ block: string; count: number }> } | undefined;
+      if (find && rawBody !== undefined) {
+        const countIn = (s: string) => s.split(find).length - 1;
+        const markerRe = /<h2(?:\s[^>]*)?>\s*((?:Addendum|Withdrawn|Recovered|Reopened)\s*(?:—|–|-)[^<]*)<\/h2>/gi;
+        const blocks: Array<{ block: string; count: number }> = [];
+        let last: { name: string; index: number } | null = null;
+        let m: RegExpExecArray | null;
+        const flush = (end: number) => {
+          if (!last) return;
+          const count = countIn(rawBody.slice(last.index, end));
+          if (count > 0) blocks.push({ block: last.name, count });
+        };
+        while ((m = markerRe.exec(rawBody)) !== null) {
+          if (!last) {
+            const headCount = countIn(rawBody.slice(0, m.index));
+            if (headCount > 0) blocks.push({ block: "(head)", count: headCount });
+          }
+          flush(m.index);
+          last = { name: m[1].replace(/\s+/g, " ").trim(), index: m.index };
+        }
+        flush(rawBody.length);
+        if (!last) {
+          const total = countIn(rawBody);
+          if (total > 0) blocks.push({ block: "(body)", count: total });
+        }
+        findReport = { find, total: countIn(rawBody), blocks };
+      }
       const labels = note.attributes
         .filter((a) => a.type === "label")
         .map((a) => ({ name: a.name, value: a.value, ...(a.isInheritable ? { inheritable: true } : {}) }));
@@ -1427,6 +1643,7 @@ kind-specific summary. Read-only, safe on any note including structural containe
           : {}),
         parentNoteIds: note.parentNoteIds,
         childNoteIds: note.childNoteIds,
+        ...(findReport ? { findReport } : {}),
         ...(body !== undefined ? { content: body } : {}),
       });
     }
@@ -1684,6 +1901,220 @@ prior snapshot. For notes deleted from Trilium entirely (not just archived), use
         recovered: d,
         ...(relations ? { relations } : {}),
         ...(warnings.length ? { sanitized: warnings } : {}),
+      });
+    }
+  );
+
+  server.tool(
+    "template",
+    `Serve the canonical structure for a content kind — the enforced skeleton, the
+top-to-bottom structure, and the rules writes are held to. Read it BEFORE writing a kind for
+the first time in a session (or when unsure), instead of reading a sibling note in full just
+to copy its pattern. The write tools enforce what can be enforced server-side (heading
+normalization, duplicate-heading detection, thread Goal/Resolution rules, Last-updated
+stamps); this tool serves the full contract including what remains authorial.`,
+    {
+      kind: z.enum(Kinds).describe("The content kind to serve the canonical structure for"),
+    },
+    async ({ kind }) => {
+      const rule = structureRuleFor(kind);
+      const skeleton = contentFor(kind, {
+        date: today(),
+        body: "",
+        domain: kind === "sources" || kind === "information" ? "<Domain>" : undefined,
+        goal: kind === "thread" ? "<goal statement — queried from the user>" : undefined,
+      });
+      return txt({
+        kind,
+        ...(rule
+          ? { structure: rule.structure, rules: rule.rules }
+          : { note: "No bespoke structure for this kind — server meta line + body." }),
+        skeleton,
+        conventions: [
+          "Headings h2–h4 only — h1 is the note title; h5/h6 are demoted on write.",
+          "Titles: concise, maximum 4 words, no dates or run numbers (dates defeat title-dedup).",
+          "Singletons and Knowledge notes are clean merged documents — fold content into sections; dated addendum blocks belong only to sessions, diary, and logs.",
+          "Content of the same kind matches its siblings — same structure, layout, and format.",
+        ],
+      });
+    }
+  );
+
+  server.tool(
+    "graph",
+    `The graph view — render the brain's relation graph as a Mermaid flowchart.
+Scope: the whole brain (default), or a neighborhood (pass noteId + depth). Nodes are the typed
+notes, colored by area; edges are the typed relations (~template excluded). The Mermaid source
+is returned AND upserted into the maintained "Graph" note under Insights (a native Trilium
+mermaid note), so the view renders in Trilium and in any Mermaid-capable client.`,
+    {
+      noteId: z.string().optional().describe("Center the graph on this note's neighborhood instead of the whole brain"),
+      depth: z.number().optional().describe("Neighborhood hops when noteId is given (default: 2)"),
+      includeArchived: z.boolean().optional().describe("Include archived notes (default: false)"),
+    },
+    async ({ noteId, depth, includeArchived }) => {
+      const cfg = b();
+      if (!cfg.root) return txt({ status: "uninitialized", action: "Run bootstrap first." });
+
+      let notes: Note[];
+      if (noteId) {
+        const hood = await trilium.getNeighborhood(noteId, depth ?? 2);
+        const fetched = await Promise.all(hood.map((h) => trilium.getNote(h.noteId).catch(() => null)));
+        notes = fetched.filter((n): n is Note => !!n);
+      } else {
+        notes = await trilium
+          .searchNotes("#noteType", { ancestorNoteId: cfg.root, fastSearch: true, limit: 300, includeArchivedNotes: includeArchived ?? false })
+          .then((r) => r.results)
+          .catch(() => [] as Note[]);
+      }
+      if (!includeArchived) notes = notes.filter((n) => !hasLabel(n, "archived"));
+
+      const included = new Map(notes.map((n) => [n.noteId, n]));
+      const mmLabel = (n: Note) => {
+        const t = n.title.length > 34 ? `${n.title.slice(0, 33)}…` : n.title;
+        return t.replace(/"/g, "#quot;");
+      };
+      const AREA_CLASS: Record<string, string> = {
+        master: "master", llm: "llm", memory: "memory", knowledge: "knowledge", insights: "insights",
+      };
+      const lines: string[] = ["flowchart LR"];
+      const classAssignments: Record<string, string[]> = {};
+      for (const n of notes) {
+        lines.push(`  ${n.noteId}["${mmLabel(n)}"]`);
+        const kind = labelOf(n, "noteType") as AnyKind | undefined;
+        const area = kind ? AREA_CLASS[KIND_AREA[kind]] : undefined;
+        if (area) (classAssignments[area] ??= []).push(n.noteId);
+      }
+      let edgeCount = 0;
+      const drawn = new Set<string>();
+      for (const n of notes) {
+        for (const a of n.attributes) {
+          if (a.type !== "relation" || a.name === "template" || a.noteId !== n.noteId) continue;
+          if (!included.has(a.value)) continue;
+          const key = `${n.noteId}|${a.name}|${a.value}`;
+          if (drawn.has(key)) continue; // duplicate edges render once
+          drawn.add(key);
+          lines.push(`  ${n.noteId} -- ${a.name} --> ${a.value}`);
+          edgeCount++;
+        }
+      }
+      lines.push("  classDef master fill:#e8f0fe,stroke:#4285f4");
+      lines.push("  classDef llm fill:#e6f4ea,stroke:#34a853");
+      lines.push("  classDef memory fill:#fef7e0,stroke:#fbbc04");
+      lines.push("  classDef knowledge fill:#fce8e6,stroke:#ea4335");
+      lines.push("  classDef insights fill:#f3e8fd,stroke:#a142f4");
+      for (const [cls, ids] of Object.entries(classAssignments)) {
+        if (ids.length) lines.push(`  class ${ids.join(",")} ${cls}`);
+      }
+      const mermaid = lines.join("\n");
+
+      // Upsert the maintained Graph note under Insights.
+      let graphNoteId: string | null = null;
+      try {
+        const found = await trilium.searchNotes(`note.title = 'Graph'`, { ancestorNoteId: cfg.insights.root, fastSearch: true, limit: 1 });
+        if (found.results[0]) {
+          graphNoteId = found.results[0].noteId;
+          await trilium.updateNoteContent(graphNoteId, mermaid);
+        } else {
+          const created = await trilium.createNote(cfg.insights.root, "Graph", mermaid, "mermaid", "text/mermaid");
+          graphNoteId = created.note.noteId;
+          await trilium.addLabel(graphNoteId, "iconClass", "bx bx-network-chart");
+        }
+      } catch { /* the returned source is still the deliverable */ }
+
+      return txt({
+        scope: noteId ? { noteId, depth: depth ?? 2 } : "brain",
+        nodes: notes.length,
+        edges: edgeCount,
+        ...(graphNoteId ? { graphNoteId } : {}),
+        mermaid,
+      });
+    }
+  );
+
+  server.tool(
+    "day",
+    `The new-day sweep payload — one call replacing the manual multi-read protocol on the
+first session of a day. Serves: whether today is genuinely fresh (no addendum blocks in
+today's session note), the previous session in full, that day's change log, the notes touched
+since then, and the current month's deliverables note in full. Advance the deliverables note's
+statuses with revise(find=) and present the findings in the first message — grounded strictly
+in what the touched notes evidence.`,
+    {
+      date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
+    },
+    async ({ date }) => {
+      const cfg = b();
+      if (!cfg.root) return txt({ status: "uninitialized", action: "Run bootstrap first." });
+      const todayStr = date ?? today();
+
+      // Is today fresh? (No addendum blocks logged yet.)
+      let newDay = true;
+      const todaySess = await trilium
+        .searchNotes(`#noteType=session #created='${todayStr}'`, { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 1 })
+        .catch(() => ({ results: [] as Note[] }));
+      if (todaySess.results[0]) {
+        const content = await trilium.getNoteContent(todaySess.results[0].noteId).catch(() => "");
+        newDay = !/<h2(?:\s[^>]*)?>\s*Addendum/i.test(content);
+      }
+
+      // Previous session (strictly before today) — in full.
+      const sessions = await trilium.searchNotes("#noteType=session", {
+        ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 10, orderBy: "dateCreated", orderDirection: "desc",
+      }).catch(() => ({ results: [] as Note[] }));
+      const prev = sessions.results.find((n) => (labelOf(n, "created") ?? n.dateCreated.slice(0, 10)) < todayStr);
+      let lastSession: { id: string; date: string; content: string } | null = null;
+      let previousLog: { id: string; content: string } | null = null;
+      if (prev) {
+        const prevDate = labelOf(prev, "created") ?? prev.dateCreated.slice(0, 10);
+        lastSession = { id: prev.noteId, date: prevDate, content: await trilium.getNoteContent(prev.noteId).catch(() => "") };
+        const log = await trilium
+          .searchNotes(`#noteType=log #created='${prevDate}'`, { ancestorNoteId: cfg.insights.logs, fastSearch: true, limit: 1 })
+          .catch(() => ({ results: [] as Note[] }));
+        if (log.results[0]) previousLog = { id: log.results[0].noteId, content: await trilium.getNoteContent(log.results[0].noteId).catch(() => "") };
+      }
+
+      // Notes touched since the previous session.
+      let changes: Array<{ id: string; title: string; changed: string; deleted?: true }> = [];
+      if (lastSession) {
+        try {
+          const history = await trilium.getNoteHistory(cfg.root);
+          const deduped = new Map<string, RecentChange>();
+          for (const h of history.filter((h) => h.date >= lastSession!.date)) {
+            const prevEntry = deduped.get(h.noteId);
+            if (!prevEntry || (h.current_isDeleted && !prevEntry.current_isDeleted)) deduped.set(h.noteId, h);
+          }
+          changes = [...deduped.values()].slice(0, 25).map((h) => ({
+            id: h.noteId, title: h.current_title, changed: h.date.slice(0, 10),
+            ...(h.current_isDeleted ? { deleted: true as const } : {}),
+          }));
+        } catch { /* non-fatal */ }
+      }
+
+      // The current month's deliverables note (titled by month name) — in full.
+      const monthName = new Date(`${todayStr}T00:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
+      let deliverables: { id: string; title: string; content: string } | null = null;
+      const monthNotes = await trilium
+        .searchNotes("#noteType=user", { ancestorNoteId: cfg.knowledge.master, fastSearch: true, limit: 100 })
+        .catch(() => ({ results: [] as Note[] }));
+      const monthNote = monthNotes.results.find((n) => sameTitle(n.title, monthName));
+      if (monthNote) {
+        deliverables = { id: monthNote.noteId, title: monthNote.title, content: await trilium.getNoteContent(monthNote.noteId).catch(() => "") };
+      }
+
+      return txt({
+        date: todayStr,
+        newDay,
+        month: monthName,
+        lastSession,
+        previousLog,
+        changes: changes.length ? changes : undefined,
+        deliverables: deliverables ?? { note: `No "${monthName}" deliverables note found in Knowledge/Master — first session of a new month: baseline a fresh one from the venture strategies and the schedule state.` },
+        next: [
+          "Skim lastSession, previousLog, and changes for evidenced outputs — never plausibility.",
+          "Advance the deliverables note's counts/statuses with revise(noteId, find=..., body=...).",
+          "Present the findings in the first message: what moved, what's now due, current counts against the month.",
+        ],
       });
     }
   );

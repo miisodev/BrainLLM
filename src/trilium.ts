@@ -186,6 +186,12 @@ function newEntityId(): string {
   return id;
 }
 
+// Every ETAPI call is bounded: a hung Trilium must fail a tool call, not hang
+// the MCP session (stdio and HTTP alike). Idempotent reads (GET) additionally
+// retry once on network errors and transient upstream statuses.
+const REQUEST_TIMEOUT_MS = 30_000;
+const RETRYABLE_STATUSES = new Set([502, 503, 504]);
+
 export class TriliumClient {
   private baseUrl: string;
   private token: string;
@@ -195,11 +201,35 @@ export class TriliumClient {
     this.token = token;
   }
 
-  // ── Core request helper ────────────────────────────────────────────────────
+  // ── Core request helpers ───────────────────────────────────────────────────
+
+  /** Bounded fetch with a single retry for idempotent reads. Writes (POST/PUT/
+   *  PATCH/DELETE) never retry — Trilium doesn't dedupe them, so the tool
+   *  layer's own idempotency guards are the retry story there. */
+  private async boundedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+    const method = (options.method ?? "GET").toUpperCase();
+    const retryable = method === "GET";
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await fetch(url, { ...options, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+        if (retryable && attempt < 1 && RETRYABLE_STATUSES.has(res.status)) {
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        return res;
+      } catch (e) {
+        if (retryable && attempt < 1) {
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.baseUrl}/etapi${path}`;
-    const res = await fetch(url, {
+    const res = await this.boundedFetch(url, {
       ...options,
       headers: {
         Authorization: `Bearer ${this.token}`,
@@ -279,7 +309,7 @@ export class TriliumClient {
 
   async getNoteContent(noteId: string): Promise<string> {
     const url = `${this.baseUrl}/etapi/notes/${noteId}/content`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
+    const res = await this.boundedFetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Trilium API error ${res.status}: ${body}`);
@@ -289,7 +319,7 @@ export class TriliumClient {
 
   async updateNoteContent(noteId: string, content: string): Promise<void> {
     const url = `${this.baseUrl}/etapi/notes/${noteId}/content`;
-    const res = await fetch(url, {
+    const res = await this.boundedFetch(url, {
       method: "PUT",
       headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "text/plain", "trilium-local-now-datetime": localNowDateTime() },
       body: content === "" ? " " : content,
@@ -312,7 +342,7 @@ export class TriliumClient {
 
   async getRevisionContent(revisionId: string): Promise<string> {
     const url = `${this.baseUrl}/etapi/revisions/${revisionId}/content`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
+    const res = await this.boundedFetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Trilium API error ${res.status}: ${body}`);
@@ -322,7 +352,7 @@ export class TriliumClient {
 
   async createRevision(noteId: string): Promise<void> {
     const url = `${this.baseUrl}/etapi/notes/${noteId}/revision`;
-    const res = await fetch(url, {
+    const res = await this.boundedFetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", "trilium-local-now-datetime": localNowDateTime() },
     });
@@ -413,7 +443,7 @@ export class TriliumClient {
 
   async getAttachmentContent(attachmentId: string): Promise<string> {
     const url = `${this.baseUrl}/etapi/attachments/${attachmentId}/content`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
+    const res = await this.boundedFetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Trilium API error ${res.status}: ${body}`);
@@ -440,7 +470,7 @@ export class TriliumClient {
 
   async updateAttachmentContent(attachmentId: string, content: string, mime: string = "text/plain"): Promise<void> {
     const url = `${this.baseUrl}/etapi/attachments/${attachmentId}/content`;
-    const res = await fetch(url, {
+    const res = await this.boundedFetch(url, {
       method: "PUT",
       headers: { Authorization: `Bearer ${this.token}`, "Content-Type": mime, "trilium-local-now-datetime": localNowDateTime() },
       body: content,
@@ -495,7 +525,7 @@ export class TriliumClient {
     // or a bare date (YYYY-MM-DD), which is prefixed to match the default convention.
     const backupName = /^\d{4}-\d{2}-\d{2}$/.test(nameOrDate) ? `brainllm-${nameOrDate}` : nameOrDate;
     const url = `${this.baseUrl}/etapi/backup/${backupName}`;
-    const res = await fetch(url, {
+    const res = await this.boundedFetch(url, {
       method: "PUT",
       headers: { Authorization: `Bearer ${this.token}` },
     });

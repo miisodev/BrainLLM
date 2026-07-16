@@ -20,7 +20,7 @@ if (!baseUrl || !token) {
 
 const trilium = new TriliumClient(baseUrl, token);
 
-console.log("\n🧠 Bootstrapping BrainLLM (V8)...\n");
+console.log("\n🧠 Bootstrapping BrainLLM (V9)...\n");
 
 const config = await createBrainLLMStructure(trilium);
 const savedPath = saveConfig(config);

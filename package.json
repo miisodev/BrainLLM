@@ -1,6 +1,6 @@
 {
   "name": "brainllm",
-  "version": "8.0.0",
+  "version": "9.0.0",
   "description": "MCP server that turns TriliumNext Notes into a persistent, graph-structured second brain for Claude and other LLM clients.",
   "author": "Kevin Miiso Novo <miisodev@gmail.com>",
   "license": "MIT",
@@ -12,6 +12,10 @@
   "bugs": {
     "url": "https://github.com/miisodev/BrainLLM/issues"
   },
+  "funding": [
+    "https://github.com/sponsors/miisodev",
+    "https://paypal.me/miisodev"
+  ],
   "keywords": [
     "mcp",
     "model-context-protocol",

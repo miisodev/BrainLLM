@@ -48,8 +48,8 @@ const brainRef = { config: brain ?? EMPTY_BRAINLLM };
 const port      = process.env.PORT ? parseInt(process.env.PORT, 10) : null;
 const authToken = process.env.MCP_AUTH_TOKEN;
 
-// BRAINLLM_MODE=core (default): the 12 intent-level tools.
-// BRAINLLM_MODE=full: additionally registers the low-level/advanced surface.
+// BRAINLLM_MODE=core (default): the 37 brain-aware tools (27 universal verbs + 10 surface reads).
+// BRAINLLM_MODE=full: additionally registers the 33 raw ETAPI tools.
 const mode: "core" | "full" = process.env.BRAINLLM_MODE === "full" ? "full" : "core";
 
 // Brand identity advertised in the MCP handshake (serverInfo.icons). Clients
@@ -65,7 +65,7 @@ function createServer(): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "8.0.0",
+    version: "9.0.0",
     icons: BRANDING_ICONS,
   });
   registerTools(s, trilium, brainRef, mode);
@@ -84,6 +84,22 @@ if (port) {
 
   const sessions = new Map<string, SessionEntry>();
 
+  // CORS for browser-based MCP clients (Inspector web, web-standard fetch
+  // transports). Exposing mcp-session-id is load-bearing: without it a browser
+  // client can never read the session id off the initialize response, so every
+  // follow-up request starts a fresh session.
+  const CORS_HEADERS: Record<string, string> = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, mcp-session-id, mcp-protocol-version, last-event-id",
+    "Access-Control-Expose-Headers": "mcp-session-id",
+    "Access-Control-Max-Age": "86400",
+  };
+  const withCors = (res: Response): Response => {
+    for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v);
+    return res;
+  };
+
   // Evict sessions idle past 1 hour — clients that drop without sending DELETE
   // would otherwise accumulate forever in the map.
   const SESSION_TTL_MS = 60 * 60 * 1000;
@@ -101,22 +117,26 @@ if (port) {
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
 
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+
       if (url.pathname === "/health") {
-        return new Response("OK");
+        return withCors(new Response("OK"));
       }
 
       if (authToken) {
         const auth = req.headers.get("Authorization");
         if (auth !== `Bearer ${authToken}`) {
-          return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          return withCors(new Response(JSON.stringify({ error: "Unauthorized" }), {
             status: 401,
             headers: { "Content-Type": "application/json" },
-          });
+          }));
         }
       }
 
       if (url.pathname !== "/mcp") {
-        return new Response("Not Found", { status: 404 });
+        return withCors(new Response("Not Found", { status: 404 }));
       }
 
       const sessionId = req.headers.get("mcp-session-id");
@@ -125,18 +145,18 @@ if (port) {
       if (req.method === "DELETE") {
         if (sessionId && sessions.has(sessionId)) {
           sessions.delete(sessionId);
-          return new Response(null, { status: 204 });
+          return withCors(new Response(null, { status: 204 }));
         }
-        return new Response(JSON.stringify({ error: "Session not found" }), {
+        return withCors(new Response(JSON.stringify({ error: "Session not found" }), {
           status: 404,
           headers: { "Content-Type": "application/json" },
-        });
+        }));
       }
 
       if (sessionId && sessions.has(sessionId)) {
         const entry = sessions.get(sessionId)!;
         entry.lastUsed = Date.now();
-        return entry.transport.handleRequest(req);
+        return withCors(await entry.transport.handleRequest(req));
       }
 
       if (!sessionId) {
@@ -148,13 +168,13 @@ if (port) {
         });
 
         await createServer().connect(transport);
-        return transport.handleRequest(req);
+        return withCors(await transport.handleRequest(req));
       }
 
-      return new Response(JSON.stringify({ error: "Session not found" }), {
+      return withCors(new Response(JSON.stringify({ error: "Session not found" }), {
         status: 404,
         headers: { "Content-Type": "application/json" },
-      });
+      }));
     },
   });
 

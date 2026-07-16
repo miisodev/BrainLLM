@@ -3,3 +3,4 @@ node_modules/
 dist/
 brainllm.json
 .claude/
+skills/*.zip

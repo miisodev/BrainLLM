@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — lifecycle engine (V8)
+// BrainLLM — lifecycle engine (V9)
 //
 // Provides: structural-note protection (containers vs. editable singletons),
 // the resolution content surgery for closing threads, the maintenance sweep
@@ -74,7 +74,7 @@ function isoDaysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** The V8 maintenance sweep.
+/** The V9 maintenance sweep.
  *  Lite (auto, inside start/close): age stale threads + unlabeled-node check.
  *  Deep: stale-review, orphan/sink report, duplicate-title detection. */
 export async function sweep(
@@ -214,6 +214,25 @@ export async function sweep(
     for (const a of n.attributes) if (a.type === "relation" && a.name !== "template") targets.add(a.value);
   }
 
+  // ── Deep: duplicate-relation cleanup ────────────────────────────────────────
+  // Exact-duplicate edges (same type/name/value on one note) carry no meaning
+  // and accumulate from non-idempotent auto-wiring (the V8 close() session↔log
+  // bug). Self-healing: keep the first, delete the rest. Only the note's OWN
+  // attributes are considered — inherited ones belong to their source note.
+  for (const n of allNotes.results) {
+    const seenEdges = new Set<string>();
+    for (const a of n.attributes) {
+      if (a.type !== "relation" || a.noteId !== n.noteId) continue;
+      const key = `${a.name}→${a.value}`;
+      if (seenEdges.has(key)) {
+        if (!dryRun) await trilium.deleteAttribute(a.attributeId).catch(() => null);
+        report.fixed.push(`deduped relation: ${n.title} [${n.noteId}] ~${a.name}→${a.value}`);
+      } else {
+        seenEdges.add(key);
+      }
+    }
+  }
+
   const seenCandidates = new Set<string>();
   const candidates = [...threadNotes.results, ...knowledgeNotes.results].filter((n) => {
     if (seenCandidates.has(n.noteId)) return false;
@@ -303,7 +322,10 @@ export interface SessionDigest {
   llm: Array<{ slot: string; summary: string }>;
   workingSet: Array<{ id: string; title: string; kind: string; status: string; idleDays: number; relations?: RelationEdge[] }>;
   reviewQueue: Array<{ id: string; title: string; kind: string; idleDays: number; relations?: RelationEdge[] }>;
+  /** The most recent session BEFORE today — the previous session, never today's own note. */
   lastSession?: { id: string; title: string; date: string; summary: string };
+  /** Today's session note, when it already exists. */
+  todaySession?: { id: string; title: string; date: string; summary: string };
   counts: Record<string, number>;
 }
 
@@ -321,30 +343,27 @@ const label = (n: Note, name: string) =>
 export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): Promise<SessionDigest> {
   const digest: SessionDigest = { master: [], llm: [], workingSet: [], reviewQueue: [], counts: {} };
 
-  // Master singletons — all in full.
-  const slots: Array<[string, string]> = [
-    ["biography", cfg.master.biography],
-    ["goals", cfg.master.goals],
-    ["preferences", cfg.master.preferences],
-  ];
-  for (const [slot, id] of slots) {
-    if (!id) continue;
+  // Singletons — all in full, fetched in parallel (5 sequential round-trips
+  // on every session open was pure latency).
+  const readSlot = async (slot: string, id: string) => {
+    if (!id) return null;
     const content = await trilium.getNoteContent(id).catch(() => "");
     const summary = toText(content, Infinity);
-    if (summary) digest.master.push({ slot, summary });
-  }
-
-  // LLM singletons — both in full. Diary is added inline by start().
-  const llmSlots: Array<[string, string]> = [
-    ["responsibilities", cfg.llm.responsibilities],
-    ["protocols", cfg.llm.protocols],
-  ];
-  for (const [slot, id] of llmSlots) {
-    if (!id) continue;
-    const content = await trilium.getNoteContent(id).catch(() => "");
-    const summary = toText(content, Infinity);
-    if (summary) digest.llm.push({ slot, summary });
-  }
+    return summary ? { slot, summary } : null;
+  };
+  const [masterSlots, llmSlots] = await Promise.all([
+    Promise.all([
+      readSlot("biography", cfg.master.biography),
+      readSlot("goals", cfg.master.goals),
+      readSlot("preferences", cfg.master.preferences),
+    ]),
+    Promise.all([
+      readSlot("responsibilities", cfg.llm.responsibilities),
+      readSlot("protocols", cfg.llm.protocols),
+    ]),
+  ]);
+  digest.master.push(...masterSlots.filter((s): s is { slot: string; summary: string } => !!s));
+  digest.llm.push(...llmSlots.filter((s): s is { slot: string; summary: string } => !!s));
 
   // Working set — live threads in Memory/threads.
   const live = await trilium.searchNotes("#noteType=thread", {
@@ -366,24 +385,32 @@ export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): 
   digest.workingSet.sort((a, b) => a.idleDays - b.idleDays);
   digest.reviewQueue.sort((a, b) => b.idleDays - a.idleDays);
 
-  // Last session.
+  // Sessions: today's note (if open) and the previous session. The V8 code
+  // returned the newest session as lastSession — which, once today's stub
+  // exists, is today's own note, breaking the new-day sweep's premise.
   const sessions = await trilium.searchNotes("#noteType=session", {
     ancestorNoteId: cfg.memory.sessions,
     fastSearch: true,
-    limit: 5,
+    limit: 10,
     orderBy: "dateCreated",
     orderDirection: "desc",
   }).catch(() => ({ results: [] as Note[] }));
-  const last = sessions.results[0];
-  if (last) {
-    const content = await trilium.getNoteContent(last.noteId).catch(() => "");
-    digest.lastSession = {
-      id: last.noteId,
-      title: last.title,
-      date: label(last, "created") ?? last.dateCreated.slice(0, 10),
-      summary: toText(content, 300),
-    };
-  }
+  const todayStr = localToday();
+  const sessionDate = (n: Note) => label(n, "created") ?? n.dateCreated.slice(0, 10);
+  const todayNote = sessions.results.find((n) => sessionDate(n) === todayStr);
+  const prevNote = sessions.results.find((n) => sessionDate(n) < todayStr);
+  const toEntry = async (n: Note) => ({
+    id: n.noteId,
+    title: n.title,
+    date: sessionDate(n),
+    summary: toText(await trilium.getNoteContent(n.noteId).catch(() => ""), 300),
+  });
+  const [todayEntry, prevEntry] = await Promise.all([
+    todayNote ? toEntry(todayNote) : Promise.resolve(undefined),
+    prevNote ? toEntry(prevNote) : Promise.resolve(undefined),
+  ]);
+  if (todayEntry) digest.todaySession = todayEntry;
+  if (prevEntry) digest.lastSession = prevEntry;
 
   return digest;
 }

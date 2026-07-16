@@ -1,14 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — runtime configuration (V8)
+// BrainLLM — runtime configuration (V9)
 //
 // IDs are stored in brainllm.json next to the bundle. On startup:
 //   load file → auto-discover from Trilium (via #brainLlmRoot) → empty (bootstrap).
 // bootstrap writes this file; no manual editing required.
 //
-// The schema is version 8. Version-5 files (the long-lived prior contract —
-// every later release added only optional fields that default to "" when
-// absent) still load and are re-saved as 8 on the next write. Anything else
-// falls through to discovery/bootstrap.
+// The schema is version 9 — structurally identical to 8. Version-8 and legacy
+// version-5 files (the long-lived prior contract — every later release added
+// only optional fields that default to "" when absent) still load and are
+// re-saved as 9 on the next write. Anything else falls through to
+// discovery/bootstrap.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
@@ -33,7 +34,7 @@ export interface BrainLLMConfig {
 }
 
 export const EMPTY_BRAINLLM: BrainLLMConfig = {
-  version: 8,
+  version: 9,
   root: "",
   master:    { root: "", biography: "", goals: "", preferences: "" },
   llm:       { root: "", responsibilities: "", protocols: "", diary: "" },
@@ -60,9 +61,9 @@ export function loadConfig(): BrainLLMConfig | null {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8"));
-    // Version 8, or legacy version 5 (re-saved as 8 on the next write).
+    // Version 9, 8, or legacy 5 (re-saved as 9 on the next write).
     // Older shapes fall through to discovery.
-    if (typeof parsed?.root === "string" && (parsed?.version === 8 || parsed?.version === 5)) {
+    if (typeof parsed?.root === "string" && (parsed?.version === 9 || parsed?.version === 8 || parsed?.version === 5)) {
       return {
         ...parsed,
         memory: { metaThread: "", ...(parsed.memory ?? {}) },
@@ -79,7 +80,7 @@ export function loadConfig(): BrainLLMConfig | null {
 
 export function saveConfig(config: BrainLLMConfig): string {
   const path = configFilePath();
-  writeFileSync(path, JSON.stringify({ ...config, version: 8 }, null, 2) + "\n", "utf-8");
+  writeFileSync(path, JSON.stringify({ ...config, version: 9 }, null, 2) + "\n", "utf-8");
   return path;
 }
 

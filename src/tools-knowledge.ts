@@ -27,7 +27,7 @@ export function registerKnowledgeTools(server: McpServer, trilium: TriliumClient
       if (domain) {
         const slug = slugify(domain);
         const found = await trilium
-          .searchNotes(`#noteType=domain #domain=${slug}`, { ancestorNoteId: cfg.knowledge.domains, fastSearch: true, limit: 1 })
+          .searchNotes(`#noteType=domain #domain='${slug}'`, { ancestorNoteId: cfg.knowledge.domains, fastSearch: true, limit: 1 })
           .catch(() => ({ results: [] as Note[] }));
         const dom = found.results[0];
         if (!dom) return txt({ note: `No domain "${domain}" yet.` });

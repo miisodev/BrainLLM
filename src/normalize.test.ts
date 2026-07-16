@@ -11,7 +11,94 @@ import {
   queryTokens,
   looksLikeHtml,
   setSection,
+  tolerantFindRegex,
+  fixRecordHeader,
+  bumpLastUpdated,
+  duplicateHeadings,
+  leadingIdentification,
 } from "./normalize.js";
+
+describe("tolerantFindRegex", () => {
+  test("null for tag-free find strings", () => {
+    expect(tolerantFindRegex("plain text only")).toBeNull();
+  });
+  test("matches stored HTML with CKEditor-injected attributes", () => {
+    const authored = '<code>maintain(deep=true)</code> weekly';
+    const stored = '<code spellcheck="false">maintain(deep=true)</code> weekly, and more';
+    const rx = tolerantFindRegex(authored);
+    expect(rx).not.toBeNull();
+    expect(stored.match(rx!)?.length).toBe(1);
+  });
+  test("relaxed list items match data-list-item-id injection", () => {
+    const authored = "<li>Pinboard push</li>";
+    const stored = '<ul><li data-list-item-id="e1abc">Pinboard push</li></ul>';
+    expect(stored.match(tolerantFindRegex(authored)!)?.length).toBe(1);
+  });
+  test("regex specials in text segments stay literal", () => {
+    const rx = tolerantFindRegex("<p>cost (R500k) + 20%</p>");
+    expect('<p class="x">cost (R500k) + 20%</p>'.match(rx!)?.length).toBe(1);
+    expect("<p>cost R500k + 20%</p>".match(rx!)).toBeNull();
+  });
+});
+
+describe("fixRecordHeader", () => {
+  test("corrects a stale header date", () => {
+    const r = fixRecordHeader("<p><em>session · 2026-07-14</em></p><hr><p>x</p>", "session", "2026-07-16");
+    expect(r.fixed).toBe(true);
+    expect(r.html).toContain("session · 2026-07-16");
+  });
+  test("no-op when the date is already correct or the header is absent", () => {
+    expect(fixRecordHeader("<p><em>diary · 2026-07-16</em></p>", "diary", "2026-07-16").fixed).toBe(false);
+    expect(fixRecordHeader("<p>no header here</p>", "diary", "2026-07-16").fixed).toBe(false);
+  });
+});
+
+describe("bumpLastUpdated", () => {
+  test("bumps an ISO stamp", () => {
+    const r = bumpLastUpdated("<p>Last updated: 2026-07-01</p><p>body</p>", "2026-07-16");
+    expect(r.bumped).toBe(true);
+    expect(r.html).toContain("Last updated: 2026-07-16");
+  });
+  test("preserves US-style stamps", () => {
+    const r = bumpLastUpdated("<h4>Last updated - 7/1/2026</h4>", "2026-07-16");
+    expect(r.bumped).toBe(true);
+    expect(r.html).toContain("Last updated - 7/16/2026");
+  });
+  test("no-op without a stamp or when already current", () => {
+    expect(bumpLastUpdated("<p>nothing here</p>", "2026-07-16").bumped).toBe(false);
+    expect(bumpLastUpdated("<h4>Last updated - 2026-07-16</h4>", "2026-07-16").bumped).toBe(false);
+  });
+});
+
+describe("leadingIdentification", () => {
+  test("detects a leading identification h3", () => {
+    expect(leadingIdentification("<h3>Claude Fable 5 · Cowork · Interactive</h3><p>body</p>")).toBe(true);
+    expect(leadingIdentification('<p>&nbsp;</p><h3 class="x">Claude Sonnet 5 · Claude Code · Analysis Agent · Run 6</h3>')).toBe(true);
+  });
+  test("rejects bodies without it", () => {
+    expect(leadingIdentification("<p>prose first</p><h3>Claude · Cowork</h3>")).toBe(false);
+    expect(leadingIdentification("<h3>Just A Heading</h3><p>no separator</p>")).toBe(false);
+    expect(leadingIdentification("<h2>Wrong Level · Anyway</h2>")).toBe(false);
+  });
+});
+
+describe("duplicateHeadings", () => {
+  test("flags duplicated section headings", () => {
+    const dupes = duplicateHeadings("<h2>Context</h2><p>a</p><h2>Context</h2><p>b</p><h3>Goal</h3>");
+    expect(dupes).toEqual(["context"]);
+  });
+  test("addendum markers are exempt; attributes tolerated", () => {
+    const html = '<h2>Addendum — 10:00</h2><p>a</p><h2>Addendum — 11:00</h2><h2 class="x">Plan</h2><h2>Plan</h2>';
+    expect(duplicateHeadings(html)).toEqual(["plan"]);
+  });
+  test("headings repeating ACROSS addendum blocks are fine (chronological records)", () => {
+    const html =
+      "<h2>Context</h2><h3>Goal</h3>" +
+      "<h2>Addendum — 2026-07-16</h2><h3>Claude · Cowork</h3><h4>Next</h4>" +
+      "<h2>Addendum — 2026-07-16</h2><h3>Claude · Cowork</h3><h4>Next</h4>";
+    expect(duplicateHeadings(html)).toEqual([]);
+  });
+});
 
 describe("decodeEntities", () => {
   test("decodes named entities", () => {

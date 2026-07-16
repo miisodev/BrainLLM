@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — the router (V8)
+// BrainLLM — the router (V9)
 //
 // Single source of truth for WHERE a note lives, WHICH labels it carries and
 // WHICH template it follows, derived from its kind. The model never chooses a
@@ -16,7 +16,8 @@ import {
   type Status,
 } from "./types.js";
 import { slugify, titleCaseSlug } from "./normalize.js";
-import { domainContent } from "./templates.js";
+import { contentFor, domainContent } from "./templates.js";
+import { localToday } from "./time.js";
 
 // ── Options accepted by the write tools and threaded through routing ──────────
 
@@ -107,19 +108,24 @@ export function labelPlan(kind: AnyKind, opts: RememberOpts, date: string): Labe
 // ── Domain resolution (async — domains auto-create on demand) ─────────────────
 
 /** Find or create a domain book under Knowledge/Domains. Shared by information
- *  notes (children) and the per-domain Sources singleton (resolved by tools). */
+ *  notes (children) and the per-domain Sources singleton (resolved by tools).
+ *  A fresh domain is born complete: the book AND its canonical Sources note
+ *  (legend + Last-updated + grouped ❇️/✅ list + Revision table) — the sources
+ *  gate has a home from the first write. The slug is quoted in the search
+ *  expression: Trilium's lexer treats "-" as an operator, so an unquoted
+ *  hyphenated slug (wall-e) silently truncates to its first segment. */
 export async function resolveDomain(
   trilium: TriliumClient,
   cfg: BrainLLMConfig,
   domainName: string
-): Promise<{ domainId: string; domainTitle: string; createdDomain: boolean }> {
+): Promise<{ domainId: string; domainTitle: string; createdDomain: boolean; sourcesId?: string }> {
   const slug = slugify(domainName) || "general";
   // Preserve the caller's casing for the display title ("BrainLLM", not
   // "Brainllm") — the slug stays canonical for routing and dedup. Fall back
   // to the title-cased slug when the raw name is unusable.
   const display = domainName.replace(/\s+/g, " ").trim() || titleCaseSlug(slug);
 
-  const existing = await trilium.searchNotes(`#noteType=domain #domain=${slug}`, {
+  const existing = await trilium.searchNotes(`#noteType=domain #domain='${slug}'`, {
     ancestorNoteId: cfg.knowledge.domains,
     fastSearch: true,
     limit: 1,
@@ -135,7 +141,17 @@ export async function resolveDomain(
     trilium.addLabel(did, "domain", slug),
     trilium.addLabel(did, "iconClass", "bx bx-folder"),
   ]);
-  return { domainId: did, domainTitle: display, createdDomain: true };
+
+  // Canonical Sources note — created with the book, not lazily on first write.
+  const d = localToday();
+  const sources = await trilium.createNote(did, "Sources", contentFor("sources", { date: d, body: "", domain: display }));
+  const sid = sources.note.noteId;
+  for (const l of labelPlan("sources", { domain: domainName }, d)) {
+    await trilium.addLabel(sid, l.name, l.value, l.inheritable ?? false);
+  }
+  await trilium.addLabel(sid, "iconClass", "bx bx-link");
+
+  return { domainId: did, domainTitle: display, createdDomain: true, sourcesId: sid };
 }
 
 export interface ResolvedParent {

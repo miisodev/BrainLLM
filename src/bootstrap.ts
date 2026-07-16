@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — structure builder (V8)
+// BrainLLM — structure builder (V9)
 // Shared by the bootstrap tool and the init.ts CLI.
 //
 // Builds the six-area tree on a fresh instance. Collection containers are real
@@ -82,7 +82,7 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
   const logs = await book(insightsRoot, "Logs", "A collection of per-day, auto-generated notes recording the brain content (notes) created, updated, or deleted that day.", "bx bx-history");
 
   return {
-    version: 5,
+    version: 9,
     root: rootId,
     master:    { root: masterRoot, biography, goals, preferences },
     llm:       { root: llmRoot, responsibilities, protocols, diary },
