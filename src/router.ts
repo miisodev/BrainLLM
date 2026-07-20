@@ -57,6 +57,7 @@ export function kindHome(cfg: BrainLLMConfig, kind: AnyKind): string {
     case "diary":            return cfg.llm.diary;
     case "session":          return cfg.memory.sessions;
     case "thread":           return cfg.memory.threads;
+    case "threadEntry":      return ""; // never created via the generic path — see appendThreadEntry() in tools.ts
     case "user":             return cfg.knowledge.master;
     case "domain":           return cfg.knowledge.domains;
     case "information":      return ""; // domain-resolved
@@ -86,6 +87,11 @@ export function labelPlan(kind: AnyKind, opts: RememberOpts, date: string): Labe
 
   if (kind === "thread") {
     labels.push({ name: "status", value: opts.status ?? "active" });
+    // Threads age off this label, not note.dateModified (content activity now
+    // lands on threadEntry children, which don't bump the book's own
+    // dateModified) — seed it at birth so a never-appended-to thread still
+    // ages correctly instead of being permanently invisible to the sweep.
+    labels.push({ name: "updated", value: opts.date ?? date });
   }
   if ((kind === "information" || kind === "domain" || kind === "sources") && opts.domain) {
     labels.push({ name: "domain", value: slugify(opts.domain) });
@@ -193,6 +199,7 @@ export function locationLabel(kind: AnyKind, domainTitle?: string): string {
     case "diary":            return "LLM → Diary";
     case "session":          return "Memory → Sessions";
     case "thread":           return "Memory → Threads";
+    case "threadEntry":      return "Memory → Threads → <thread>";
     case "user":             return "Knowledge → Master";
     case "domain":           return "Knowledge → Domains";
     case "information":      return `Knowledge → Domains → ${domainTitle ?? "General"}`;

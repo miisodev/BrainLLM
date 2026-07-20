@@ -16,6 +16,7 @@ import {
   bumpLastUpdated,
   duplicateHeadings,
   leadingIdentification,
+  upsertTableRow,
 } from "./normalize.js";
 
 describe("tolerantFindRegex", () => {
@@ -280,5 +281,93 @@ describe("setSection", () => {
     expect(r.matched).toBe(true);
     expect(r.html).toContain("old 1");
     expect(r.html).toContain("<p>added</p>");
+  });
+});
+
+describe("upsertTableRow", () => {
+  const revisionTable = (rows: string) =>
+    `<h2>Revision</h2><figure class="table"><table><thead><tr><th>Source</th><th>Marker</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table></figure>`;
+
+  test("replaces an existing row in place by key, leaving other rows untouched", () => {
+    const doc = revisionTable(
+      "<tr><td>myclerkbook.com</td><td>✅</td><td>2026-07-17</td></tr>" +
+      "<tr><td>Vercel (myclerkbook)</td><td>✅</td><td>2026-07-17</td></tr>"
+    );
+    const r = upsertTableRow(doc, "Revision", "Vercel (myclerkbook)", ["✅", "2026-07-19"]);
+    expect(r.matched).toBe(true);
+    expect(r.created).toBe(false);
+    // Re-verified row updated, old date gone...
+    expect(r.html).toContain("<td>Vercel (myclerkbook)</td><td>✅</td><td>2026-07-19</td>");
+    expect(r.html).not.toContain("<td>Vercel (myclerkbook)</td><td>✅</td><td>2026-07-17</td>");
+    // ...untouched row survives, and there is still exactly one Vercel row.
+    expect(r.html).toContain("<td>myclerkbook.com</td><td>✅</td><td>2026-07-17</td>");
+    expect(r.html.match(/Vercel \(myclerkbook\)/g)).toHaveLength(1);
+  });
+
+  test("appends a new row when the key isn't found", () => {
+    const doc = revisionTable("<tr><td>myclerkbook.com</td><td>✅</td><td>2026-07-17</td></tr>");
+    const r = upsertTableRow(doc, "Revision", "Supabase (myclerkbook)", ["✅", "2026-07-19"]);
+    expect(r.matched).toBe(false);
+    expect(r.created).toBe(true);
+    expect(r.html).toContain("<td>myclerkbook.com</td>");
+    expect(r.html).toContain("<td>Supabase (myclerkbook)</td><td>✅</td><td>2026-07-19</td>");
+  });
+
+  test("replaces the '— none yet —' placeholder instead of appending alongside it", () => {
+    const doc = revisionTable('<tr><td><em>— none yet —</em></td><td></td><td></td></tr>');
+    const r = upsertTableRow(doc, "Revision", "myclerkbook.com", ["✅", "2026-07-17"]);
+    expect(r.created).toBe(true);
+    expect(r.html).not.toContain("none yet");
+    // Exactly one row in the BODY — the thead's own <tr> of <th>s is separate.
+    const tbody = /<tbody>([\s\S]*?)<\/tbody>/.exec(r.html)?.[1] ?? "";
+    expect(tbody.match(/<tr>/g)).toHaveLength(1);
+  });
+
+  test("attribute-tolerant: matches through CKEditor-injected table/row/cell attributes", () => {
+    // TableColumnResize / TableProperties / GeneralHtmlSupport (enabled in
+    // Trilium's CKEditor build) can inject colgroup, style, and class once a
+    // note is opened in the UI — matching must survive that, like
+    // tolerantFindRegex does for literal find= text.
+    const doc =
+      '<h2>Revision</h2><figure class="table ck-widget"><table class="ck-table-resized" style="width:400px">' +
+      '<colgroup><col style="width:50%"><col style="width:25%"><col style="width:25%"></colgroup>' +
+      '<thead><tr><th>Source</th><th>Marker</th><th>Date</th></tr></thead>' +
+      '<tbody><tr style="height:20px"><td class="ck-cell">myclerkbook.com</td><td>✅</td><td>2026-07-17</td></tr></tbody>' +
+      '</table></figure>';
+    const r = upsertTableRow(doc, "Revision", "myclerkbook.com", ["✅", "2026-07-19"]);
+    expect(r.matched).toBe(true);
+    expect(r.html).toContain("2026-07-19");
+    // The colgroup/style scaffolding around the table survives untouched.
+    expect(r.html).toContain('<colgroup>');
+    expect(r.html).toContain('class="ck-table-resized"');
+  });
+
+  test("key matching is case-insensitive and whitespace-tolerant", () => {
+    const doc = revisionTable("<tr><td> MyClerkBook.com </td><td>✅</td><td>2026-07-17</td></tr>");
+    const r = upsertTableRow(doc, "Revision", "myclerkbook.com", ["✅", "2026-07-19"]);
+    expect(r.matched).toBe(true);
+    expect(r.html).toContain("2026-07-19");
+  });
+
+  test("cell values are escaped, not treated as HTML", () => {
+    const doc = revisionTable("");
+    const r = upsertTableRow(doc, "Revision", 'Tom & Jerry\'s <docs>', ["✅", "2026-07-19"]);
+    expect(r.html).toContain("Tom &amp; Jerry's &lt;docs&gt;");
+  });
+
+  test("no-op when the heading isn't present", () => {
+    const doc = "<h2>Sources</h2><p>no revision section here</p>";
+    const r = upsertTableRow(doc, "Revision", "myclerkbook.com", ["✅", "2026-07-19"]);
+    expect(r.matched).toBe(false);
+    expect(r.created).toBe(false);
+    expect(r.html).toBe(doc);
+  });
+
+  test("no-op when the section has no table", () => {
+    const doc = "<h2>Revision</h2><p>not a table yet</p>";
+    const r = upsertTableRow(doc, "Revision", "myclerkbook.com", ["✅", "2026-07-19"]);
+    expect(r.matched).toBe(false);
+    expect(r.created).toBe(false);
+    expect(r.html).toBe(doc);
   });
 });

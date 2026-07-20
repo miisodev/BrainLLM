@@ -40,6 +40,7 @@ import {
   safeAppend,
   closeDangling,
   setSection,
+  upsertTableRow,
   tolerantFindRegex,
   fixRecordHeader,
   bumpLastUpdated,
@@ -161,6 +162,46 @@ export function registerTools(
       .searchNotes(`#noteType=${kind}`, { ancestorNoteId: scope, fastSearch: true, limit: 100 })
       .catch(() => ({ results: [] as Note[] }));
     return res.results.find((n) => sameTitle(n.title, title)) ?? null;
+  }
+
+  /** Append a dated block into a thread's day-child note, creating today's
+   *  [yyyy-mm-dd] threadEntry on first append of the day — mirrors diary()'s
+   *  append behavior exactly (HH:mm sub-heading, full-block-scan retry guard,
+   *  fixRecordHeader). The thread BOOK's own content is never touched here;
+   *  callers still own bumping the book's "updated" label, title, icon, and
+   *  relations against `threadId` afterward — this only owns the child. */
+  async function appendThreadEntry(
+    threadId: string,
+    block: string,
+    d: string
+  ): Promise<{ noteId: string; action: "created" | "appended" | "already_written" }> {
+    const found = await trilium
+      .searchNotes(`#noteType=threadEntry #created='${d}'`, { ancestorNoteId: threadId, fastSearch: true, limit: 1 })
+      .catch(() => ({ results: [] as Note[] }));
+    const time = localNowTime();
+
+    if (found.results[0]) {
+      const noteId = found.results[0].noteId;
+      const current = fixRecordHeader(await trilium.getNoteContent(noteId).catch(() => ""), "threadEntry", d).html;
+      const norm = (s: string) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+      const incoming = norm(block);
+      const blocks = current.split(/<h2>Addendum — \d{2}:\d{2}<\/h2>\n?/i).slice(1);
+      if (incoming && blocks.some((b) => norm(b) === incoming)) return { noteId, action: "already_written" };
+      await trilium.createRevision(noteId).catch(() => null);
+      await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Addendum — ${time}</h2>`, block));
+      await trilium.updateLabelValue(noteId, "updated", d);
+      return { noteId, action: "appended" };
+    }
+
+    const created = await trilium.createNote(
+      threadId,
+      `[${d}]`,
+      contentFor("threadEntry", { date: d, body: `<h2>Addendum — ${time}</h2>\n${block}` })
+    );
+    const noteId = created.note.noteId;
+    await trilium.addLabel(noteId, "noteType", "threadEntry");
+    await trilium.addLabel(noteId, "created", d);
+    return { noteId, action: "created" };
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -695,6 +736,11 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       goal: z.string().optional().describe("thread creation: the goal statement — REQUIRED for a new thread (query the user for it); becomes the Context → Goal section"),
       identity: z.string().optional().describe('thread updates: the addendum\'s identification line — "LLM · environment · agent/mode [· Run N]"; REQUIRED when appending to a thread (unless the body already leads with the h3)'),
       domain: z.string().optional().describe("knowledge: the domain name for information/sources (auto-created complete with its Sources note)"),
+      revision: z.array(z.object({
+        source: z.string().describe("Must exactly match how the source is introduced in the Sources list — this is the upsert key"),
+        marker: z.string().describe('"❇️" (discovered/credible) or "✅" (used)'),
+        date: z.string().optional().describe("ISO date (default: today)"),
+      })).optional().describe("kind=sources only: upsert Revision-table rows by source name — re-verifying a source replaces its existing row's Marker/Date in place instead of appending a new one"),
       topics: z.array(z.string()).optional().describe("Topic tags — slugged server-side"),
       supersedes: z.string().optional().describe("noteId this replaces — old note is archived and wired supersedes"),
       connect: z.array(z.object({
@@ -704,7 +750,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name ("brain"); normalized server-side'),
       date: z.string().optional().describe("ISO date override (default: today)"),
     },
-    async ({ kind, title, body, goal, identity, domain, topics, supersedes, connect: connectRels, icon, date }) => {
+    async ({ kind, title, body, goal, identity, domain, revision, topics, supersedes, connect: connectRels, icon, date }) => {
       const opts: RememberOpts = { domain, topics, date };
       const d = date ?? today();
       const { html, warnings: sanitizeWarnings } = sanitizeHtml(toHtml(body ?? ""));
@@ -802,11 +848,36 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
             wrote = true;
           }
         }
+
+        // Revision rows are upserted by source name, never appended — this is
+        // what keeps the table current-state instead of growing a new row
+        // every time the same source gets re-verified.
+        const revisionChanges: string[] = [];
+        if (sid && revision?.length) {
+          let current = await trilium.getNoteContent(sid).catch(() => "");
+          let changed = false;
+          for (const row of revision) {
+            const result = upsertTableRow(current, "Revision", row.source, [row.marker, row.date ?? d]);
+            if (result.matched || result.created) {
+              current = result.html;
+              changed = true;
+              revisionChanges.push(`${result.matched ? "updated" : "added"}: ${row.source}`);
+            }
+          }
+          if (changed) {
+            await trilium.createRevision(sid).catch(() => null);
+            const stamped = bumpLastUpdated(current, d);
+            await trilium.updateNoteContent(sid, stamped.html);
+            await trilium.updateLabelValue(sid, "updated", d);
+            wrote = true;
+          }
+        }
+
         const connected = await wireRequested(sid);
         const iconSet = await applyIcon(sid, icon);
         const sidNote = await trilium.getNote(sid).catch(() => null);
         const relations = sidNote ? relationSnippet(sidNote) : undefined;
-        return txt({ action: wrote ? "maintained" : "already_written", noteId: sid, kind, domainId, location: locationLabel(kind, domainTitle), ...(createdDomain ? { createdDomain: domainTitle } : {}), ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+        return txt({ action: wrote ? "maintained" : "already_written", noteId: sid, kind, domainId, location: locationLabel(kind, domainTitle), ...(createdDomain ? { createdDomain: domainTitle } : {}), ...(revisionChanges.length ? { revision: revisionChanges } : {}), ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
       }
 
       // 3 ── Domain collection: sub-category information notes (many per domain),
@@ -864,6 +935,8 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         return err("rejected_kind", "Log notes are auto-generated by close() and cannot be written manually.");
       if (kind === "domain")
         return err("rejected_kind", "Domain containers are auto-created on first use.", 'To write domain knowledge call remember(kind="information", domain="<name>", ...).');
+      if (kind === "threadEntry")
+        return err("rejected_kind", "Thread day-entries are created automatically when appending to a thread.", 'Call remember(kind="thread", title="<existing thread>", body="...", identity="...") — the day-child is created for you.');
 
       // 4 ── Generic collection: thread / user.
       const { title: cleanTitle } = normalizeTitle(title ?? "");
@@ -882,6 +955,26 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           );
         }
         const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
+
+        // Threads: content lands in today's day-child, never the book itself.
+        if (kind === "thread") {
+          const entry = await appendThreadEntry(existing.noteId, block, d);
+          if (entry.action === "already_written") {
+            return txt({ action: "already_written", noteId: existing.noteId, entryId: entry.noteId, kind, title: existing.title });
+          }
+          await trilium.updateLabelValue(existing.noteId, "updated", d);
+          for (const t of topics ?? []) {
+            const slug = slugify(t);
+            if (slug && !existing.attributes.some((a) => a.name === "topic" && a.value === slug)) {
+              await trilium.addLabel(existing.noteId, "topic", slug);
+            }
+          }
+          const connected = await wireRequested(existing.noteId);
+          const iconSet = await applyIcon(existing.noteId, icon);
+          const relations = relationSnippet(existing);
+          return txt({ action: "updated", noteId: existing.noteId, entryId: entry.noteId, entryAction: entry.action, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+        }
+
         const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
         if (isDuplicateAppend(current, block)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title });
         await trilium.createRevision(existing.noteId).catch(() => null);
@@ -914,7 +1007,9 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
 
       const resolved = await resolveParent(trilium, b(), kind, opts);
       const content = contentFor(kind, { date: d, body: html, goal, domain: resolved.domainTitle ?? domain });
-      const created = await trilium.createNote(resolved.parentId, cleanTitle, content);
+      // Threads are book notes — the day-to-day content lives in threadEntry
+      // children created by appendThreadEntry(), never stacked in the book.
+      const created = await trilium.createNote(resolved.parentId, cleanTitle, content, kind === "thread" ? "book" : "text");
       const nid = created.note.noteId;
 
       for (const l of labelPlan(kind, opts, d)) {
@@ -1258,6 +1353,7 @@ find= instead — that's exactly what it's for.`,
       }
 
       let finalContent: string | null = null;
+      let threadEntryResult: { noteId: string; action: "created" | "appended" | "already_written" } | null = null;
       if (body) {
         const sanitized = sanitizeHtml(toHtml(body));
         const html = sanitized.html;
@@ -1284,16 +1380,23 @@ find= instead — that's exactly what it's for.`,
           await trilium.createRevision(noteId).catch(() => null);
           finalContent = bumpLastUpdated(html, d).html;
           await trilium.updateNoteContent(noteId, finalContent);
-        } else {
+        } else if (noteKind === "thread") {
+          // Threads: content lands in today's day-child, never the book itself.
           // Canonical thread structure: every addendum block opens with the
           // identification line (h3). Enforced on thread appends.
-          if (noteKind === "thread" && !identity && !leadingIdentification(html)) {
+          if (!identity && !leadingIdentification(html)) {
             return err(
               "missing_identity",
               "Thread addendums open with the canonical identification line (h3): \"LLM · environment · agent/mode [· Run N]\".",
               'Pass identity="Claude … · <environment> · <agent/mode>" — the server renders it as the addendum\'s h3.'
             );
           }
+          const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
+          threadEntryResult = await appendThreadEntry(noteId, block, d);
+          if (threadEntryResult.action === "already_written") {
+            return txt({ ok: true, noteId, mode: "already_written", entryId: threadEntryResult.noteId, date: d });
+          }
+        } else {
           const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
           if (isDuplicateAppend(current, block)) return txt({ ok: true, noteId, mode: "already_written", date: d });
           await trilium.createRevision(noteId).catch(() => null);
@@ -1324,6 +1427,7 @@ find= instead — that's exactly what it's for.`,
         date: d,
         ...(sectionResult ? { matched: sectionResult.matched, headingCount: sectionResult.headingCount } : {}),
         ...(sectionHint ? { hint: sectionHint } : {}),
+        ...(threadEntryResult ? { entryId: threadEntryResult.noteId, entryAction: threadEntryResult.action } : {}),
         ...(titled.retitled ? { retitled: titled.retitled } : {}),
         ...(titled.cascaded ? { domainCascade: `#domain updated on ${titled.cascaded} descendant note(s)` } : {}),
         ...(dupes.length ? { duplicateHeadings: dupes, structureHint: "The note now carries duplicated section headings — merge them with revise(section=…, mode=replace)." } : {}),
@@ -1802,9 +1906,10 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
     "maintain",
     `Run the maintenance sweep. start and close run the lite sweep automatically (ages stale
 threads active → dormant → archived). deep=true also surfaces stale notes (untouched past the
-policy window) and unconnected threads/knowledge notes (orphan = no connections at all; sink =
+policy window), unconnected threads/knowledge notes (orphan = no connections at all; sink =
 has inbound but no outbound) to wire with connect() — inbound detection is brain-wide, so a
-note referenced from another area is never misflagged as an orphan. dryRun previews only.`,
+note referenced from another area is never misflagged as an orphan — and any thread day-child
+that escaped its #noteType=threadEntry label. dryRun previews only.`,
     {
       deep: z.boolean().optional().describe("Deep pass: stale-review + orphan/sink report across Memory/Threads and Knowledge (default: false)"),
       dryRun: z.boolean().optional().describe("Report what would change without changing it"),

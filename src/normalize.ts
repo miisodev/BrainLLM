@@ -559,3 +559,94 @@ export function setSection(
     headingCount: 0,
   };
 }
+
+// ── Table row upsert ──────────────────────────────────────────────────────────
+
+export interface UpsertRowResult {
+  html: string;
+  /** An existing row was found (by key) and its cells replaced in place. */
+  matched: boolean;
+  /** A new row was appended — either no existing row matched, or a single
+   *  "— none yet —" placeholder row was replaced by it. */
+  created: boolean;
+}
+
+/** Upsert one row of a table nested under a heading section (h2/h3/h4, tried
+ *  in that order), keyed by the normalized text of its first cell — e.g. the
+ *  per-domain Sources note's Revision table (Source | Marker | Date), keyed
+ *  by source name. `key` and `cells` are plain text; this escapes and wraps
+ *  them in <td> itself — never pass pre-rendered HTML.
+ *
+ *  Matching is structural, not literal: `<table>`/`<tr>`/`<td>` are matched
+ *  with any attributes (`[^>]*`), and a cell's text is compared with its own
+ *  inner tags stripped. This tolerates CKEditor 5 injecting `colgroup`,
+ *  `style`, or `class="ck-table-resized"` into the table once a human opens
+ *  the note in the Trilium UI (TableColumnResize / TableProperties /
+ *  GeneralHtmlSupport are enabled there) — the same class of drift
+ *  `tolerantFindRegex` exists to survive for literal find= matches, handled
+ *  here by parsing structure instead of matching a literal string.
+ *
+ *  A single existing "— none yet —" / empty-first-cell placeholder row is
+ *  replaced rather than left alongside a real one. No section, no table, or
+ *  no <tbody> found → no-op (matched and created both false). */
+export function upsertTableRow(
+  html: string,
+  heading: string,
+  key: string,
+  cells: string[]
+): UpsertRowResult {
+  const noop = { html, matched: false, created: false };
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  let headingEnd = -1;
+  let level = 2;
+  for (const l of [2, 3, 4]) {
+    const re = new RegExp(`<h${l}(?:\\s[^>]*)?>\\s*${escapedHeading}\\s*</h${l}>`, "i");
+    const m = re.exec(html);
+    if (m) { headingEnd = m.index + m[0].length; level = l; break; }
+  }
+  if (headingEnd === -1) return noop;
+
+  const nextHeadingOffset = html.slice(headingEnd).search(new RegExp(`<h[2-${level}]`));
+  const sectionEnd = nextHeadingOffset === -1 ? html.length : headingEnd + nextHeadingOffset;
+  const section = html.slice(headingEnd, sectionEnd);
+
+  const tableMatch = /<table[^>]*>[\s\S]*?<\/table>/i.exec(section);
+  if (!tableMatch) return noop;
+  const table = tableMatch[0];
+
+  const bodyMatch = /<tbody[^>]*>([\s\S]*?)<\/tbody>/i.exec(table);
+  if (!bodyMatch) return noop;
+  const tbody = bodyMatch[1];
+
+  const cellText = (row: string): string => {
+    const m = /<td[^>]*>([\s\S]*?)<\/td>/i.exec(row);
+    return m ? decodeEntities(m[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase() : "";
+  };
+  const keyNorm = decodeEntities(key).replace(/\s+/g, " ").trim().toLowerCase();
+
+  const rowRe = /<tr[^>]*>[\s\S]*?<\/tr>/gi;
+  let matchedRow: { start: number; end: number } | null = null;
+  let placeholderRow: { start: number; end: number } | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = rowRe.exec(tbody)) !== null) {
+    const text = cellText(m[0]);
+    const span = { start: m.index, end: m.index + m[0].length };
+    if (text === keyNorm) { matchedRow = span; break; }
+    if (!placeholderRow && (text === "" || text === "— none yet —")) placeholderRow = span;
+  }
+
+  const newRow = `<tr>${[key, ...cells].map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`;
+  const target = matchedRow ?? placeholderRow;
+  const newTbody = target
+    ? tbody.slice(0, target.start) + newRow + tbody.slice(target.end)
+    : tbody + newRow;
+
+  const newTable = table.slice(0, bodyMatch.index) + `<tbody>${newTbody}</tbody>` + table.slice(bodyMatch.index + bodyMatch[0].length);
+  const newSection = section.slice(0, tableMatch.index) + newTable + section.slice(tableMatch.index + table.length);
+  return {
+    html: html.slice(0, headingEnd) + newSection + html.slice(sectionEnd),
+    matched: !!matchedRow,
+    created: !matchedRow,
+  };
+}

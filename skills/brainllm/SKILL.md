@@ -124,7 +124,7 @@ Each surface has two read tools: `<surface>` reads in full, `<surface>_recall` s
 |---|---|
 | `master(which)` / `master_recall()` | a Master singleton in full (returns id + section headings) / a skim of all three |
 | `llm(which, id?)` / `llm_recall()` | responsibilities · protocols, or a diary entry by id / singletons as `{id, preview}`, diary as stubs — use the returned id directly with revise() |
-| `memory(id)` / `memory_recall(query?)` | a thread or session in full / active threads + recent sessions (stubs include status) |
+| `memory(id)` / `memory_recall(query?)` | a session in full; a thread returns its Context/Resolution + day-child index (pass `date=` to read one day directly, or `memory()` a child id from the index) / active threads + recent sessions (stubs include status) |
 | `knowledge(id)` / `knowledge_recall(query?, domain?)` | a knowledge/info/sources note / domain contents or user-knowledge + domains |
 | `insights(date?)` / `insights_recall()` | a day's log / recent logs |
 
@@ -141,7 +141,7 @@ Each surface has two read tools: `<surface>` reads in full, `<surface>_recall` s
 | The content is… | kind | Notes |
 |---|---|---|
 | New/contradicting world knowledge | `information` | sources gate first; pass `domain=` and sub-category `title` |
-| A credible source for a domain | `sources` | pass `domain=`; mark ❇️ discovered / ✅ used |
+| A credible source for a domain | `sources` | pass `domain=`; mark ❇️ discovered / ✅ used; pass `revision=[{source, marker, date?}]` to upsert that source's Revision-table row in place — re-verifying never adds a new row |
 | A durable fact about the user (not bio/goals/prefs) | `user` | titled note in Knowledge/Master |
 | A multi-session line of work | `thread` | creation REQUIRES `goal=` (query the user for it); appends REQUIRE `identity=`; `revise()` to log progress, `resolve()` to close — bodies never carry their own Resolution |
 
@@ -172,7 +172,7 @@ All append operations are retry-safe — if an existing append-block already car
 ## Updating — `revise`
 
 `revise(noteId, body?, title?, section?, mode?, find?)`:
-- default — append a dated addendum (right for threads, knowledge notes, information notes, and any note that is a record — new detail accumulates alongside the existing body);
+- default — append a dated addendum (right for knowledge notes, information notes, and any note that is a record — new detail accumulates alongside the existing body). For a thread specifically, this writes into TODAY's day-child note, never the thread's own body — the thread itself only ever holds Context/Goal and Resolution;
 - `mode=replace` — rewrite the body;
 - `section="Overview"` — edit one heading section in place (tries h2 → h3 → h4, matched case- and whitespace-insensitively, tolerant of attributes on the heading tag; appends as a new h2 if absent). The efficient path for a singleton: read it, then revise the one section.
 - `find="<exact text>"` — targeted string surgery: every occurrence of the exact raw string is replaced with `body` (raw, no markdown conversion), no read+full-replace needed. When the exact string misses, an **attribute-tolerant** pass retries with CKEditor-injected tag attributes (spellcheck, data-list-item-id, …) ignored — the receipt's `matchMode` says which pass matched. Returns `replaced` (a count; `0` with a hint = not found — already replaced on a retry, or the text genuinely differs). Takes precedence over `section`/`mode`. `title=` composes with every mode, including `find=`.
@@ -249,7 +249,7 @@ Threads age: **active → dormant** (untouched past the policy window) **→ arc
 | `explore(noteId, mode, …)` | Graph: links / backlinks / neighborhood / path. |
 | `inspect(noteId, content?, find?)` | Full raw read of one note: every label (not just noteType/status), every outbound relation, the attachment inventory (id/title/mime/role/size), type/mime/parent/child ids, dates — the raw body when content=true, and `find=` counts a literal string (total + per-addendum-block) for flag-staleness tracking. The deep-dive counterpart to explore() and the surface reads. |
 | `addendum()` | Search Master, LLM singletons (responsibilities + protocols, not diary), and Knowledge for pending addendum blocks. These notes must be clean and structured — fold each block into the relevant section with revise(section=…, mode=replace), then leave no addendum marker. Only sessions, diary, and logs accumulate addendum history. Scoped/autonomous agents fold only what's in their lane — leaving personal/out-of-scope addendums for the next interactive session is correct; the call itself satisfies the gate. |
-| `maintain(deep?, dryRun?)` | Lite: thread aging + unlabeled-node check per typed container. Deep adds: stale-review + orphan/sink report (Memory/Threads + Knowledge, brain-wide inbound detection) + duplicate-title detection + exact-duplicate relation-edge cleanup. Report includes `policy` (active thresholds). |
+| `maintain(deep?, dryRun?)` | Lite: thread aging + unlabeled-node check per typed container. Deep adds: unlabeled thread-children check (each thread's own day-children, one level deeper than the lite pass) + stale-review + orphan/sink report (Memory/Threads + Knowledge, brain-wide inbound detection) + duplicate-title detection + exact-duplicate relation-edge cleanup. Report includes `policy` (active thresholds). |
 | `forget(noteId, reason?, hard?)` | Archive (default) or hard-delete (blocked while backlinked). Undo with recover(). |
 
 ---

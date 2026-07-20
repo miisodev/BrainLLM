@@ -34,6 +34,15 @@ describe("labelPlan (V9)", () => {
     const info = labelPlan("information", { domain: "Tech" }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
     expect(info.some((f) => f.startsWith("status="))).toBe(false);
   });
+  test("thread is seeded with an updated label at creation", () => {
+    // Threads age off #updated (lifecycle.ts), not note.dateModified — a
+    // never-appended-to thread must still carry the label from birth or the
+    // sweep's #updated < cutoff query can never see it at all.
+    const thread = labelPlan("thread", {}, "2026-06-10").map((l) => `${l.name}=${l.value}`);
+    expect(thread).toContain("updated=2026-06-10");
+    const info = labelPlan("information", { domain: "Tech" }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
+    expect(info.some((f) => f.startsWith("updated="))).toBe(false);
+  });
   test("domain-scoped kinds get a slugged domain label", () => {
     const flat = labelPlan("information", { domain: "Distributed Systems" }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
     expect(flat).toContain("domain=distributed-systems");

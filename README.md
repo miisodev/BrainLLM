@@ -6,7 +6,8 @@
 
 **A persistent, graph-structured second brain for Claude and other LLMs — built on [TriliumNext Notes](https://github.com/TriliumNext/Notes), served over the [Model Context Protocol](https://modelcontextprotocol.io).**
 
-[![Version](https://img.shields.io/badge/version-9.0.0-6d28d9?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-9.1.0-6d28d9?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-f9f1e1?style=flat-square&logo=bun&logoColor=black)](https://bun.sh)
 [![MCP](https://img.shields.io/badge/protocol-MCP-000000?style=flat-square)](https://modelcontextprotocol.io)
@@ -24,9 +25,13 @@ LLMs forget. Every session starts from zero: who you are, what you're working on
 
 It's a single Bun/TypeScript service with two dependencies (the MCP SDK and Zod), speaking to Trilium exclusively through its public ETAPI. Your memory lives in *your* Trilium instance — inspectable, editable, and portable, never locked inside a vendor's black box.
 
+### Who it's for
+
+Anyone running an LLM as a long-running collaborator, not a one-shot Q&A tool — across coding, research, personal knowledge management, or day-to-day operational tracking — who wants that collaborator to actually remember: who you are, what's in flight, what was decided, without you re-explaining it every session. If you're comfortable self-hosting one small service and a Trilium instance, BrainLLM turns "the model forgot everything again" into a solved problem. It works with any MCP-capable client (Claude Desktop, Claude Code, or anything else speaking MCP), not just one product.
+
 ### From experiment to open source
 
-BrainLLM began as a personal experiment: could an LLM operate a real, self-hosted second brain reliably enough to be trusted as its own memory — orienting, writing, connecting, and closing sessions without a human doing the filing? Through sustained daily, production use the answer held. The design has settled, the failure modes have been found and fixed, and the project has graduated from experiment to something **efficient and stable enough to share** — so it's now open source. It still runs the author's own sessions every day; what you're reading is the same code, not a demo.
+BrainLLM began in February 2026 as a personal experiment: could an LLM operate a real, self-hosted second brain reliably enough to be trusted as its own memory — orienting, writing, connecting, and closing sessions without a human doing the filing? Through sustained daily, production use the answer held. The design has settled, the failure modes have been found and fixed, and the project has graduated from experiment to something **efficient and stable enough to share** — so it's now open source. It still runs the author's own sessions every day; what you're reading is the same code, not a demo. It also still carries the shape of one person's daily use — see [Adapting to your environment](#adapting-to-your-environment) for exactly what that means and what to change.
 
 ### The core principle
 
@@ -173,11 +178,11 @@ The complete operational reference is [`skills/brainllm/SKILL.md`](./skills/brai
 | **stdio** | Local — Claude Desktop / Claude Code spawns BrainLLM as a child process | `PORT` unset (default) |
 | **HTTP connector** | Remote — clients reach BrainLLM over the network | `PORT` set (Railway injects it) |
 
-The HTTP connector serves a streamable-HTTP MCP endpoint at `/mcp` (one session per `mcp-session-id`, DELETE terminates, CORS-enabled with `mcp-session-id` exposed for browser clients) plus `GET /health`. Set `MCP_AUTH_TOKEN` to require a bearer token. Idle sessions are evicted after 1 hour; request bodies are capped at 50 MB.
+The HTTP connector serves a streamable-HTTP MCP endpoint at `/mcp` (one session per `mcp-session-id`, DELETE terminates, CORS-enabled with `mcp-session-id` exposed for browser clients) plus `GET /health`. The server itself speaks plain HTTP — TLS is expected to terminate in front of it (Railway's edge does this automatically for you; on a bare VPS or your own Docker host, put it behind a reverse proxy such as Caddy, nginx, or a Cloudflare Tunnel). **Set `MCP_AUTH_TOKEN` on any deployment reachable outside a trusted network** — CORS defaults to `*`, so without a token any client that can reach the endpoint can call your Trilium brain. Idle sessions are evicted after 1 hour; request bodies are capped at 50 MB.
 
 ### Docker / Railway
 
-The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector (two-stage, digest-pinned `oven/bun`, drops privileges via `entrypoint.sh`). On **Railway**: `PORT` is auto-injected — set `MCP_AUTH_TOKEN`, `TRILIUM_BASE_URL`, `TRILIUM_ETAPI_TOKEN`, and `BRAINLLM_TZ` as service variables, deploy, and point your client at `https://<app>.up.railway.app/mcp` with the bearer token.
+The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector (two-stage, digest-pinned `oven/bun`, drops privileges via `entrypoint.sh`). On **Railway**: `PORT` is auto-injected — set `MCP_AUTH_TOKEN`, `TRILIUM_BASE_URL`, `TRILIUM_ETAPI_TOKEN`, and `BRAINLLM_TZ` as service variables, deploy, and point your client at `https://<app>.up.railway.app/mcp` with the bearer token. Deploying elsewhere (a VPS, your own Docker host) works the same way — the container only needs those same env vars and a TLS-terminating proxy in front of it, per the transport note above.
 
 For config persistence across redeploys, mount a volume on the **BrainLLM service** (not the Trilium service) and set `BRAINLLM_CONFIG` to a file path inside it:
 
@@ -258,9 +263,23 @@ Repo layout: runtime source in `src/`, the operational skill in `skills/brainllm
 
 Contributions are welcome — bug reports, fixes, docs, and ideas alike.
 
+### What we value
+
+BrainLLM started as one person's daily-driver tool, so the code and docs still carry that person's assumptions in a few places (see [Adapting to your environment](#adapting-to-your-environment)). The contributions that matter most are the ones that generalize it beyond that:
+
+| Value | What that looks like in a PR |
+|---|---|
+| **Generalization** | Replacing an assumption baked in for one workflow with something that holds for any brain's content and conventions |
+| **Cross-user** | Nothing in `src/` should assume a specific person's ventures, schedule, or vocabulary — that belongs in *content* the model writes, never in the tool layer |
+| **Cross-device** | Behaves the same on Windows/macOS/Linux, over local stdio and remote HTTP, on a laptop and in a Railway container |
+| **Token efficiency** | Smaller responses, fewer round-trips, cheaper reads — e.g. `recall()`'s ranked snippets over `inspect(content=true)` for a plain yes/no check. This is a standing design bias, not a one-off optimization |
+| **Latency** | Bounded, retrying I/O; parallel reads over sequential ones; nothing that makes session start or a tool call slower than it needs to be |
+
+### How to contribute
+
 1. **Open an issue first** for anything non-trivial — bugs with reproduction steps, or proposals with the use case spelled out.
 2. **Fork and branch**, keep changes focused, and match the existing code style.
-3. **`bun run build` must pass clean** and unit tests must stay green (`bun test src/*.test.ts`); add tests for new normalize/lifecycle logic.
+3. **`bun run build` must pass clean** and unit tests must stay green (`bun test src/*.test.ts` — CI runs the same two checks on every push and PR); add tests for new normalize/lifecycle logic.
 4. **Use conventional commits** (`fix:`, `feat:`, `docs:`, `refactor:`).
 5. **Update the docs that your change touches** — `README.md`, the skill package under `skills/brainllm/`, and `config.example.json`/`.env.example` where relevant. The skill is part of the product: a tool change without its skill update is half a change.
 

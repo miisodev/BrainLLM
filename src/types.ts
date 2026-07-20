@@ -34,7 +34,8 @@ export const Kinds = [
   "diary",            // dated entry under LLM/diary
   // Memory — operational record
   "session",          // dated entry under Memory/sessions
-  "thread",           // titled entry under Memory/threads
+  "thread",           // book note under Memory/threads — Context/Goal + Resolution only
+  "threadEntry",      // dated day-entry under a thread book — created only via thread append
   // Knowledge — learned information beyond/contradicting training
   "user",             // user-knowledge note under Knowledge/Master
   "domain",           // a domain book under Knowledge/Domains
@@ -53,7 +54,7 @@ export type AnyKind = Kind;
 export const KIND_AREA: Record<Kind, Area> = {
   biography: "master", goals: "master", preferences: "master",
   responsibilities: "llm", protocols: "llm", diary: "llm",
-  session: "memory", thread: "memory",
+  session: "memory", thread: "memory", threadEntry: "memory",
   user: "knowledge", domain: "knowledge", information: "knowledge", sources: "knowledge",
   log: "insights",
 };
@@ -66,7 +67,7 @@ export const SingletonKinds: readonly Kind[] = [
 ];
 
 // Dated entries — titled by the day they belong to (one per day).
-export const DatedKinds: readonly Kind[] = ["diary", "session", "log"];
+export const DatedKinds: readonly Kind[] = ["diary", "session", "log", "threadEntry"];
 
 // ── Status ────────────────────────────────────────────────────────────────────
 // Lifecycle state. The aging/maintenance model is authored in the templates

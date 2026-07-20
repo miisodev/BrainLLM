@@ -33,7 +33,7 @@ Written by the server — you never set `#noteType`, `#status`, `#created`, `#up
 
 | Label | Values | Purpose |
 |---|---|---|
-| `#noteType` | `biography` `goals` `preferences` `responsibilities` `protocols` `diary` `session` `thread` `user` `domain` `information` `sources` `log` | Kind — exactly one per note, set at creation, never edited after |
+| `#noteType` | `biography` `goals` `preferences` `responsibilities` `protocols` `diary` `session` `thread` `threadEntry` `user` `domain` `information` `sources` `log` | Kind — exactly one per note, set at creation, never edited after. `threadEntry` is never created directly — only as a thread's day-child |
 | `#status` | `active` `dormant` `resolved` `superseded` `eternal` | Lifecycle state — threads age; `resolve()` sets terminal. `eternal` = lifecycle-exempt, never aged by the sweep — for user-curated permanent threads |
 | `#created` | ISO date | Set at creation (the user's local day) |
 | `#updated` | ISO date | Updated on every write |

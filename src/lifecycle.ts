@@ -99,17 +99,22 @@ export async function sweep(
   const archiveCutoff = isoDaysAgo(policy.archiveDormantAfterDays);
 
   // ── Aging: threads active → dormant → archived ──────────────────────────────
+  // Keyed off the "updated" label, not note.dateModified — a thread's own
+  // content (Context/Resolution) rarely changes once written; day-to-day
+  // activity lands on threadEntry children instead, which don't bump the
+  // book's own dateModified. labelPlan() seeds "updated" at thread creation
+  // so every thread has one to compare against.
   const toDormant = await trilium
-    .searchNotes(`#noteType=thread #status=active note.dateModified < '${dormantCutoff}'`, { ancestorNoteId: cfg.memory.threads, limit: 50 })
+    .searchNotes(`#noteType=thread #status=active #updated < '${dormantCutoff}'`, { ancestorNoteId: cfg.memory.threads, limit: 50 })
     .catch(() => ({ results: [] as Note[] }));
   report.scanned += toDormant.results.length;
   for (const n of toDormant.results) {
     if (!dryRun) await trilium.updateLabelValue(n.noteId, "status", "dormant");
-    report.transitions.push(`dormant: ${n.title} (thread, idle ${idleDays(n.dateModified)}d)`);
+    report.transitions.push(`dormant: ${n.title} (thread, idle ${idleDays(threadUpdated(n))}d)`);
   }
 
   const toArchive = await trilium
-    .searchNotes(`#noteType=thread #status=dormant note.dateModified < '${archiveCutoff}'`, { ancestorNoteId: cfg.memory.threads, limit: 50 })
+    .searchNotes(`#noteType=thread #status=dormant #updated < '${archiveCutoff}'`, { ancestorNoteId: cfg.memory.threads, limit: 50 })
     .catch(() => ({ results: [] as Note[] }));
   report.scanned += toArchive.results.length;
   for (const n of toArchive.results) {
@@ -170,9 +175,37 @@ export async function sweep(
 
   if (!deep) return report;
 
+  // ── Deep: unlabeled thread-children sweep ───────────────────────────────────
+  // Same check as the lite unlabeled-node sweep above, one level deeper: each
+  // thread book's OWN children (threadEntry day-notes). Threads are containers
+  // now too, but they aren't in typedContainers above (that list is fixed
+  // structural containers; there are N threads, not one) — so this is its own
+  // pass, and deep-only since it costs roughly two queries per thread.
+  if (cfg.memory.threads) {
+    const threads = await trilium
+      .searchNotes("#noteType=thread", { ancestorNoteId: cfg.memory.threads, fastSearch: true, limit: 200 })
+      .catch(() => ({ results: [] as Note[] }));
+    for (const thread of threads.results) {
+      const childIds = thread.childNoteIds;
+      if (!childIds.length) continue;
+      report.scanned += childIds.length;
+      const typedChildren = await trilium
+        .searchNotes("#noteType=threadEntry", { ancestorNoteId: thread.noteId, fastSearch: true, limit: childIds.length + 10 })
+        .catch(() => ({ results: [] as Note[] }));
+      const typedIds = new Set(typedChildren.results.map((n) => n.noteId));
+      for (const childId of childIds) {
+        if (typedIds.has(childId)) continue;
+        const child = await trilium.getNote(childId).catch(() => null);
+        if (child && !child.attributes.some((a) => a.type === "label" && a.name === "archived")) {
+          report.flagged.push(`unlabeled: ${child.title} [${childId}] in thread "${thread.title}" — add #noteType=threadEntry`);
+        }
+      }
+    }
+  }
+
   // ── Deep: stale-review ──────────────────────────────────────────────────────
   const staleCutoff = isoDaysAgo(policy.staleAfterDays);
-  const RECORDS = new Set(["log", "session", "diary"]);
+  const RECORDS = new Set(["log", "session", "diary", "threadEntry"]);
   const stale = await trilium
     .searchNotes(`#noteType note.dateModified < '${staleCutoff}'`, { ancestorNoteId: cfg.root, fastSearch: true, limit: 200 })
     .catch(() => ({ results: [] as Note[] }));
@@ -244,7 +277,7 @@ export async function sweep(
   let sinks = 0;
   for (const n of candidates) {
     const kind = ownedLabel(n, "noteType");
-    if (!kind || kind === "domain" || kind === "sources" || isStructural(cfg, n.noteId)) continue;
+    if (!kind || kind === "domain" || kind === "sources" || kind === "threadEntry" || isStructural(cfg, n.noteId)) continue;
     const hasOut = n.attributes.some((a) => a.type === "relation" && a.name !== "template");
     const hasIn = targets.has(n.noteId);
     if (!hasOut && !hasIn && orphans < 10) {
@@ -337,6 +370,12 @@ function idleDays(dateModified: string): number {
 const label = (n: Note, name: string) =>
   n.attributes.find((a) => a.type === "label" && a.name === name)?.value;
 
+/** A thread book's aging signal: its own "updated" label, not
+ *  note.dateModified — content activity lands on threadEntry children,
+ *  which don't bump the book's own dateModified. Falls back to
+ *  dateModified for a not-yet-migrated legacy thread that lacks the label. */
+const threadUpdated = (n: Note): string => label(n, "updated") ?? n.dateModified;
+
 /** Orientation payload for start: the Master singletons (the user), the LLM
  *  singletons (the assistant's own self-model), live threads, and the last
  *  session summary. */
@@ -373,7 +412,7 @@ export async function buildDigest(trilium: TriliumClient, cfg: BrainLLMConfig): 
   }).catch(() => ({ results: [] as Note[] }));
   for (const n of live.results) {
     const status = label(n, "status") ?? "active";
-    const idle = idleDays(n.dateModified);
+    const idle = idleDays(threadUpdated(n));
     const relations = relationSnippet(n);
     if (status === "dormant") {
       digest.reviewQueue.push({ id: n.noteId, title: n.title, kind: "thread", idleDays: idle, ...(relations ? { relations } : {}) });

@@ -15,7 +15,7 @@ Domain knowledge is **gated and current-state**. Read this before creating a dom
 3. **Sources** (h2) — the ❇️/✅ legend line, then the full, complete source list: **every** source (URL, doc, file, dataset, …) listed and marked individually with just its emoji; related sources grouped under h3 subheadings
 4. **Revision** (h2) — a `Source | Marker | Date` table recording each source's current marker and the date it earned it
 
-`remember(kind="sources", domain=…)` **merges into the Sources section** — the note is a maintained clean document, never a stack of dated addendum blocks. Update markers and the Revision table with `revise(find=…)` surgery.
+`remember(kind="sources", domain=…)` **merges into the Sources section** — the note is a maintained clean document, never a stack of dated addendum blocks. Pass `revision=[{source, marker, date?}]` on the same call to upsert Revision-table rows by source name — re-verifying a source replaces its existing row in place, it never grows a new one. Fall back to `revise(find=…)` surgery only for something the upsert can't express (e.g. renaming a source's row key).
 
 ## 1. Creating a new domain (the domain doesn't exist yet)
 

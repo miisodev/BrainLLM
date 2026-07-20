@@ -80,6 +80,11 @@ export function contentFor(kind: AnyKind, o: TemplateOpts): string {
         metaLine(["diary", o.date]),
         o.body || "<p></p>",
       ].join("\n");
+    case "threadEntry":
+      return [
+        metaLine(["threadEntry", o.date]),
+        o.body || "<p></p>",
+      ].join("\n");
     case "log":
       return [
         metaLine(["log", o.date]),
@@ -152,17 +157,27 @@ export const STRUCTURE_RULES: Partial<Record<AnyKind | "singleton", StructureRul
   },
   thread: {
     structure: [
-      "Server header (thread · opened <date>)",
-      "**Context** (h2) → **Goal** (h3) — the goal statement, queried from the user at creation (goal= is required)",
-      "Further h3 context subsections as needed",
-      "`Addendum — YYYY-MM-DD` blocks (h2), each with an identification line (h3) + h4 sections",
-      "**Resolution** (h2) — exactly one, always the bottom section, owned by resolve()",
+      "A book note (type=book): server header (thread · opened <date>) + **Context** (h2) → **Goal** (h3) — the goal statement, queried from the user at creation (goal= is required) — + further h3 context subsections as needed + **Resolution** (h2), exactly one, always the last section, owned by resolve()",
+      "One `[yyyy-mm-dd]` threadEntry child per active day, same shape as a diary/session day: `Addendum — HH:mm` blocks (h2), each with an identification line (h3) + h4 sections",
+      "Occasional `Withdrawn — <date>` / `Recovered — <date>` markers append directly to the book, near Resolution — rare lifecycle transitions, not routine content, so they stay put rather than moving to a child",
     ],
     rules: [
-      "remember(kind=thread) requires goal= (or a body already carrying the Context structure)",
+      "remember(kind=thread) requires goal= (or a body already carrying the Context structure) to CREATE the book",
+      "Appending to a thread writes into TODAY's child note, never the book — created on first append of the day; same-day appends merge under a new Addendum — HH:mm block",
       "Thread appends require the identification line: pass identity= on remember()/revise() (or lead the body with the h3) — the write is refused otherwise",
-      "Bodies must not carry their own Resolution heading — resolve() owns it",
+      "The book never carries a Resolution smuggled into a body — resolve() owns it exclusively; day-children never carry one at all",
+      "memory() on a thread returns the book's Context/Resolution plus a child-note index — read a specific day via its own id (or memory(id, date=)). inspect() gives the book's raw content verbatim (no child index) — that's just Context/Resolution now, not the full history; use memory() first to find the child you actually want, then inspect() that child for its raw labels/attachments",
       "At the close protocol: unthreaded forward/unfinished work prompts the user for thread creation",
+    ],
+  },
+  threadEntry: {
+    structure: [
+      "Server header (threadEntry · <date>)",
+      "`Addendum — HH:mm` (h2) blocks, each with an identification line (h3) — identical shape to a diary/session day",
+    ],
+    rules: [
+      "One note per thread per day, created automatically on first append — never created directly via remember()",
+      "Chronological record — every write lands as a new timestamped block, never merged into prose",
     ],
   },
   sources: {
@@ -170,12 +185,13 @@ export const STRUCTURE_RULES: Partial<Record<AnyKind | "singleton", StructureRul
       "Server header (sources · domain: <name>)",
       "`Last updated - <date>` (h4) — server-maintained",
       "**Sources** (h2): the ❇️/✅ legend line, then the full source list — every source (URL, doc, file, …) listed and marked individually with just its emoji; related sources grouped under h3 subheadings",
-      "**Revision** (h2): a Source | Marker | Date table recording current markers' dates",
+      "**Revision** (h2): a Source | Marker | Date table, one row per source, current-state only",
     ],
     rules: [
       "One maintained Sources note per domain — auto-created with the domain book",
-      "A clean maintained document: writes merge into the Sources section, never dated addendum stacks",
-      "Marker dates live in the Revision table, not inline in the list",
+      "A clean maintained document: the Sources section merges via remember(), never dated addendum stacks",
+      "Revision rows are upserted by source name — pass revision=[{source, marker, date}] on remember(kind=sources); re-verifying a source replaces its existing row's Marker/Date in place, it never grows a new row with a re-check-flavored label",
+      "The Source column value must exactly match how the source is introduced in the Sources list — that's the upsert key",
     ],
   },
   information: {
