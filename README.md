@@ -165,7 +165,7 @@ All tool returns are structured JSON. User-input mistakes return informational e
 
 The raw ETAPI, one tool per Trilium primitive — notes, attributes, branches, revisions, attachments, calendar, system. Brain-agnostic and guard-free: an edge-case fallback for what core can't express (precise raw queries, code/canvas/mermaid notes, branch surgery, revision recovery).
 
-The complete operational reference is [`skills/brainllm/SKILL.md`](./skills/brainllm/SKILL.md); per-topic deep dives live in [`skills/brainllm/references/`](./skills/brainllm/references/).
+The complete operational reference is [`skills/brainllm/SKILL.md`](./skills/brainllm/SKILL.md); per-topic deep dives live in [`skills/brainllm/references/`](./skills/brainllm/references/). Beyond that, the **Blueprint** is a from-source architecture reference — every module, every tool's exact behavior and signature, the sweep internals, the full idempotency matrix — kept internally rather than published in this repo; see [Support the project](#support-the-project) for how to get a copy.
 
 ---
 
@@ -245,7 +245,7 @@ index.ts ─→ tools.ts ─┬→ trilium.ts     ETAPI client: bounded/retrying
                       └→ tools-*.ts     per-area surface reads · full-mode raw ETAPI
 ```
 
-Key properties: every write is sanitized for Trilium/CKEditor 5 compatibility (mutations reported back as `sanitized[]`); a revision snapshot precedes every content mutation; every request carries the user's local time so Trilium stamps dates in the right day; all writes are idempotent or duplicate-guarded (see the retry-safety matrix in the blueprint).
+Key properties: every write is sanitized for Trilium/CKEditor 5 compatibility (mutations reported back as `sanitized[]`); a revision snapshot precedes every content mutation; every request carries the user's local time so Trilium stamps dates in the right day; all writes are idempotent or duplicate-guarded (see the retry-safety matrix in the Blueprint).
 
 ## Development
 
@@ -295,6 +295,8 @@ BrainLLM is built and maintained by one person. If it's useful to you, sponsorsh
 [![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-009cde?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/miisodev?locale.x=en_US&country.x=ZA)
 
 </div>
+
+Sponsors can request a copy of the **Blueprint** — the complete internal architecture reference generated from full source analysis (every module, every tool's exact behavior and signatures, the sweep and idempotency internals) that isn't published in this repo. Message via GitHub Sponsors to ask for one.
 
 Starring the repo, reporting bugs, and spreading the word help too.
 

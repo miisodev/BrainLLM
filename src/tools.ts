@@ -2051,7 +2051,10 @@ stamps); this tool serves the full contract including what remains authorial.`,
 Scope: the whole brain (default), or a neighborhood (pass noteId + depth). Nodes are the typed
 notes, colored by area; edges are the typed relations (~template excluded). The Mermaid source
 is returned AND upserted into the maintained "Graph" note under Insights (a native Trilium
-mermaid note), so the view renders in Trilium and in any Mermaid-capable client.`,
+mermaid note), so the view renders in Trilium and in any Mermaid-capable client. On-demand only —
+the note reflects the brain as of this call, not automatically after later writes; call again to
+refresh. A scoped (noteId) call replaces the note's content with just that neighborhood, not the
+whole-brain view.`,
     {
       noteId: z.string().optional().describe("Center the graph on this note's neighborhood instead of the whole brain"),
       depth: z.number().optional().describe("Neighborhood hops when noteId is given (default: 2)"),
