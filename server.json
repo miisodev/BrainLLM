@@ -49,6 +49,19 @@
           "description": "IANA timezone used to stamp dated notes, e.g. Africa/Johannesburg. Defaults to the host timezone.",
           "isRequired": false,
           "format": "string"
+        },
+        {
+          "name": "BRAINLLM_OWNER_PASSWORD",
+          "description": "Enables the OAuth 2.1 / CIMD endpoints required by claude.ai and other hosted Claude surfaces. This is the password entered on the consent screen when authorizing a client.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "BRAINLLM_PUBLIC_URL",
+          "description": "Override for the public origin when a proxy rewrites Host. Must exactly match the URL entered in the client.",
+          "isRequired": false,
+          "format": "string"
         }
       ]
     }

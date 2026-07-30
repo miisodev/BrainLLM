@@ -220,6 +220,31 @@ The HTTP connector serves a streamable-HTTP MCP endpoint at `/mcp` (one session 
 
 The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector (two-stage, digest-pinned `oven/bun`, drops privileges via `entrypoint.sh`). On **Railway**: `PORT` is auto-injected — set `MCP_AUTH_TOKEN`, `TRILIUM_BASE_URL`, `TRILIUM_ETAPI_TOKEN`, and `BRAINLLM_TZ` as service variables, deploy, and point your client at `https://<app>.up.railway.app/mcp` with the bearer token. Deploying elsewhere (a VPS, your own Docker host) works the same way — the container only needs those same env vars and a TLS-terminating proxy in front of it, per the transport note above.
 
+### Connecting claude.ai (OAuth)
+
+Claude Code and `mcp-remote` send `MCP_AUTH_TOKEN` as a header and need nothing further. **The hosted Claude surfaces — claude.ai, Claude mobile, Cowork — cannot.** Their custom-connector UI offers OAuth or nothing; there is no field for a bearer token. So BrainLLM ships its own OAuth 2.1 authorization server, using [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) — the registration-free mechanism MCP's `2026-07-28` revision adopted in place of Dynamic Client Registration.
+
+Set one variable to turn it on:
+
+```bash
+BRAINLLM_OWNER_PASSWORD=<a strong password you choose>
+```
+
+That password is what you type on the consent screen. Without it the OAuth endpoints are disabled entirely and nothing else changes.
+
+Then in Claude: **Settings → Connectors → Add custom connector**, enter `https://<your-host>/mcp`, and leave the OAuth client fields blank — CIMD needs no client ID or secret. Claude discovers everything from the `401`, you approve once on a consent screen, and it stays connected.
+
+What that turns on:
+
+| Endpoint | Purpose |
+|---|---|
+| `/.well-known/oauth-protected-resource` (+ `/mcp` variant) | RFC 9728 — names the authorization server |
+| `/.well-known/oauth-authorization-server` | RFC 8414 — advertises CIMD support and PKCE S256 |
+| `/authorize` | Validates the client's metadata document, shows the consent screen |
+| `/token` | PKCE-verified code exchange, with rotating refresh tokens |
+
+Both credentials work simultaneously — a static token from Claude Code and an OAuth token from claude.ai, against the same brain. Access tokens are signed JWTs bound to your server's resource URI, so a token minted for a different MCP server is rejected; the signing secret and refresh tokens persist beside `brainllm.json`, which on a container deploy means **putting `BRAINLLM_CONFIG` on a volume** — otherwise every redeploy invalidates every token.
+
 For config persistence across redeploys, mount a volume on the **BrainLLM service** (not the Trilium service) and set `BRAINLLM_CONFIG` to a file path inside it:
 
 ```bash
@@ -239,7 +264,9 @@ Without a volume, leave `BRAINLLM_CONFIG` unset — auto-discovery re-finds the 
 | `BRAINLLM_MODE` | — | `core` (default) or `full` (adds the raw ETAPI surface) |
 | `BRAINLLM_TZ` | — | IANA timezone (e.g. `Africa/Johannesburg`) so dates stamp in *your* day on hosted deploys; unset = host clock |
 | `PORT` | — | Presence switches to HTTP-connector mode |
-| `MCP_AUTH_TOKEN` | — | Bearer token required on `/mcp` in HTTP mode |
+| `MCP_AUTH_TOKEN` | — | Static bearer token accepted on `/mcp` — what Claude Code and `mcp-remote` send |
+| `BRAINLLM_OWNER_PASSWORD` | — | Enables the OAuth 2.1 / CIMD endpoints, required for claude.ai. The password you type on the consent screen |
+| `BRAINLLM_PUBLIC_URL` | — | Override the derived public origin when a proxy rewrites `Host`. Must match the URL you enter in the client exactly |
 | `BRAINLLM_CONFIG` | — | Absolute file path for `brainllm.json` on persistent-volume deploys |
 
 Lifecycle timings live in `brainllm.json` and are yours to tune:
