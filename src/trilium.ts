@@ -273,6 +273,28 @@ export class TriliumClient {
     return this.request<Note>(`/notes/${noteId}`);
   }
 
+  /** Mint an ETAPI token from the Trilium password (`POST /auth/login`).
+   *  Static because it is the one call made BEFORE a client exists — setup used
+   *  to require opening the Trilium UI, finding Options → ETAPI, creating a
+   *  token by hand and pasting it into an env var, which is the highest-friction
+   *  step in the whole install. Returns the token for the caller to persist. */
+  static async login(baseUrl: string, password: string): Promise<string> {
+    const root = baseUrl.replace(/\/+$/, "");
+    const url = `${root}${root.endsWith("/etapi") ? "" : "/etapi"}/auth/login`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`ETAPI login failed (${res.status}): ${detail.slice(0, 200) || res.statusText}`);
+    }
+    const body = (await res.json()) as { authToken?: string };
+    if (!body.authToken) throw new Error("ETAPI login returned no authToken.");
+    return body.authToken;
+  }
+
   async createNote(
     parentNoteId: string,
     title: string,

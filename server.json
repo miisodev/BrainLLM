@@ -1,0 +1,49 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.miisodev/brainllm",
+  "description": "Persistent, graph-structured memory for LLMs, stored in TriliumNext Notes. Enforced note structure, a session protocol with a durable pre-close gate, a typed knowledge graph, and a maintenance lifecycle — in a note application the human can read and edit too.",
+  "version": "10.0.0",
+  "websiteUrl": "https://github.com/miisodev/BrainLLM#readme",
+  "repository": {
+    "url": "https://github.com/miisodev/BrainLLM",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "brainllm",
+      "version": "10.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "TRILIUM_BASE_URL",
+          "description": "Base URL of the TriliumNext instance, e.g. http://localhost:8080",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "TRILIUM_ETAPI_TOKEN",
+          "description": "ETAPI token. Create one in Trilium under Options → ETAPI, or let `bun run init` mint one from TRILIUM_PASSWORD.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "BRAINLLM_MODE",
+          "description": "core (default) exposes the 38 brain-aware tools; full additionally exposes the 33 raw ETAPI tools.",
+          "isRequired": false,
+          "format": "string",
+          "default": "core"
+        },
+        {
+          "name": "BRAINLLM_TZ",
+          "description": "IANA timezone used to stamp dated notes, e.g. Africa/Johannesburg. Defaults to the host timezone.",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

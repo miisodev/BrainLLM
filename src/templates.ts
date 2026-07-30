@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — structured note content generators (V9)
+// BrainLLM — structured note content generators (V10)
 //
 // The enforced content skeleton per kind, plus the canonical structure rules
 // served by the template tool. The model supplies content; this owns shape.

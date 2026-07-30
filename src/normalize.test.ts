@@ -10,13 +10,22 @@ import {
   toText,
   queryTokens,
   looksLikeHtml,
+  looksLikeEncodedHtml,
+  renderBody,
   setSection,
+  headingOutline,
+  structureReport,
+  unbalancedTags,
   tolerantFindRegex,
+  spansBlockBoundary,
+  looksEntityEscaped,
   fixRecordHeader,
   bumpLastUpdated,
   duplicateHeadings,
   leadingIdentification,
   upsertTableRow,
+  tableRows,
+  hasPlaceholderRow,
 } from "./normalize.js";
 
 describe("tolerantFindRegex", () => {
@@ -39,6 +48,48 @@ describe("tolerantFindRegex", () => {
     const rx = tolerantFindRegex("<p>cost (R500k) + 20%</p>");
     expect('<p class="x">cost (R500k) + 20%</p>'.match(rx!)?.length).toBe(1);
     expect("<p>cost R500k + 20%</p>".match(rx!)).toBeNull();
+  });
+
+  test("matches across a block boundary regardless of inter-element whitespace", () => {
+    // The bug this closes: whitespace between elements was escaped literally, so
+    // a find authored as "</h3>\n<ol>" could never match stored "</h3><ol>" — on
+    // either pass, in any whitespace variant. Three separate sessions
+    // misdiagnosed it (as "non-ASCII", then "emoji") before the real constraint
+    // was isolated.
+    const authored = "</h3>\n<ol>";
+    const rx = tolerantFindRegex(authored)!;
+    expect("<h3>Plan</h3><ol><li>a</li></ol>".match(rx)?.length).toBe(1);
+    expect("<h3>Plan</h3>\n\n  <ol><li>a</li></ol>".match(rx)?.length).toBe(1);
+    // And the no-whitespace spelling still matches a stored newline.
+    expect("<h3>Plan</h3>\n<ol>".match(tolerantFindRegex("</h3><ol>")!)?.length).toBe(1);
+  });
+
+  test("whitespace inside text stays required, so unrelated prose does not match", () => {
+    const rx = tolerantFindRegex("<p>alpha beta</p>")!;
+    expect("<p>alpha   beta</p>".match(rx)?.length).toBe(1);
+    expect("<p>alphabeta</p>".match(rx)).toBeNull();
+  });
+
+  test("emoji in the find string are not the problem they were reported to be", () => {
+    const rx = tolerantFindRegex("<li>❇️ discovered</li>")!;
+    expect('<li data-list-item-id="x">❇️ discovered</li>'.match(rx)?.length).toBe(1);
+  });
+});
+
+describe("find= miss diagnostics", () => {
+  test("spansBlockBoundary identifies the shape that used to be unmatchable", () => {
+    expect(spansBlockBoundary("</h3>\n<ol>")).toBe(true);
+    expect(spansBlockBoundary("</p> <p>next")).toBe(true);
+    expect(spansBlockBoundary("<p>all inside one element</p>")).toBe(false);
+    expect(spansBlockBoundary("plain text")).toBe(false);
+  });
+
+  test("looksEntityEscaped catches a search string escaped by the caller", () => {
+    // The inverse mistake: bodies accept escaped markup, find= does not, and
+    // those two behaviours differing is exactly what caused the trip-up.
+    expect(looksEntityEscaped("&lt;h3&gt;Typography&lt;/h3&gt;")).toBe(true);
+    expect(looksEntityEscaped("<h3>Typography</h3>")).toBe(false);
+    expect(looksEntityEscaped("plain text")).toBe(false);
   });
 });
 
@@ -265,15 +316,64 @@ describe("setSection", () => {
     expect(r.headingCount).toBe(2);
   });
 
-  test("reports matched:false and appends a new h2 when no heading is found at any level", () => {
+  test("on a miss, appends at the note's OWN section level — not a hardcoded h2", () => {
+    // The bug this replaces: a note built entirely from h3 sections got a stray
+    // h2 appended, so a mistyped section name produced a structurally wrong
+    // note rather than an error. Hit twice in one session before it was fixed.
     const r = setSection(doc, "Nonexistent Section", "<p>new</p>", "replace");
     expect(r.matched).toBe(false);
     expect(r.headingCount).toBe(0);
-    expect(r.html).toContain("<h2>Nonexistent Section</h2>");
+    expect(r.appendedAtLevel).toBe(3);
+    expect(r.html).toContain("<h3>Nonexistent Section</h3>");
+    expect(r.html).not.toContain("<h2>Nonexistent Section</h2>");
     expect(r.html).toContain("<p>new</p>");
     // Original content is untouched, not duplicated under the fallback heading.
     expect(r.html).toContain("<h3>Operating</h3>");
     expect(r.html.match(/Operating/g)).toHaveLength(1);
+  });
+
+  test("a miss returns the note's real headings so the caller can re-target without a read", () => {
+    const r = setSection(doc, "Nonexistent Section", "<p>new</p>", "replace");
+    expect(r.available).toEqual(["Operating", "Self-correction"]);
+  });
+
+  test("uses h2 for a mixed-level note, and h2 for a note with no headings at all", () => {
+    expect(setSection("<h2>Top</h2><p>a</p><h3>Sub</h3><p>b</p>", "New", "<p>x</p>", "replace").appendedAtLevel).toBe(2);
+    expect(setSection("<p>just prose</p>", "New", "<p>x</p>", "replace").appendedAtLevel).toBe(2);
+  });
+
+  test("occurrence= reaches a later same-text heading instead of always the first", () => {
+    // Repeating a closing heading under every category is the consistency rule
+    // working, and it used to make the second one unreachable: section= took the
+    // first and find= could not tell two identical strings apart.
+    const dup = "<h3>Notes</h3><p>first</p><h3>Notes</h3><p>second</p>";
+    const r = setSection(dup, "Notes", "<p>replaced</p>", "replace", 2);
+    expect(r.matched).toBe(true);
+    expect(r.headingCount).toBe(2);
+    expect(r.html).toContain("<p>first</p>");
+    expect(r.html).toContain("<p>replaced</p>");
+    expect(r.html).not.toContain("<p>second</p>");
+  });
+
+  test("occurrence beyond the range clamps to the last match rather than appending a duplicate", () => {
+    const dup = "<h3>Notes</h3><p>first</p><h3>Notes</h3><p>second</p>";
+    const r = setSection(dup, "Notes", "<p>replaced</p>", "replace", 9);
+    expect(r.matched).toBe(true);
+    expect(r.html.match(/<h3>Notes<\/h3>/g)).toHaveLength(2);
+    expect(r.html).not.toContain("<p>second</p>");
+  });
+
+  test("before/after insert around the heading without touching the section body", () => {
+    const before = setSection(doc, "Self-correction", "<h3>Inserted</h3>", "before");
+    expect(before.matched).toBe(true);
+    expect(before.html).toContain("<h3>Inserted</h3>\n<h3>Self-correction</h3>");
+    expect(before.html).toContain("<p>other</p>");
+
+    const after = setSection(doc, "Operating", "<p>note</p>", "after");
+    expect(after.matched).toBe(true);
+    expect(after.html).toContain("<h3>Operating</h3>\n<p>note</p>");
+    // The section's own content survives — this is an insert, not a replace.
+    expect(after.html).toContain("<p>old 1</p>");
   });
 
   test("append mode preserves existing content under the section instead of discarding it", () => {
@@ -281,6 +381,82 @@ describe("setSection", () => {
     expect(r.matched).toBe(true);
     expect(r.html).toContain("old 1");
     expect(r.html).toContain("<p>added</p>");
+  });
+});
+
+describe("entity-encoded bodies", () => {
+  test("escaped markup is decoded, not escaped a second time", () => {
+    // The corruption this prevents: looksLikeHtml requires a literal '<', so an
+    // entity-encoded body took the markdown path and was escaped again —
+    // "&lt;h2&gt;" stored as "&amp;lt;h2&amp;gt;" and rendered as literal text,
+    // with a clean write receipt. It reached eight live notes.
+    const body = "&lt;h2&gt;Experience&lt;/h2&gt;&lt;p&gt;It went well.&lt;/p&gt;";
+    expect(looksLikeEncodedHtml(body)).toBe(true);
+    const html = toHtml(body);
+    expect(html).toContain("<h2>Experience</h2>");
+    expect(html).not.toContain("&amp;lt;");
+  });
+
+  test("bare ampersands exposed by the decode are re-escaped, keeping valid HTML", () => {
+    expect(toHtml("&lt;p&gt;a &amp; b&lt;/p&gt;")).toBe("<p>a &amp; b</p>");
+  });
+
+  test("real HTML and plain prose are both unaffected", () => {
+    expect(looksLikeEncodedHtml("<p>real</p>")).toBe(false);
+    expect(looksLikeEncodedHtml("a < b and c > d")).toBe(false);
+    // A stray entity that is not a whole tag stays plain text — detection needs
+    // "&lt;tag&gt;", so prose about escaping is never reinterpreted as markup.
+    expect(looksLikeEncodedHtml("a &lt; b")).toBe(false);
+    // Already-corrupted text ("&amp;lt;") is left exactly as written rather than
+    // guessed at: repairing existing notes is a deliberate act, not a side
+    // effect of the next unrelated write.
+    expect(looksLikeEncodedHtml("&amp;lt;p&amp;gt;twice&amp;lt;/p&amp;gt;")).toBe(false);
+  });
+
+  test("renderBody reports the decode — the mutation that used to be invisible", () => {
+    const decoded = renderBody("&lt;p&gt;hi&lt;/p&gt;");
+    expect(decoded.html).toBe("<p>hi</p>");
+    expect(decoded.warnings.join(" ")).toContain("Entity-encoded markup decoded");
+    expect(renderBody("<p>hi</p>").warnings).toEqual([]);
+  });
+});
+
+describe("structural lint", () => {
+  test("unbalancedTags reports what closeDangling would silently repair", () => {
+    expect(unbalancedTags("<p>fine</p><ul><li>open")).toEqual(["ul", "li"]);
+    expect(unbalancedTags("<p>a</p><br><hr>")).toEqual([]);
+  });
+
+  test("headingOutline carries level and occurrence index", () => {
+    const nodes = headingOutline("<h2>A</h2><h3>B</h3><h3>B</h3>");
+    expect(nodes).toEqual([
+      { level: 2, text: "A", occurrence: 1 },
+      { level: 3, text: "B", occurrence: 1 },
+      { level: 3, text: "B", occurrence: 2 },
+    ]);
+  });
+
+  test("structureReport surfaces duplicates, imbalance and size together", () => {
+    const r = structureReport("<h3>X</h3><p>a</p><h3>X</h3><ul><li>open");
+    expect(r.duplicateHeadings).toEqual(["x"]);
+    expect(r.unbalancedTags).toEqual(["ul", "li"]);
+    expect(r.size).toBeGreaterThan(0);
+  });
+});
+
+describe("table reads", () => {
+  const table = (rows: string) =>
+    `<h2>Revision</h2><figure class="table"><table><thead><tr><th>Source</th></tr></thead><tbody>${rows}</tbody></table></figure>`;
+
+  test("tableRows exposes the exact keys upsertTableRow matches on", () => {
+    const doc = table("<tr><td>myclerkbook.com</td><td>✅</td><td>2026-07-17</td></tr>");
+    expect(tableRows(doc, "Revision")).toEqual([["myclerkbook.com", "✅", "2026-07-17"]]);
+    expect(tableRows(doc, "Nonexistent")).toEqual([]);
+  });
+
+  test("hasPlaceholderRow catches a Revision table that was never filled in", () => {
+    expect(hasPlaceholderRow(table("<tr><td><em>— none yet —</em></td><td></td><td></td></tr>"), "Revision")).toBe(true);
+    expect(hasPlaceholderRow(table("<tr><td>real.com</td><td>✅</td><td>2026-07-17</td></tr>"), "Revision")).toBe(false);
   });
 });
 

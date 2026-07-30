@@ -16,15 +16,23 @@ const NAMED_ENTITIES: Record<string, string> = {
   rdquo: '"', ldquo: '"', middot: "·", bull: "•",
 };
 
+/** Decode one level of HTML entities. Unlike decodeEntities (which loops until
+ *  stable — right for titles and text extraction), this stops after a single
+ *  pass, so "&amp;lt;p&amp;gt;" unwinds to "&lt;p&gt;" instead of skipping past
+ *  the level that carries the markup. */
+function decodeEntitiesOnce(s: string): string {
+  return s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m);
+}
+
 /** Decode HTML entities (named + numeric), repeatedly, so double-escaped
  *  titles like "&amp;amp;" collapse all the way down to "&". */
 export function decodeEntities(s: string): string {
   let prev = s;
   for (let i = 0; i < 3; i++) {
-    const next = prev
-      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
-      .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
-      .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m);
+    const next = decodeEntitiesOnce(prev);
     if (next === prev) break;
     prev = next;
   }
@@ -151,6 +159,29 @@ export function looksLikeHtml(body: string): boolean {
   return HTML_TAG.test(body);
 }
 
+// Entity-encoded markup: a body whose tags arrive as "&lt;p&gt;" rather than
+// "<p>". Models escape their own markup defensively, and without this check the
+// body fails looksLikeHtml, takes the markdown path, and is escaped a SECOND
+// time — "&lt;" becomes "&amp;lt;", which stores and renders as visible literal
+// text instead of structure. Silent corruption with a clean write receipt.
+const ENCODED_TAG = /&lt;\/?[a-z][a-z0-9-]*(?:\s[^&<>]*?)?\s*\/?&gt;/i;
+
+/** True when the body carries markup in escaped form and no real tags — the
+ *  spelling that must be decoded rather than escaped again. */
+export function looksLikeEncodedHtml(body: string): boolean {
+  return !HTML_TAG.test(body) && ENCODED_TAG.test(body);
+}
+
+/** Unwind an entity-encoded body to real markup, one level per pass, stopping
+ *  as soon as real tags appear — so a singly-escaped body and a doubly-escaped
+ *  one both land on the same HTML. Bare ampersands exposed by the decode are
+ *  re-escaped, keeping the result valid HTML. */
+export function decodeEncodedHtml(body: string): string {
+  let s = body;
+  for (let i = 0; i < 3 && looksLikeEncodedHtml(s); i++) s = decodeEntitiesOnce(s);
+  return s.replace(/&(?![a-zA-Z]+;|#\d+;|#x[0-9a-fA-F]+;)/g, "&amp;");
+}
+
 function inlineMd(escaped: string): string {
   return escaped
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
@@ -160,12 +191,15 @@ function inlineMd(escaped: string): string {
 }
 
 /** Deterministic minimal markdown/plain-text → Trilium HTML. Bodies that
- *  already contain HTML tags pass through untouched. Supports paragraphs,
- *  #/##/### headings (mapped to h2/h3/h4 — h1 is the note title), -/* lists,
- *  numbered lists, fenced code blocks, GFM tables, bold/italic/inline code/links. */
+ *  already contain HTML tags pass through untouched; bodies whose markup arrives
+ *  entity-encoded are decoded rather than escaped a second time. Supports
+ *  paragraphs, #/##/### headings (mapped to h2/h3/h4 — h1 is the note title),
+ *  -/* lists, numbered lists, fenced code blocks, GFM tables, bold/italic/
+ *  inline code/links. */
 export function toHtml(body: string): string {
   if (!body.trim()) return "<p></p>";
   if (looksLikeHtml(body)) return body;
+  if (looksLikeEncodedHtml(body)) return decodeEncodedHtml(body);
 
   const lines = body.replace(/\r\n/g, "\n").split("\n");
   const out: string[] = [];
@@ -408,6 +442,28 @@ export function sanitizeHtml(html: string): SanitizeResult {
   return { html: s.trim() || "<p></p>", warnings };
 }
 
+/** The single entry point for model-supplied body content: markdown/plain text
+ *  is converted, real HTML passes through, entity-encoded markup is decoded —
+ *  then the result is sanitized, with every transformation reported.
+ *
+ *  Entity decoding is reported explicitly because it used to be the one silent
+ *  mutation in the write path: heading demotion, stripped attributes and closed
+ *  tags all surfaced in `warnings`, while the escaping decision did not, so a
+ *  caller could not tell which interpretation its body had been given without
+ *  reading the stored note back. */
+export function renderBody(body: string): SanitizeResult {
+  const wasEncoded = looksLikeEncodedHtml(body);
+  const result = sanitizeHtml(toHtml(body));
+  if (!wasEncoded) return result;
+  return {
+    html: result.html,
+    warnings: [
+      "Entity-encoded markup decoded to real HTML — pass tags as <p>…</p>, not &lt;p&gt;…&lt;/p&gt;; the escaped form would otherwise be stored as literal text",
+      ...result.warnings,
+    ],
+  };
+}
+
 /** Append one or more HTML block sections to existing note content.
  *  Closes any dangling open tags in `current` before appending, so new
  *  sections are never swallowed inside an unclosed element. */
@@ -418,32 +474,85 @@ export function safeAppend(current: string, ...blocks: string[]): string {
 // ── Targeted-find helpers ─────────────────────────────────────────────────────
 
 /** Build an attribute-tolerant regex from an exact find string, for the
- *  find= fallback path. CKEditor re-serializes stored HTML with injected
- *  attributes (spellcheck="false" on <code>, data-list-item-id on <li>, …),
- *  so text authored verbatim stops exact-matching after one storage
- *  round-trip. This relaxes every OPENING tag in the find string to accept
- *  any attributes; text segments and closing tags stay literal. Returns null
- *  when the find string contains no tags (nothing to relax — an exact miss
- *  is a genuine miss). */
+ *  find= fallback path. Stored HTML differs from authored HTML in two ways,
+ *  and this relaxes both:
+ *
+ *  1. CKEditor re-serializes with injected attributes (spellcheck="false" on
+ *     <code>, data-list-item-id on <li>, …), so a verbatim match fails after
+ *     one storage round-trip. Every tag accepts arbitrary attributes.
+ *  2. Whitespace between elements is not significant and is not preserved. A
+ *     find string authored as "</h3>\n<ol>" would never match stored
+ *     "</h3><ol>" — inter-tag whitespace was escaped literally, so every find
+ *     that crossed a block boundary missed on BOTH passes regardless of how it
+ *     was spaced. Whitespace touching a tag is now optional; whitespace inside
+ *     text is required but length-flexible.
+ *
+ *  Returns null when the find string contains no tags — nothing to relax, so
+ *  an exact miss there is a genuine miss. */
 export function tolerantFindRegex(find: string): RegExp | null {
-  const OPEN_TAG = /<([a-zA-Z][a-zA-Z0-9-]*)((?:\s[^<>]*)?)(\/?)>/g;
-  if (!OPEN_TAG.test(find)) return null;
-  OPEN_TAG.lastIndex = 0;
+  const TAG = /<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^<>]*)?\/?>/g;
+  if (!TAG.test(find)) return null;
+  TAG.lastIndex = 0;
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  let out = "";
+
+  type Token = { tag: boolean; value: string };
+  const tokens: Token[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = OPEN_TAG.exec(find)) !== null) {
-    out += esc(find.slice(last, m.index));
-    out += `<${esc(m[1])}(?:\\s[^>]*)?${m[3] ? "\\/?" : ""}>`;
+  while ((m = TAG.exec(find)) !== null) {
+    if (m.index > last) tokens.push({ tag: false, value: find.slice(last, m.index) });
+    tokens.push({ tag: true, value: m[0] });
     last = m.index + m[0].length;
   }
-  out += esc(find.slice(last));
+  if (last < find.length) tokens.push({ tag: false, value: find.slice(last) });
+
+  let out = "";
+  tokens.forEach((token, i) => {
+    if (token.tag) {
+      // Two adjacent tags produce no text token between them, so the optional
+      // whitespace has to be emitted here — otherwise a find written as
+      // "</h3><ol>" still cannot match stored "</h3>\n<ol>", which is the same
+      // failure from the other direction.
+      if (i > 0 && tokens[i - 1].tag) out += "\\s*";
+      const name = /^<\/?([a-zA-Z][a-zA-Z0-9-]*)/.exec(token.value)![1];
+      out += token.value.startsWith("</")
+        ? `<\\/${esc(name)}\\s*>`
+        : `<${esc(name)}(?:\\s[^>]*)?\\/?>`;
+      return;
+    }
+    const afterTag = i > 0 && tokens[i - 1].tag;
+    const beforeTag = i + 1 < tokens.length && tokens[i + 1].tag;
+    if (!token.value.trim()) {
+      out += afterTag || beforeTag ? "\\s*" : "\\s+";
+      return;
+    }
+    const lead = /^\s+/.exec(token.value)?.[0] ?? "";
+    const tail = /\s+$/.exec(token.value)?.[0] ?? "";
+    const core = token.value.slice(lead.length, token.value.length - tail.length);
+    if (lead) out += afterTag ? "\\s*" : "\\s+";
+    out += esc(core).replace(/\s+/g, "\\s+");
+    if (tail) out += beforeTag ? "\\s*" : "\\s+";
+  });
+
   try {
     return new RegExp(out, "g");
   } catch {
     return null;
   }
+}
+
+/** True when the find string spans an element boundary — a closing tag
+ *  followed by an opening one, the shape that used to be unmatchable and is
+ *  still the likeliest cause of a miss on both passes. Used to point the
+ *  failure hint at the real problem instead of at the text. */
+export function spansBlockBoundary(find: string): boolean {
+  return /<\/[a-zA-Z][a-zA-Z0-9-]*\s*>\s*<[a-zA-Z]/.test(find);
+}
+
+/** True when the search string carries escaped markup ("&lt;h3&gt;") while
+ *  stored bodies hold real tags — a miss with a guaranteed cause. */
+export function looksEntityEscaped(find: string): boolean {
+  return !/<[a-zA-Z/]/.test(find) && /&lt;|&gt;/.test(find);
 }
 
 // ── Dated-record headers ──────────────────────────────────────────────────────
@@ -464,7 +573,7 @@ export function fixRecordHeader(html: string, kind: string, date: string): { htm
 
 /** Bump a note's "Last updated" line to `date`, preserving the note's own
  *  separator and date style (ISO "2026-07-16" or US "7/16/2026"). Server-owned
- *  in V9: any content write through the tools keeps the stamp current, so the
+ *  in V10: any content write through the tools keeps the stamp current, so the
  *  model never hand-maintains dates. No-op when the note has no such line. */
 export function bumpLastUpdated(html: string, date: string): { html: string; bumped: boolean } {
   const re = /(Last updated\s*(?:[-:–]|&ndash;|&mdash;)\s*)(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})/i;
@@ -516,33 +625,103 @@ export function duplicateHeadings(html: string): string[] {
   return [...dupes];
 }
 
-/** Replace or append within a heading section (h2/h3/h4 tried in order, first
- *  match wins). Appends as a new h2 section if the heading isn't found at any
- *  level. The match tolerates attributes on the heading tag and surrounding/
+// ── Heading outline ───────────────────────────────────────────────────────────
+
+export interface HeadingNode {
+  level: 2 | 3 | 4;
+  text: string;
+  /** 1-based index among headings sharing this text at this level — the value
+   *  to pass as `occurrence` to reach this one specifically. */
+  occurrence: number;
+}
+
+/** Every h2–h4 heading in a body, in document order, with its level and its
+ *  occurrence index among same-text siblings. The cheap structural read that
+ *  makes a section= call a choice rather than a guess. */
+export function headingOutline(html: string): HeadingNode[] {
+  const re = /<h([2-4])(?:\s[^>]*)?>([\s\S]*?)<\/h\1>/gi;
+  const seen = new Map<string, number>();
+  const out: HeadingNode[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const level = Number(m[1]) as 2 | 3 | 4;
+    const text = decodeEntities(m[2].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const key = `${level}::${text.toLowerCase()}`;
+    const occurrence = (seen.get(key) ?? 0) + 1;
+    seen.set(key, occurrence);
+    out.push({ level, text, occurrence });
+  }
+  return out;
+}
+
+/** The level a NEW top-level section should use in this note: the shallowest
+ *  heading level already present. A note built entirely from h3 sections gets
+ *  another h3 — hardcoding h2 here is what silently produced structurally wrong
+ *  notes when a section= heading string missed. Defaults to 2 for an
+ *  unstructured body. */
+export function sectionLevelFor(html: string): 2 | 3 | 4 {
+  const levels = headingOutline(html).map((h) => h.level);
+  return levels.length ? (Math.min(...levels) as 2 | 3 | 4) : 2;
+}
+
+export interface SetSectionResult {
+  html: string;
+  matched: boolean;
+  headingCount: number;
+  /** Heading level used for the append-new-section fallback (matched === false). */
+  appendedAtLevel?: 2 | 3 | 4;
+  /** The note's existing headings, returned on a miss so the caller can correct
+   *  the section name without a separate read. */
+  available?: string[];
+}
+
+/** Replace, append within, or insert around a heading section (h2/h3/h4 tried
+ *  in order). The match tolerates attributes on the heading tag and surrounding/
  *  case-different whitespace in the heading text (a plain string ===
  *  '<h3>Heading</h3>' comparison silently missed either of those and fell
- *  through to the append-new-section fallback — which is how a "replace"
- *  could silently produce a duplicate heading instead of erroring). Reports
- *  whether a match was found and how many same-text headings exist at the
- *  matched level, so the caller can surface ambiguity instead of guessing.
- *  Closes dangling open tags in `html` before slicing — prevents string
- *  surgery from cutting inside an unclosed element. */
+ *  through to the append-new-section fallback — which is how a "replace" could
+ *  silently produce a duplicate heading instead of erroring).
+ *
+ *  `occurrence` (1-based) picks among identical heading texts; without it the
+ *  first wins, which left a legitimately-repeated heading — the same closing
+ *  section under every category, exactly what the consistency rule asks for —
+ *  unreachable except by rewriting the whole section.
+ *
+ *  `mode` "before"/"after" insert content adjacent to the heading without
+ *  touching the section body, replacing the idiom of matching the next heading
+ *  with find= and re-emitting it (a mistyped re-emission silently ate it).
+ *
+ *  On a miss the new section is written at the note's own section level and the
+ *  existing headings come back in `available`. Closes dangling open tags before
+ *  slicing — prevents string surgery from cutting inside an unclosed element. */
 export function setSection(
   html: string,
   heading: string,
   content: string,
-  mode: "replace" | "append"
-): { html: string; matched: boolean; headingCount: number } {
+  mode: "replace" | "append" | "before" | "after",
+  occurrence = 1
+): SetSectionResult {
   html = closeDangling(html);
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const level of [2, 3, 4]) {
     const tag = `h${level}`;
-    const openRe = new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*${escaped}\\s*</${tag}>`, "i");
-    const match = openRe.exec(html);
-    if (!match) continue;
+    const globalRe = new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*${escaped}\\s*</${tag}>`, "gi");
+    const hits = [...html.matchAll(globalRe)];
+    if (!hits.length) continue;
 
-    const headingCount = html.split(openRe).length - 1;
-    const after = match.index + match[0].length;
+    const headingCount = hits.length;
+    const match = hits[Math.min(Math.max(occurrence, 1), headingCount) - 1];
+    const headingStart = match.index!;
+    const after = headingStart + match[0].length;
+
+    if (mode === "before") {
+      return { html: `${html.slice(0, headingStart)}${content}\n${html.slice(headingStart)}`, matched: true, headingCount };
+    }
+    if (mode === "after") {
+      return { html: `${html.slice(0, after)}\n${content}${html.slice(after)}`, matched: true, headingCount };
+    }
+
     const nextMatch = html.slice(after).search(new RegExp(`<h[2-${level}]`));
     const end = nextMatch === -1 ? html.length : after + nextMatch;
     const existing = html.slice(after, end).trim();
@@ -553,10 +732,61 @@ export function setSection(
       headingCount,
     };
   }
+  const level = sectionLevelFor(html);
   return {
-    html: `${html}\n<h2>${heading}</h2>\n${content}`,
+    html: `${html}\n<h${level}>${heading}</h${level}>\n${content}`,
     matched: false,
     headingCount: 0,
+    appendedAtLevel: level,
+    available: headingOutline(html).map((h) => h.text),
+  };
+}
+
+// ── Structural lint ───────────────────────────────────────────────────────────
+
+/** Unclosed block-level tags left open at the end of a body. Counterpart to
+ *  closeDangling(), which repairs; this one reports, so the drift is visible as
+ *  a maintenance finding rather than only as a silent fix on the next write. */
+export function unbalancedTags(html: string): string[] {
+  const stack: string[] = [];
+  const re = /<\/?([a-zA-Z][a-zA-Z0-9-]*)(?:\s[^>]*)?\/?>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const tag = m[1].toLowerCase();
+    if (VOID_ELEMENTS.has(tag) || m[0].endsWith("/>")) continue;
+    if (m[0].startsWith("</")) {
+      const i = stack.lastIndexOf(tag);
+      if (i !== -1) stack.splice(i, 1);
+    } else {
+      stack.push(tag);
+    }
+  }
+  return [...new Set(stack)];
+}
+
+/** Body size past which a whole-note read is a liability rather than a
+ *  convenience. A 60k-character thread once blew the tool output ceiling
+ *  mid-migration, and the size was only discoverable by hitting the wall — a
+ *  note approaching it is worth surfacing before the read, not after. */
+export const LARGE_NOTE_CHARS = 40_000;
+
+export interface StructureReport {
+  duplicateHeadings: string[];
+  unbalancedTags: string[];
+  /** Body size in characters — a note approaching the tool output ceiling is
+   *  worth surfacing before a read hits the wall rather than after. */
+  size: number;
+}
+
+/** Everything structurally checkable about one body, in a single pass over it.
+ *  Used by maintain(deep) so the run that can see a whole note is the one that
+ *  checks it — the run that CREATES drift is definitionally not the one that
+ *  notices, since each write only ever looks at the section it is editing. */
+export function structureReport(html: string): StructureReport {
+  return {
+    duplicateHeadings: duplicateHeadings(html),
+    unbalancedTags: unbalancedTags(html),
+    size: html.length,
   };
 }
 
@@ -589,6 +819,55 @@ export interface UpsertRowResult {
  *  A single existing "— none yet —" / empty-first-cell placeholder row is
  *  replaced rather than left alongside a real one. No section, no table, or
  *  no <tbody> found → no-op (matched and created both false). */
+/** The body of a heading's section — everything from the heading to the next
+ *  heading at the same level or shallower. Returns null when the heading is
+ *  absent. */
+function sectionBody(html: string, heading: string): string | null {
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const l of [2, 3, 4]) {
+    const re = new RegExp(`<h${l}(?:\\s[^>]*)?>\\s*${escapedHeading}\\s*</h${l}>`, "i");
+    const m = re.exec(html);
+    if (!m) continue;
+    const start = m.index + m[0].length;
+    const nextOffset = html.slice(start).search(new RegExp(`<h[2-${l}]`));
+    return html.slice(start, nextOffset === -1 ? html.length : start + nextOffset);
+  }
+  return null;
+}
+
+const PLACEHOLDER_CELL = /^(?:|—\s*none yet\s*—|-|n\/a|tbd)$/i;
+
+/** Read back the rows of a table nested under a heading, as plain text cells.
+ *  The cheap counterpart to upsertTableRow: confirming which sources a Revision
+ *  table already tracks previously meant a full read of the note body, because
+ *  the upsert keys on an exact source string and nothing exposed the current
+ *  keys. Returns [] when the section or table is absent. */
+export function tableRows(html: string, heading: string): string[][] {
+  const section = sectionBody(html, heading);
+  if (!section) return [];
+  const table = /<table[^>]*>[\s\S]*?<\/table>/i.exec(section)?.[0];
+  if (!table) return [];
+  const tbody = /<tbody[^>]*>([\s\S]*?)<\/tbody>/i.exec(table)?.[1];
+  if (!tbody) return [];
+  const rows: string[][] = [];
+  for (const row of tbody.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? []) {
+    const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((c) =>
+      decodeEntities(c[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim()
+    );
+    if (cells.length) rows.push(cells);
+  }
+  return rows;
+}
+
+/** True when a table under `heading` exists but still holds nothing except its
+ *  skeleton placeholder row. A Sources note ships with an empty Revision row and
+ *  nothing in the write path forces it to be filled, so a fully-populated source
+ *  list can sit above a table that records no verification at all. */
+export function hasPlaceholderRow(html: string, heading: string): boolean {
+  const rows = tableRows(html, heading);
+  return rows.length > 0 && rows.every((cells) => PLACEHOLDER_CELL.test(cells[0] ?? ""));
+}
+
 export function upsertTableRow(
   html: string,
   heading: string,

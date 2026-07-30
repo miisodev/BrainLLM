@@ -48,7 +48,7 @@ const brainRef = { config: brain ?? EMPTY_BRAINLLM };
 const port      = process.env.PORT ? parseInt(process.env.PORT, 10) : null;
 const authToken = process.env.MCP_AUTH_TOKEN;
 
-// BRAINLLM_MODE=core (default): the 37 brain-aware tools (27 universal verbs + 10 surface reads).
+// BRAINLLM_MODE=core (default): the 38 brain-aware tools (28 universal verbs + 10 surface reads).
 // BRAINLLM_MODE=full: additionally registers the 33 raw ETAPI tools.
 const mode: "core" | "full" = process.env.BRAINLLM_MODE === "full" ? "full" : "core";
 
@@ -65,7 +65,7 @@ function createServer(): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "9.1.0",
+    version: "10.0.0",
     icons: BRANDING_ICONS,
   });
   registerTools(s, trilium, brainRef, mode);

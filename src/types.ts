@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — shared domain types (V9)
+// BrainLLM — shared domain types (V10)
 //
 // The enums in this file are the single canonical vocabulary. Tool schemas, the
 // router, the structure builder, and placement all derive from these constants —
@@ -98,6 +98,13 @@ export const RelationTypes = [
   "inspiredBy",  // conceptually influenced by
   "sourceOf",    // origin / provenance of
   "derivedFrom", // synthesised from
+  // Records that a specific earlier CLAIM was believed and is now known false —
+  // narrower than supersedes, which replaces a whole note. Rewriting a note in
+  // place leaves no trace that its previous assertion was ever held, so a reader
+  // has no reason to be suspicious of sibling notes written in the same pass.
+  // In a memory whose value is being trustworthy about the past, silent
+  // overwriting is the operation to trust least.
+  "corrects",    // overturns a specific claim held in the target
 ] as const;
 
 export type RelationType = (typeof RelationTypes)[number];

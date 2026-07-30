@@ -6,7 +6,7 @@
 
 **A persistent, graph-structured second brain for Claude and other LLMs — built on [TriliumNext Notes](https://github.com/TriliumNext/Notes), served over the [Model Context Protocol](https://modelcontextprotocol.io).**
 
-[![Version](https://img.shields.io/badge/version-9.1.0-6d28d9?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-10.0.0-6d28d9?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-f9f1e1?style=flat-square&logo=bun&logoColor=black)](https://bun.sh)
@@ -68,9 +68,11 @@ BrainLLM  (#brainLlmRoot)
 | **Dated records** | diary, session, log | One per calendar day; every write lands as a timestamped addendum block — chronology is the point |
 | **Collections** | thread, user, information, domain | Titled notes, deduplicated by normalized title within their scope |
 
-A session follows an enforced protocol: `start()` orients (full user digest, live threads, what changed since last time) → the model works, writing durable facts *as they surface* → `session()` → `addendum()` → `maintain()` → `remarks()` → `diary()` → `close()` commits the log, regenerates the daily change log, and triggers a DB backup. The pre-close gate is **enforced in code**: `close()` refuses until every step actually ran, in order — narrating "I did the steps" doesn't count, only tool calls do.
+A session follows an enforced protocol: `start()` orients (who you are, live threads, what changed since last time) → the model works, writing durable facts *as they surface* → `session()` → `addendum()` → `maintain()` → `remarks()` → `diary()` → `close()` commits the log, regenerates the daily change log, and triggers a DB backup. The pre-close gate is **enforced in code**: `close()` refuses until every step actually ran, in order — narrating "I did the steps" doesn't count, only tool calls do. The gate is *durable*, written to the session note rather than held in memory, so it survives a restart mid-session and behaves the same on stdio and HTTP.
 
-Knowledge is a **typed graph**: a closed vocabulary of 15 relations (`extends`, `contradicts`, `supports`, `partOf`, `supersedes`, …), wired by `connect()` or at creation, traversed by `explore()` (links / backlinks / neighborhood / shortest path), rendered by `graph()`, and audited by `maintain(deep)` — which flags orphaned notes, stale content, duplicate titles, and heals duplicate edges.
+Orientation is deliberately cheap. `start()` returns your singletons as **section headings** — enough for the model to know what the brain holds — and it pulls the one section that matters. Serving the entire self-model on every session meant a one-line question cost the same as a day's work; `start(depth="full")` is still there for the sessions that genuinely need it.
+
+Knowledge is a **typed graph**: a closed vocabulary of 16 relations (`extends`, `contradicts`, `supports`, `partOf`, `supersedes`, `corrects`, …), wired by `connect()` or at creation, traversed by `explore()` (links / backlinks / neighborhood / shortest path), rendered by `graph()`, and audited by `maintain(deep)`, which heals duplicate edges and flags what a note application would never think to look for: orphaned notes, stale content, duplicate titles, structural drift *inside* a note, bodies past the read ceiling, stubs that were labelled and never written, titles carrying a date (which defeats dedup-by-title), threads heavy enough to want consolidating, Sources notes whose verification table was never filled in, and bodies carrying doubly-escaped markup. Most of it is computed from note properties server-side rather than by reading bodies, so the report is complete rather than truncated. Findings can be acknowledged (`maintain(ack=[…])`) so a flag you have judged correct goes quiet until that note's content actually changes — a warning that reappears every run and is correctly ignored every run trains you to skim the list.
 
 ---
 
@@ -92,7 +94,15 @@ bun run build
 
 ### 2. Get an ETAPI token
 
-In Trilium: **Options → ETAPI → Create token**.
+Either let BrainLLM create one for you:
+
+```bash
+TRILIUM_BASE_URL=http://localhost:8080 TRILIUM_PASSWORD=your-trilium-password bun run init
+```
+
+It mints a token via ETAPI, prints it once for you to save as `TRILIUM_ETAPI_TOKEN`, and bootstraps the brain in the same run.
+
+Or create one by hand in Trilium: **Options → ETAPI → Create token**.
 
 ### 3. Configure your MCP client
 
@@ -146,13 +156,39 @@ Then start a session. The model calls `start()`, orients, and operates the brain
 
 All tool returns are structured JSON. User-input mistakes return informational errors (`{error, detail, hint}`) the model can read and self-correct from; every read/write/search tool includes a free `relations` snippet; all writes are retry-safe.
 
-### Core — universal verbs (27)
+### Why the tools are named the way they are
+
+**The naming is a readability feature for you, not a style choice.** Most MCP clients show you the name of each tool call as it happens. BrainLLM's tools are named as **plain-English verbs for what is happening to your memory** — `remember`, `recall`, `revise`, `resolve`, `forget`, `connect`, `maintain` — so that the call log reads as a description of what the model is doing in your brain, without you having to know the schema or open Trilium to find out.
+
+The alternative, which most servers pick, is to name tools after the API underneath: `create_note`, `patch_note`, `update_attribute`. That tells you a row changed. It doesn't tell you the model recorded a decision, corrected something it previously believed, or closed a line of work — and those are the things you actually want to see scroll past.
+
+Read this way, a session is legible at a glance:
+
+| You see | What it means |
+|---|---|
+| `start` → `day` | Orienting: loading who you are, what's open, what changed since last time |
+| `remember` · `diary` | Writing something down — a durable fact, or the model's own daily record |
+| `recall` · `domain` · `outline` | Looking something up before answering, rather than answering from training |
+| `revise` · `resolve` · `forget` | Changing, completing, or archiving something that already existed |
+| `connect` · `graph` | Wiring a relationship between two things it noticed |
+| `maintain` · `addendum` | Housekeeping — aging, structural drift, folding pending edits in |
+| `remarks` → `close` | Wrapping up: reflecting, then committing the session log |
+
+Three conventions keep that legible as the surface grows:
+
+- **Verbs for actions, nouns for surfaces.** `remember` writes; `knowledge` reads. If a tool name is a noun, it only ever reads.
+- **`<surface>` / `<surface>_recall` pairs.** The bare name reads a surface in full; the `_recall` suffix skims it. Seeing `memory_recall` rather than `memory` tells you the model chose the cheap read.
+- **Destructive verbs say so.** `forget`, `detach`, `delete_*` are never spelled as something softer, so an irreversible call is never disguised as a routine one.
+
+The **full mode** tools deliberately break this convention — they are named after the raw Trilium primitives (`create_note`, `patch_note`, `delete_attribute`) precisely so that a raw, guard-free operation is visibly different in the log from a brain-aware one.
+
+### Core — universal verbs (28)
 
 | Group | Tools |
 |---|---|
 | Session lifecycle | `start` · `day` · `session` · `remarks` · `close` · `backup` |
 | Writing | `remember` · `diary` · `revise` · `resolve` · `withdraw` · `recover` |
-| Reading & search | `recall` · `domain` · `brain` · `inspect` · `template` |
+| Reading & search | `recall` · `domain` · `brain` · `outline` · `inspect` · `template` |
 | Graph | `connect` · `explore` · `graph` |
 | Attachments & labels | `attach` · `detach` · `label` |
 | Maintenance & system | `addendum` · `maintain` · `forget` · `bootstrap` |
@@ -199,6 +235,7 @@ Without a volume, leave `BRAINLLM_CONFIG` unset — auto-discovery re-finds the 
 |---|---|---|
 | `TRILIUM_BASE_URL` | ✅ | URL of the TriliumNext instance (local, or an HTTPS reverse-proxy/tunnel URL) |
 | `TRILIUM_ETAPI_TOKEN` | ✅ | ETAPI bearer token |
+| `TRILIUM_PASSWORD` | — | Setup only. When `TRILIUM_ETAPI_TOKEN` is empty, `bun run init` uses this to mint a token via ETAPI and prints it. Never read at runtime |
 | `BRAINLLM_MODE` | — | `core` (default) or `full` (adds the raw ETAPI surface) |
 | `BRAINLLM_TZ` | — | IANA timezone (e.g. `Africa/Johannesburg`) so dates stamp in *your* day on hosted deploys; unset = host clock |
 | `PORT` | — | Presence switches to HTTP-connector mode |

@@ -21,6 +21,9 @@ Closed — `connect()` rejects anything not on this list. Pick the most specific
 | `inspiredBy` | A → B | A was conceptually influenced by B |
 | `sourceOf` | A → B | A is the origin or provenance of B |
 | `derivedFrom` | A → B | A was synthesised from B |
+| `corrects` | A → B | A overturns a specific **claim** B held — not the whole note |
+
+**`corrects` vs `supersedes`.** `supersedes` replaces a note wholesale and archives the old one. `corrects` is for the far commoner case: a note stays live and correct, but one assertion inside it turned out to be false. Wire it when you rewrite a claim you now know was wrong — a spec that recorded a reference site as dark when it is light, a credential map wrong in both directions, a token declared "untinted grey" that was inferred rather than read. Revising in place leaves no trace that the old claim was ever believed, so nothing tells a later reader to be suspicious of *sibling* notes written in the same pass, by the same reasoning, on the same day. In a memory whose whole value is being trustworthy about the past, silent overwriting is the operation to trust least.
 
 **Auto-wired — don't duplicate manually:**
 - `new → old` via `supersedes=` on `remember()` → `supersedes`, old note archived.
@@ -41,6 +44,7 @@ Written by the server — you never set `#noteType`, `#status`, `#created`, `#up
 | `#topic` | slugged, repeatable | Subject tags (`ai-tooling`, `infra`) — capitalization normalized server-side |
 | `#domain` | slugged | Knowledge domain — book auto-created on first use |
 | `#archived` | (flag) | Excludes the note from default `recall()`; content preserved in place |
+| `#reviewed` | content blob id | Set by `maintain(ack=[…])` — this note's current content was reviewed and its maintenance findings accepted. Suppresses them until the body actually changes, then all of them return |
 | `#brainLlmRoot` | (flag) | Marks the brain root — used by auto-discovery |
 | `#iconClass` | `bx …` | Display icon — set via `icon=` on `remember`/`revise`/`diary`/`close` (class or bare name, normalized) |
 

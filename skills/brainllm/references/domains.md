@@ -6,6 +6,8 @@ Domain knowledge is **gated and current-state**. Read this before creating a dom
 
 **Dates are server policy.** Every Sources and information note carries a `Last updated` line that the server bumps on every content write — you never hand-maintain it. (V8's "one manual date" exception is gone.)
 
+**Siblings set the pattern.** This is where the consistency rule bites hardest, because domain notes are the most numerous and the most repeated kind in the brain: every Sources note reads like the other Sources notes, every information note like its peers in the same domain and in every other domain. Read one before writing another — the canonical structure below gives you the skeleton, the sibling gives you the conventions it can't encode (heading depth, table shape, how much prose a sub-category warrants). And keep headings minimal: a domain note earns its structure from the source list and the Revision table, not from splitting three paragraphs across four h3s. If a pattern genuinely needs improving, improve it across every domain — one better-shaped note among twenty is drift, and the next writer has to guess which shape is canonical.
+
 ## The canonical Sources note
 
 **Domains are born complete** — creating a domain (any `remember(domain=…)` call that resolves a new name) creates the book AND its canonical Sources note. Its structure, top to bottom (serve it anytime with `template(kind="sources")`):
@@ -54,3 +56,5 @@ Retitling a domain book (`revise(bookId, title=…)`) **cascades automatically**
 A domain's Knowledge surface is exactly: **one maintained Sources note, plus a small set of consolidated, current-state information notes — one per sub-category, never one per day.** It holds what's true now, not a changelog of what was true on each date it was checked.
 
 Chronological, run-by-run history belongs in Memory/Threads — a thread is the right place for "here's what Run N found"; a domain information note is the right place for "here's what's actually true about this sub-category," kept current by revision, not accumulation. If you find yourself naming a new information note after today's date or a run number, stop — that finding either updates an existing note (revise it) or doesn't belong in Domains at all.
+
+The title rule is the same here as everywhere: **four words maximum**, no dates, no run numbers. Sub-category titles are where it's most often stretched, and a title that won't fit is telling you something — a sub-category needing eight words to name is usually two sub-categories, so split the content rather than the title. Merge behaviour follows from the same place: Sources and information notes are maintained current-state documents, so new findings fold into the relevant section (`section=`, `find=`) and never arrive as a dated addendum block.

@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — runtime configuration (V9)
+// BrainLLM — runtime configuration (V10)
 //
 // IDs are stored in brainllm.json next to the bundle. On startup:
 //   load file → auto-discover from Trilium (via #brainLlmRoot) → empty (bootstrap).

@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// BrainLLM — structure builder (V9)
+// BrainLLM — structure builder (V10)
 // Shared by the bootstrap tool and the init.ts CLI.
 //
 // Builds the six-area tree on a fresh instance. Collection containers are real
