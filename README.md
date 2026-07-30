@@ -94,15 +94,15 @@ bun run build
 
 ### 2. Get an ETAPI token
 
-Either let BrainLLM create one for you:
+**Or skip this step.** Set `TRILIUM_PASSWORD` instead of `TRILIUM_ETAPI_TOKEN` and BrainLLM mints a token itself on first start, caching it beside `brainllm.json` so restarts reuse it rather than creating a new one each time. This is the easiest path for a container deploy, where there's no terminal to run a setup command in.
+
+To do it explicitly instead, either let `init` mint one:
 
 ```bash
 TRILIUM_BASE_URL=http://localhost:8080 TRILIUM_PASSWORD=your-trilium-password bun run init
 ```
 
-It mints a token via ETAPI, prints it once for you to save as `TRILIUM_ETAPI_TOKEN`, and bootstraps the brain in the same run.
-
-Or create one by hand in Trilium: **Options → ETAPI → Create token**.
+It prints the token once to save as `TRILIUM_ETAPI_TOKEN`, and bootstraps the brain in the same run. Or create one by hand in Trilium: **Options → ETAPI → Create token**.
 
 ### 3. Configure your MCP client
 
@@ -234,8 +234,8 @@ Without a volume, leave `BRAINLLM_CONFIG` unset — auto-discovery re-finds the 
 | Variable | Required | Purpose |
 |---|---|---|
 | `TRILIUM_BASE_URL` | ✅ | URL of the TriliumNext instance (local, or an HTTPS reverse-proxy/tunnel URL) |
-| `TRILIUM_ETAPI_TOKEN` | ✅ | ETAPI bearer token |
-| `TRILIUM_PASSWORD` | — | Setup only. When `TRILIUM_ETAPI_TOKEN` is empty, `bun run init` uses this to mint a token via ETAPI and prints it. Never read at runtime |
+| `TRILIUM_ETAPI_TOKEN` | ◐ | ETAPI bearer token. Required unless `TRILIUM_PASSWORD` is set |
+| `TRILIUM_PASSWORD` | ◐ | Alternative to the token: BrainLLM mints one on first start and caches it beside `brainllm.json`, reusing it across restarts. Also used by `bun run init` |
 | `BRAINLLM_MODE` | — | `core` (default) or `full` (adds the raw ETAPI surface) |
 | `BRAINLLM_TZ` | — | IANA timezone (e.g. `Africa/Johannesburg`) so dates stamp in *your* day on hosted deploys; unset = host clock |
 | `PORT` | — | Presence switches to HTTP-connector mode |

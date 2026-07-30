@@ -3,17 +3,64 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
-import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, EMPTY_BRAINLLM } from "./config.js";
+import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM } from "./config.js";
 
 const baseUrl = process.env.TRILIUM_BASE_URL;
-const token   = process.env.TRILIUM_ETAPI_TOKEN;
 
-if (!baseUrl || !token) {
-  console.error("Missing TRILIUM_BASE_URL or TRILIUM_ETAPI_TOKEN environment variables.");
+if (!baseUrl) {
+  console.error("Missing TRILIUM_BASE_URL environment variable.");
   process.exit(1);
 }
 
-const trilium = new TriliumClient(baseUrl, token);
+// ── Credential resolution ─────────────────────────────────────────────────────
+// An explicit token always wins. Failing that, a password mints one — because a
+// container deploy has the same chicken-and-egg as a local install (the server
+// needs a token; the token can only be made once Trilium has a password) and no
+// UI to resolve it in. Without this the container simply crash-loops on a
+// missing variable, which is a poor first experience for the deploy path most
+// forkers actually take. The minted token is cached beside the config file so a
+// restart reuses it instead of adding a new entry to Trilium's token list on
+// every redeploy.
+
+async function resolveToken(url: string): Promise<string> {
+  const explicit = process.env.TRILIUM_ETAPI_TOKEN;
+  if (explicit) return explicit;
+
+  const password = process.env.TRILIUM_PASSWORD;
+  if (!password) {
+    console.error(
+      "Missing TRILIUM_ETAPI_TOKEN. Set it, or set TRILIUM_PASSWORD and BrainLLM will create a token on first start."
+    );
+    process.exit(1);
+  }
+
+  const cached = loadCachedToken();
+  if (cached) {
+    const ok = await new TriliumClient(url, cached).getAppInfo().then(() => true).catch(() => false);
+    if (ok) {
+      console.error("[brainllm] Reusing the cached ETAPI token.");
+      return cached;
+    }
+    console.error("[brainllm] Cached ETAPI token no longer works — requesting a new one.");
+  }
+
+  try {
+    const minted = await TriliumClient.login(url, password);
+    const saved = saveCachedToken(minted);
+    console.error(
+      saved
+        ? `[brainllm] Created an ETAPI token from TRILIUM_PASSWORD and cached it at ${saved}.`
+        : "[brainllm] Created an ETAPI token from TRILIUM_PASSWORD, but could not cache it — a new one will be created on each restart. Set BRAINLLM_CONFIG to a writable path on a persistent volume, or set TRILIUM_ETAPI_TOKEN explicitly."
+    );
+    return minted;
+  } catch (err) {
+    console.error(`[brainllm] Could not create an ETAPI token: ${err instanceof Error ? err.message : err}`);
+    console.error("[brainllm] Check TRILIUM_BASE_URL and TRILIUM_PASSWORD, or set TRILIUM_ETAPI_TOKEN directly.");
+    process.exit(1);
+  }
+}
+
+const trilium = new TriliumClient(baseUrl, await resolveToken(baseUrl));
 
 // ── Resolve brain config ───────────────────────────────────────────────────
 // Priority: brainllm.json file → auto-discovery from Trilium → empty (bootstrap needed)

@@ -25,8 +25,15 @@
         },
         {
           "name": "TRILIUM_ETAPI_TOKEN",
-          "description": "ETAPI token. Create one in Trilium under Options → ETAPI, or let `bun run init` mint one from TRILIUM_PASSWORD.",
-          "isRequired": true,
+          "description": "ETAPI token. Required unless TRILIUM_PASSWORD is set. Create one in Trilium under Options → ETAPI.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "TRILIUM_PASSWORD",
+          "description": "Alternative to TRILIUM_ETAPI_TOKEN — BrainLLM mints a token on first start and caches it beside brainllm.json.",
+          "isRequired": false,
           "isSecret": true,
           "format": "string"
         },

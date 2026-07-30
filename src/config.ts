@@ -54,6 +54,35 @@ export function configFilePath(): string {
   return join(dirname(Bun.main), "brainllm.json");
 }
 
+/** Where a password-minted ETAPI token is cached — beside the config file, so a
+ *  persistent-volume deploy keeps it across restarts. Without the cache, every
+ *  restart would mint another token and Trilium's token list would grow one
+ *  entry per redeploy forever. */
+export function tokenCachePath(): string {
+  return configFilePath().replace(/\.json$/, "") + ".token";
+}
+
+export function loadCachedToken(): string | null {
+  try {
+    const path = tokenCachePath();
+    if (!existsSync(path)) return null;
+    const token = readFileSync(path, "utf-8").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedToken(token: string): string | null {
+  try {
+    const path = tokenCachePath();
+    writeFileSync(path, token, { mode: 0o600 });
+    return path;
+  } catch {
+    return null;
+  }
+}
+
 // ── Load ──────────────────────────────────────────────────────────────────────
 
 export function loadConfig(): BrainLLMConfig | null {
