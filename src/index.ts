@@ -4,6 +4,10 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
 import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM } from "./config.js";
+import {
+  oauthEnabled, baseUrl as publicBaseUrl, protectedResourceMetadata, authorizationServerMetadata,
+  handleAuthorize, handleToken, validateAccessToken, wwwAuthenticate,
+} from "./oauth.js";
 
 const baseUrl = process.env.TRILIUM_BASE_URL;
 
@@ -139,7 +143,7 @@ if (port) {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, mcp-session-id, mcp-protocol-version, last-event-id",
-    "Access-Control-Expose-Headers": "mcp-session-id",
+    "Access-Control-Expose-Headers": "mcp-session-id, WWW-Authenticate",
     "Access-Control-Max-Age": "86400",
   };
   const withCors = (res: Response): Response => {
@@ -172,18 +176,63 @@ if (port) {
         return withCors(new Response("OK"));
       }
 
-      if (authToken) {
-        const auth = req.headers.get("Authorization");
-        if (auth !== `Bearer ${authToken}`) {
-          return withCors(new Response(JSON.stringify({ error: "Unauthorized" }), {
-            status: 401,
-            headers: { "Content-Type": "application/json" },
-          }));
+      // ── OAuth 2.1 / CIMD surface ────────────────────────────────────────────
+      // Served only when an owner password is configured. Claude.ai's custom
+      // connector UI offers OAuth or nothing — it has no field for a static
+      // bearer token — so without these endpoints the hosted Claude surfaces
+      // cannot connect at all, however good the token is.
+      const oauthOn = oauthEnabled();
+      const base = publicBaseUrl(req);
+      const json = (body: unknown, status = 200): Response =>
+        withCors(new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        }));
+
+      if (oauthOn) {
+        // RFC 9728 §3.1: clients try the path-suffixed variant first when the
+        // resource URL has a path component, so both are served.
+        if (url.pathname === "/.well-known/oauth-protected-resource" ||
+            url.pathname === "/.well-known/oauth-protected-resource/mcp") {
+          return json(protectedResourceMetadata(base));
+        }
+        if (url.pathname === "/.well-known/oauth-authorization-server" ||
+            url.pathname === "/.well-known/openid-configuration") {
+          return json(authorizationServerMetadata(base));
+        }
+        if (url.pathname === "/authorize") {
+          return withCors(await handleAuthorize(req, base));
+        }
+        if (url.pathname === "/token") {
+          return withCors(await handleToken(req, base));
         }
       }
 
       if (url.pathname !== "/mcp") {
         return withCors(new Response("Not Found", { status: 404 }));
+      }
+
+      // ── Authentication ──────────────────────────────────────────────────────
+      // Two credentials are accepted, deliberately. A static MCP_AUTH_TOKEN is
+      // what Claude Code and mcp-remote pass as a header and is the simplest
+      // thing that works; an OAuth access token is what the hosted Claude
+      // surfaces obtain, because their connector UI cannot send a header. The
+      // 401 MUST carry WWW-Authenticate or Claude has no metadata to follow and
+      // reports "Couldn't reach the MCP server" — a failure that looks like a
+      // network problem and is not one.
+      if (authToken || oauthOn) {
+        const header = req.headers.get("Authorization") ?? "";
+        const bearer = header.startsWith("Bearer ") ? header.slice(7) : "";
+        const staticOk = !!authToken && bearer === authToken;
+        const oauthOk = oauthOn && !!bearer && validateAccessToken(bearer, base);
+        if (!staticOk && !oauthOk) {
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          if (oauthOn) headers["WWW-Authenticate"] = wwwAuthenticate(base, bearer ? "invalid_token" : undefined);
+          return withCors(new Response(
+            JSON.stringify({ error: "invalid_token", error_description: "Authentication required." }),
+            { status: 401, headers }
+          ));
+        }
       }
 
       const sessionId = req.headers.get("mcp-session-id");
