@@ -19,6 +19,10 @@ WORKDIR /app
 RUN apk add --no-cache su-exec
 
 COPY --from=builder /app/dist/index.js ./dist/index.js
+# Icon assets are served same-origin from /icon.png and /icon.svg. The MCP
+# spec tells clients to verify icon URIs share the server origin, so a
+# third-party URL (raw.githubusercontent.com) is silently rejected.
+COPY public/ ./public/
 COPY scripts/entrypoint.sh /entrypoint.sh
 
 # /app is owned by bun so the runtime can write brainllm.json next to the bundle.
