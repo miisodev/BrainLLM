@@ -4,6 +4,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { join, dirname } from "path";
 import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
+import { applyToolAnnotations } from "./annotations.js";
 import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM } from "./config.js";
 import {
   oauthEnabled, baseUrl as publicBaseUrl, protectedResourceMetadata, authorizationServerMetadata,
@@ -140,6 +141,13 @@ function createServer(origin: string | null = null): McpServer {
     icons: brandingIcons(origin),
   });
   registerTools(s, trilium, brainRef, mode);
+  // Group the surface into read-only vs write/destructive for the client's
+  // permission UI. Without it every tool is "Other", and the only choice on
+  // offer is allow-all-71 or approve-every-call.
+  const { unclassified } = applyToolAnnotations(s);
+  if (unclassified.length) {
+    console.error(`[brainllm] Unclassified tools, treated as writes: ${unclassified.join(", ")}`);
+  }
   return s;
 }
 
@@ -201,7 +209,13 @@ if (port) {
       // same-origin check. Public and unauthenticated by design: the spec tells
       // clients to fetch icons WITHOUT credentials, so an authenticated icon
       // route would never load.
-      if (url.pathname === "/icon.png" || url.pathname === "/icon.svg") {
+      // /favicon.ico matters more than it looks. When a host serves no favicon,
+      // clients fall back to the registrable domain's — so brainllm.miiso.dev
+      // with no icon of its own rendered miiso.dev's site logo in the connector
+      // list, which is worse than no icon: it looks deliberate and wrong.
+      if (url.pathname === "/icon.png" || url.pathname === "/icon.svg" ||
+          url.pathname === "/favicon.ico" || url.pathname === "/favicon.png" ||
+          url.pathname === "/apple-touch-icon.png") {
         const svg = url.pathname.endsWith(".svg");
         const file = Bun.file(join(dirname(Bun.main), "..", "public", svg ? "BrainLLM.svg" : "BrainLLM.png"));
         if (!(await file.exists())) return withCors(new Response("Not Found", { status: 404 }));
