@@ -123,13 +123,15 @@ const mode: "core" | "full" = process.env.BRAINLLM_MODE === "full" ? "full" : "c
 // icon shows even where SVG is disallowed.
 const REPO_RAW = "https://raw.githubusercontent.com/miisodev/BrainLLM/main/public";
 
+// Several sizes are offered so a client picks what it renders rather than
+// downscaling a large one — the spec says clients should select the most
+// appropriate icon for their UI.
 function brandingIcons(origin: string | null) {
-  const base = origin ?? REPO_RAW;
-  const png = origin ? `${origin}/icon.png` : `${base}/BrainLLM.png`;
-  const svg = origin ? `${origin}/icon.svg` : `${base}/BrainLLM.svg`;
+  const at = (file: string) => (origin ? `${origin}/${file}` : `${REPO_RAW}/${file}`);
   return [
-    { src: png, mimeType: "image/png", sizes: ["500x500"] },
-    { src: svg, mimeType: "image/svg+xml", sizes: ["any"] },
+    { src: at("icon-128.png"), mimeType: "image/png", sizes: ["128x128"] },
+    { src: at("icon-512.png"), mimeType: "image/png", sizes: ["512x512"] },
+    { src: origin ? `${origin}/icon.svg` : `${REPO_RAW}/BrainLLM.svg`, mimeType: "image/svg+xml", sizes: ["any"] },
   ];
 }
 
@@ -213,15 +215,28 @@ if (port) {
       // clients fall back to the registrable domain's — so brainllm.miiso.dev
       // with no icon of its own rendered miiso.dev's site logo in the connector
       // list, which is worse than no icon: it looks deliberate and wrong.
-      if (url.pathname === "/icon.png" || url.pathname === "/icon.svg" ||
-          url.pathname === "/favicon.ico" || url.pathname === "/favicon.png" ||
-          url.pathname === "/apple-touch-icon.png") {
-        const svg = url.pathname.endsWith(".svg");
-        const file = Bun.file(join(dirname(Bun.main), "..", "public", svg ? "BrainLLM.svg" : "BrainLLM.png"));
+      //
+      // Each route serves the size its consumer actually renders. Handing a
+      // 512px image to a 16px favicon slot is ~80KB of transfer for a few dozen
+      // visible pixels, and the spec lets clients cap icon size outright — so an
+      // oversized icon risks not rendering at all.
+      const ICON_ROUTES: Record<string, string> = {
+        "/favicon.ico": "icon-64.png",
+        "/favicon.png": "icon-64.png",
+        "/apple-touch-icon.png": "icon-180.png",
+        "/icon-64.png": "icon-64.png",
+        "/icon-128.png": "icon-128.png",
+        "/icon-512.png": "icon-512.png",
+        "/icon.png": "icon-512.png",
+        "/icon.svg": "BrainLLM.svg",
+      };
+      const asset = ICON_ROUTES[url.pathname];
+      if (asset) {
+        const file = Bun.file(join(dirname(Bun.main), "..", "public", asset));
         if (!(await file.exists())) return withCors(new Response("Not Found", { status: 404 }));
         return withCors(new Response(file, {
           headers: {
-            "Content-Type": svg ? "image/svg+xml" : "image/png",
+            "Content-Type": asset.endsWith(".svg") ? "image/svg+xml" : "image/png",
             "Cache-Control": "public, max-age=86400",
             // The icon is untrusted-input surface for the client; make sure a
             // renderer can't be talked into treating it as anything else.

@@ -182,6 +182,12 @@ Three conventions keep that legible as the surface grows:
 
 The **full mode** tools deliberately break this convention — they are named after the raw Trilium primitives (`create_note`, `patch_note`, `delete_attribute`) precisely so that a raw, guard-free operation is visibly different in the log from a brain-aware one.
 
+### Tool permissions
+
+Every tool declares whether it reads, writes, or destroys, so your client can group them and you can grant permission per group instead of per call. The current split is **31 read-only · 34 write · 6 destructive**, which lets reads run unattended while anything that touches your brain still asks.
+
+The classification lives in one reviewable table ([`src/annotations.ts`](./src/annotations.ts)) rather than scattered across registrations, and its default is deliberately unsafe-side: a tool missing from the table is treated as a **write**, never a read, and says so at startup. Three are worth knowing because they look like reads and aren't — `start()` creates today's diary and session stubs, `session()` runs the maintenance sweep, and `graph()` writes the rendered graph note.
+
 ### Core — universal verbs (28)
 
 | Group | Tools |
@@ -219,6 +225,14 @@ The HTTP connector serves a streamable-HTTP MCP endpoint at `/mcp` (one session 
 ### Docker / Railway
 
 The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector (two-stage, digest-pinned `oven/bun`, drops privileges via `entrypoint.sh`). On **Railway**: `PORT` is auto-injected — set `MCP_AUTH_TOKEN`, `TRILIUM_BASE_URL`, `TRILIUM_ETAPI_TOKEN`, and `BRAINLLM_TZ` as service variables, deploy, and point your client at `https://<app>.up.railway.app/mcp` with the bearer token. Deploying elsewhere (a VPS, your own Docker host) works the same way — the container only needs those same env vars and a TLS-terminating proxy in front of it, per the transport note above.
+
+### Branding
+
+In HTTP mode BrainLLM serves its own icons — `/icon.png`, `/icon.svg`, sized variants, and `/favicon.ico` — and advertises them in the MCP handshake, so clients show the BrainLLM mark in your connector list and beside its tool calls.
+
+Both halves of that are load-bearing. The spec tells clients to **verify icon URIs share the server's origin**, so icons hosted anywhere else are silently dropped. And a host that serves no favicon makes clients fall back to the *registrable domain's* — a BrainLLM at `brain.yourdomain.com` would show `yourdomain.com`'s site logo, which is worse than nothing because it looks intentional.
+
+To use your own artwork, replace `public/BrainLLM.svg` and run `bun run icons` — it rasterises the vector at each size the server serves. Commit the results; the Docker image copies `public/` and has no image toolchain at runtime.
 
 ### Connecting claude.ai (OAuth)
 

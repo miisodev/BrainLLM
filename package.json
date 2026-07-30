@@ -32,7 +32,8 @@
     "build": "bun build src/index.ts --outfile dist/index.js --target bun",
     "start": "bun run dist/index.js",
     "test": "bun run src/test.ts",
-    "init": "bun run src/init.ts"
+    "init": "bun run src/init.ts",
+    "icons": "bun run scripts/icons.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -40,6 +41,7 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "sharp": "^0.35.3",
     "typescript": "^5.0.0"
   }
 }
