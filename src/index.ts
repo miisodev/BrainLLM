@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { join, dirname } from "path";
 import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
 import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM } from "./config.js";
@@ -105,19 +106,38 @@ const mode: "core" | "full" = process.env.BRAINLLM_MODE === "full" ? "full" : "c
 
 // Brand identity advertised in the MCP handshake (serverInfo.icons). Clients
 // that render server icons show the BrainLLM logo in their connector list and
-// alongside its tool calls. Assets are served raw from the public repo; the SVG
-// scales for any context, the PNG is a raster fallback.
-const BRANDING_ICONS = [
-  { src: "https://raw.githubusercontent.com/miisodev/BrainLLM/main/public/BrainLLM.svg", mimeType: "image/svg+xml", sizes: ["any"] },
-  { src: "https://raw.githubusercontent.com/miisodev/BrainLLM/main/public/BrainLLM.png", mimeType: "image/png" },
-];
+// beside its tool calls.
+//
+// The icons MUST be served from the server's own origin. The MCP spec directs
+// clients to "verify that icon URIs are from the same origin as the server" —
+// it minimises the risk of leaking usage data to a third party — so pointing at
+// raw.githubusercontent.com, as this used to, gets the icons silently dropped
+// and no icon renders at all. In HTTP mode they are served from /icon.png and
+// /icon.svg below. Under stdio there is no server origin to compare against, so
+// the public repo URLs remain the only option there.
+//
+// PNG is listed first deliberately: clients MUST support image/png but only
+// SHOULD support image/svg+xml, and MAY refuse SVG outright because it can
+// carry executable content. Leading with the format everyone renders means the
+// icon shows even where SVG is disallowed.
+const REPO_RAW = "https://raw.githubusercontent.com/miisodev/BrainLLM/main/public";
 
-function createServer(): McpServer {
+function brandingIcons(origin: string | null) {
+  const base = origin ?? REPO_RAW;
+  const png = origin ? `${origin}/icon.png` : `${base}/BrainLLM.png`;
+  const svg = origin ? `${origin}/icon.svg` : `${base}/BrainLLM.svg`;
+  return [
+    { src: png, mimeType: "image/png", sizes: ["500x500"] },
+    { src: svg, mimeType: "image/svg+xml", sizes: ["any"] },
+  ];
+}
+
+function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
     version: "10.0.0",
-    icons: BRANDING_ICONS,
+    icons: brandingIcons(origin),
   });
   registerTools(s, trilium, brainRef, mode);
   return s;
@@ -174,6 +194,26 @@ if (port) {
 
       if (url.pathname === "/health") {
         return withCors(new Response("OK"));
+      }
+
+      // ── Brand assets ────────────────────────────────────────────────────────
+      // Served from our own origin so the icons in serverInfo pass the client's
+      // same-origin check. Public and unauthenticated by design: the spec tells
+      // clients to fetch icons WITHOUT credentials, so an authenticated icon
+      // route would never load.
+      if (url.pathname === "/icon.png" || url.pathname === "/icon.svg") {
+        const svg = url.pathname.endsWith(".svg");
+        const file = Bun.file(join(dirname(Bun.main), "..", "public", svg ? "BrainLLM.svg" : "BrainLLM.png"));
+        if (!(await file.exists())) return withCors(new Response("Not Found", { status: 404 }));
+        return withCors(new Response(file, {
+          headers: {
+            "Content-Type": svg ? "image/svg+xml" : "image/png",
+            "Cache-Control": "public, max-age=86400",
+            // The icon is untrusted-input surface for the client; make sure a
+            // renderer can't be talked into treating it as anything else.
+            "X-Content-Type-Options": "nosniff",
+          },
+        }));
       }
 
       // ── OAuth 2.1 / CIMD surface ────────────────────────────────────────────
@@ -263,7 +303,7 @@ if (port) {
           onsessionclosed:      (id) => { sessions.delete(id); },
         });
 
-        await createServer().connect(transport);
+        await createServer(base).connect(transport);
         return withCors(await transport.handleRequest(req));
       }
 
