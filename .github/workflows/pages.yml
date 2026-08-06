@@ -1,0 +1,47 @@
+name: Deploy landing site
+
+# The site is five static files in /docs with no build step. Pages was
+# previously served straight off the branch (build_type: legacy), which cannot
+# accept an artifact from actions/deploy-pages — every deployment sat in
+# deployment_queued until it timed out, while the last good branch build kept
+# serving. The result was a live site that was up, green to a uptime check, and
+# three commits behind: it advertised v10.1.0 on the day v10.2.0 was tagged.
+#
+# Pages is now build_type: workflow, which needs this file to exist. Without it
+# nothing deploys at all, which is quieter than the old failure and worse.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; never cancel one half-done.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
