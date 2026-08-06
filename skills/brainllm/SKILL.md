@@ -321,7 +321,7 @@ When the raw ETAPI tools (`search_notes`, `get_note`, `create_note`, calendar, r
 
 | Situation | Fix |
 |---|---|
-| BrainLLM tools time out / connection errors | Run `C:\Users\miiso\Projects\OSS\BrainLLM\scripts\start-trilium.ps1` (PowerShell). Wait ~3 s, retry. |
+| BrainLLM tools time out / connection errors | Check the Trilium instance `TRILIUM_BASE_URL` points at — a hosted deploy is reachable at its own URL, a local desktop install needs the app running. Every ETAPI call is bounded at 30 s with one retry on idempotent reads, so a timeout means the backend, not the tool. |
 | `start()` → `uninitialized` | Run `bootstrap()`. Safe anytime — only creates a new tree if the root note is confirmed gone; surfaces errors otherwise. |
 | Dates look off on a hosted deploy | Set `BRAINLLM_TZ` (IANA, e.g. `Africa/Johannesburg`) so Trilium stamps in the user's timezone. |
 

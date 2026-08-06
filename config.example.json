@@ -1,17 +1,30 @@
 {
+  "_comment": "Three ways to connect — pick ONE and delete the rest. All of them need a running TriliumNext instance and an ETAPI token (Trilium: Options -> ETAPI -> Create token), or set TRILIUM_PASSWORD instead and BrainLLM mints one on first start and caches it.",
+
   "mcpServers": {
-    "BrainLLM": {
-      "command": "bun",
-      "args": [
-        "run",
-        "C:/Users/YOUR_USERNAME/BrainLLM/dist/index.js"
-      ],
+    "BrainLLM (npm)": {
+      "_comment": "Simplest. Needs bun >= 1.0 on PATH — the server uses Bun APIs and does not run on node.",
+      "command": "npx",
+      "args": ["-y", "brainllm"],
       "env": {
         "TRILIUM_BASE_URL": "http://localhost:8080",
         "TRILIUM_ETAPI_TOKEN": "your-etapi-token-here"
       }
     },
+
+    "BrainLLM (local build)": {
+      "_comment": "For working on BrainLLM itself. Use the real absolute path to your built bundle.",
+      "command": "bun",
+      "args": ["run", "C:/Users/YOUR_USERNAME/BrainLLM/dist/index.js"],
+      "env": {
+        "TRILIUM_BASE_URL": "http://localhost:8080",
+        "TRILIUM_ETAPI_TOKEN": "your-etapi-token-here",
+        "BRAINLLM_MODE": "core"
+      }
+    },
+
     "BrainLLM (remote)": {
+      "_comment": "A hosted deploy over HTTP. For claude.ai / Claude mobile / Cowork, use their connector UI with OAuth instead — those surfaces cannot send a static bearer token, which is what BRAINLLM_OWNER_PASSWORD enables.",
       "command": "npx",
       "args": [
         "-y",
