@@ -27,6 +27,10 @@ const TARGETS: Array<{ size: number; file: string; why: string }> = [
   { size: 128, file: "icon-128.png", why: "connector list rows" },
   { size: 180, file: "icon-180.png", why: "apple-touch-icon" },
   { size: 512, file: "icon-512.png", why: "high-DPI and the serverInfo default" },
+  // The README/OG image. Previously a hand-exported raster that drifted from
+  // the SVG — it was still the old traced artwork after the mark changed.
+  // Generating it here means every brand raster has one source.
+  { size: 512, file: "BrainLLM.png", why: "README header and og:image" },
 ];
 
 const svg = readFileSync(SOURCE);

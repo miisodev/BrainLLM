@@ -1,17 +1,21 @@
 <div align="center">
 
-<img src="./public/BrainLLM.png" alt="BrainLLM logo" width="150" />
+<img src="./public/BrainLLM.png" alt="BrainLLM logo" width="128" />
 
 # BrainLLM
 
-**A persistent, graph-structured second brain for Claude and other LLMs — built on [TriliumNext Notes](https://github.com/TriliumNext/Notes), served over the [Model Context Protocol](https://modelcontextprotocol.io).**
+**Give Claude a memory that survives the session.**
 
-[![Version](https://img.shields.io/badge/version-10.1.0-6d28d9?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
-[![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-f9f1e1?style=flat-square&logo=bun&logoColor=black)](https://bun.sh)
-[![MCP](https://img.shields.io/badge/protocol-MCP-000000?style=flat-square)](https://modelcontextprotocol.io)
-[![Sponsor](https://img.shields.io/badge/❤-Sponsor-ea4aaa?style=flat-square&logo=githubsponsors)](https://github.com/sponsors/miisodev)
+A persistent, graph-structured second brain for Claude and any MCP client — built on [TriliumNext Notes](https://github.com/TriliumNext/Notes), served over the [Model Context Protocol](https://modelcontextprotocol.io).
+
+[**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
+
+[![Version](https://img.shields.io/badge/version-10.1.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
+[![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
+[![MCP](https://img.shields.io/badge/protocol-MCP-0a0a0f?style=flat-square)](https://modelcontextprotocol.io)
+[![Sponsor](https://img.shields.io/badge/❤-Sponsor-f59e0b?style=flat-square&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/miisodev)
 
 </div>
 
