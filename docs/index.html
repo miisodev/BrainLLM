@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BrainLLM — give Claude a memory that survives the session</title>
+<meta name="description" content="An open-source MCP server that turns TriliumNext into a persistent, graph-structured second brain for Claude and any MCP client. Self-hosted, inspectable, MIT.">
+<link rel="icon" href="assets/icon-64.png">
+<meta property="og:title" content="BrainLLM — give Claude a memory that survives the session">
+<meta property="og:description" content="A persistent, graph-structured second brain for Claude, built on TriliumNext. Self-hosted, MIT.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="assets/BrainLLM.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
+      <span class="brand-name">BrainLLM</span>
+    </a>
+    <div class="nav-links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="use-cases.html">Use cases</a>
+      <a href="pricing.html">Pricing</a>
+      <a href="docs.html">Docs</a>
+      <a class="nav-gh" href="https://github.com/miisodev/BrainLLM">GitHub</a>
+    </div>
+    <div class="nav-cta">
+      <a class="btn btn-primary btn-sm" href="docs.html#quick-start">Start now</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <span class="pill"><span class="dot"></span>v10.1.0 · open source, MIT</span>
+  <h1>Your LLM forgets everything <span class="muted">the moment the session ends. Give it a brain that</span> <span class="accent">remembers.</span></h1>
+  <p class="lede">A persistent, graph-structured second brain for Claude and any MCP client. Self-hosted on TriliumNext, inspectable, portable — yours to own, never locked in a vendor's black box.</p>
+  <div class="hero-cta">
+    <a class="btn btn-primary" href="docs.html#quick-start">Start now →</a>
+    <a class="btn btn-ghost" href="https://github.com/miisodev/BrainLLM">View on GitHub</a>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="section-head center">
+      <div class="eyebrow">The core principle</div>
+      <h2>The model supplies content.<br>The server owns form.</h2>
+      <p>Placement, naming, labels, deduplication, lifecycle, date stamping, HTML sanitisation — and structure itself — are deterministic server policy, never delegated to the model. It never chooses a parent note, never sets a label, never checks for duplicates, never stamps a date.</p>
+      <p><strong>That division is what makes the memory reliable.</strong> A prompt-requested invariant holds until the model has a bad day. A server-enforced one holds.</p>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Five areas</div>
+      <h2>A brain with a shape</h2>
+      <p>Not one undifferentiated pile of embeddings. Five purpose-built areas, each with its own kinds, lifecycle and rules — created on first run and enforced on every write.</p>
+    </div>
+    <div class="grid grid-2">
+      <div class="card"><span class="k">MASTER</span><h3>The user</h3><p>Biography, goals, preferences — three maintained singletons holding current-state truth, edited in place rather than appended to.</p></div>
+      <div class="card"><span class="k">LLM</span><h3>The model's self-model</h3><p>Its responsibilities, its operating protocols, and a daily diary it writes itself — unfiltered, first-person, edited by nobody.</p></div>
+      <div class="card"><span class="k">MEMORY</span><h3>Sessions and threads</h3><p>One session note per day, plus titled multi-session threads that age from active to dormant to archived. Nothing is ever deleted.</p></div>
+      <div class="card"><span class="k">KNOWLEDGE</span><h3>What it learned</h3><p>Per-domain books, each born with a Sources note so every claim has a sourcing home from the first write.</p></div>
+    </div>
+    <div style="margin-top:20px" class="card">
+      <span class="k">INSIGHTS</span><h3>The brain's record of itself</h3>
+      <p>An auto-generated change log for every day, and a live Mermaid render of the typed relation graph — maintained as a real note you can open.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">A session</div>
+      <h2>It can't end until the work is logged</h2>
+      <p>Most memory systems <em>ask</em> the model to record its work. This one refuses to close the session until it has — checked by tool invocation, not by narration.</p>
+    </div>
+<pre class="term"><span class="c">// every session opens with full orientation</span>
+&gt; start()
+  <span class="g">today</span>        2026-08-06 · Thursday
+  <span class="g">master</span>       biography · goals · preferences
+  <span class="g">threads</span>      12 active, 0 dormant
+  <span class="g">lastSession</span>  what changed since you were here
+
+<span class="c">// … the work happens …</span>
+
+&gt; close(summary)
+  <span class="a">✗ preclose_incomplete</span>
+  <span class="c">missing: remarks, diary</span>
+
+<span class="c">// narrating that you did the steps doesn't count.</span>
+<span class="c">// only tool calls do.</span>
+
+&gt; remarks() <span class="c">→ diary(body) →</span> close(summary)
+  <span class="g">✓ session logged · backup taken · daily log regenerated</span></pre>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <div class="section-head center"><h2>Built for being trusted later</h2></div>
+    <div class="grid grid-3">
+      <div class="card"><h3>Structure is enforced</h3><p>Every kind has a canonical shape, served by <code>template()</code> and held on write. A new thread requires its goal. Duplicate headings are detected. Timestamps are server-maintained.</p></div>
+      <div class="card"><h3>A typed graph, not folders</h3><p>Sixteen relation verbs, closed vocabulary. Every read returns its outbound edges for free, because the attributes were already loaded.</p></div>
+      <div class="card"><h3>Idempotent by construction</h3><p>Every write is duplicate-guarded or upserting, so a crash or a retry never double-writes. Content surgery survives the editor's own HTML rewriting.</p></div>
+      <div class="card"><h3>It heals what it finds</h3><p>A maintenance sweep ages threads, migrates legacy kinds, and reports orphans, duplicate subjects, stubs and structural drift — as conversation starters, never silent auto-fixes.</p></div>
+      <div class="card"><h3>Your notes stay readable</h3><p>Everything lives in a real note app you can open and edit by hand. Fix what the model wrote and it reads your correction next session.</p></div>
+      <div class="card"><h3>Runs anywhere MCP does</h3><p>stdio for Claude Desktop and Claude Code, an HTTP connector for hosted deploys, and a full OAuth 2.1 server so claude.ai can connect at all.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="stats">
+      <div class="stat"><div class="n">39</div><div class="l">brain-aware tools</div></div>
+      <div class="stat"><div class="n">16</div><div class="l">typed relations</div></div>
+      <div class="stat"><div class="n">14</div><div class="l">note kinds</div></div>
+      <div class="stat"><div class="n">2</div><div class="l">runtime dependencies</div></div>
+    </div>
+  </div>
+</section>
+
+<div class="final">
+  <h2>Give it a memory worth trusting.</h2>
+  <p>Self-hosted, MIT-licensed, and running in production every day. The honest part: you'll need a Trilium instance and a token first — which is exactly why your data stays yours.</p>
+  <div class="hero-cta">
+    <a class="btn btn-primary" href="docs.html#quick-start">Read the quick start →</a>
+    <a class="btn btn-ghost" href="https://github.com/sponsors/miisodev">Sponsor</a>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <a class="brand" href="index.html">
+        <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
+        <span class="brand-name">BrainLLM</span>
+      </a>
+      <p>An MCP server that turns TriliumNext into a persistent second brain. Built and maintained by one person.</p>
+    </div>
+    <div class="foot-links">
+      <div><strong>Product</strong>
+        <a href="how-it-works.html">How it works</a>
+        <a href="use-cases.html">Use cases</a>
+        <a href="pricing.html">Pricing</a>
+        <a href="docs.html">Docs</a>
+      </div>
+      <div><strong>Project</strong>
+        <a href="https://github.com/miisodev/BrainLLM">GitHub</a>
+        <a href="https://github.com/miisodev/BrainLLM/releases">Releases</a>
+        <a href="https://github.com/miisodev/BrainLLM/issues">Issues</a>
+        <a href="https://github.com/sponsors/miisodev">Sponsor</a>
+      </div>
+      <div><strong>Built on</strong>
+        <a href="https://github.com/TriliumNext/Trilium">TriliumNext</a>
+        <a href="https://modelcontextprotocol.io">Model Context Protocol</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

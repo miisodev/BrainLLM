@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pricing — BrainLLM</title>
+<meta name="description" content="BrainLLM is free and MIT-licensed. Sponsorship funds development and unlocks the internal architecture Blueprint.">
+<link rel="icon" href="assets/icon-64.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
+      <span class="brand-name">BrainLLM</span>
+    </a>
+    <div class="nav-links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="use-cases.html">Use cases</a>
+      <a class="active" href="pricing.html">Pricing</a>
+      <a href="docs.html">Docs</a>
+      <a class="nav-gh" href="https://github.com/miisodev/BrainLLM">GitHub</a>
+    </div>
+    <div class="nav-cta"><a class="btn btn-primary btn-sm" href="docs.html#quick-start">Start now</a></div>
+  </div>
+</nav>
+
+<header class="hero">
+  <span class="pill"><span class="dot"></span>MIT licensed</span>
+  <h1>The software is <span class="accent">free.</span><br><span class="muted">Sponsorship keeps it moving.</span></h1>
+  <p class="lede">There is no paid tier, no seat count and no hosted plan. You self-host it, you own the data, and nothing is gated behind a licence key.</p>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="grid grid-3">
+
+      <div class="card price-card">
+        <h3>Open source</h3>
+        <div class="price">$0<small> / forever</small></div>
+        <p>Everything the project does. No feature is withheld from the free version, because there is no other version.</p>
+        <ul class="checks">
+          <li>All 39 brain-aware tools</li>
+          <li>The 33 raw ETAPI tools in full mode</li>
+          <li>OAuth 2.1 for hosted Claude surfaces</li>
+          <li>The operational skill package</li>
+          <li>MIT — fork it, ship it, sell what you build</li>
+        </ul>
+        <a class="btn btn-ghost" href="docs.html#quick-start">Get started</a>
+      </div>
+
+      <div class="card price-card featured">
+        <h3>Sponsor</h3>
+        <div class="price">Any amount<small> / month</small></div>
+        <p>Funds continued development, and unlocks the complete internal architecture reference that isn't published in the repository.</p>
+        <ul class="checks">
+          <li>Everything in open source</li>
+          <li><strong>The Blueprint</strong> — every module, every tool's exact behaviour and signatures, the sweep and idempotency internals</li>
+          <li>Your issues read first</li>
+          <li>Sponsor listing on the repository</li>
+        </ul>
+        <a class="btn btn-primary" href="https://github.com/sponsors/miisodev">Sponsor on GitHub</a>
+      </div>
+
+      <div class="card price-card">
+        <h3>What it costs to run</h3>
+        <div class="price">Your call</div>
+        <p>BrainLLM has no infrastructure of its own. The only cost is wherever you put Trilium.</p>
+        <ul class="checks">
+          <li>Local desktop — free</li>
+          <li>A small VPS or Railway service — a few dollars a month</li>
+          <li>No per-note, per-token or per-seat charge, ever</li>
+          <li>No telemetry, no account, no phone-home</li>
+        </ul>
+        <a class="btn btn-ghost" href="how-it-works.html">How it works</a>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <div class="principle">
+      <blockquote>Your memory should not be <span class="accent">someone else's product.</span></blockquote>
+      <p>Every note BrainLLM writes lives in a note application you control, in a format you can read without it. If this project disappeared tomorrow, your brain would still open, still be editable, and still make sense — which is the actual test of whether data is yours.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head center"><h2>Questions</h2></div>
+    <div class="faq">
+      <details open>
+        <summary>Is there a catch with the free tier?</summary>
+        <p>No, and there isn't a tier. The whole project is MIT-licensed on GitHub. Sponsorship buys the Blueprint — a documentation artefact — and supports the work. It doesn't unlock code.</p>
+      </details>
+      <details>
+        <summary>What do I actually need to run it?</summary>
+        <p>A running TriliumNext instance, an ETAPI token, and Bun 1.0 or later. That's genuinely the hard part of setup, and it's also exactly why your data stays on your own machine.</p>
+      </details>
+      <details>
+        <summary>Does it only work with Claude?</summary>
+        <p>It's a standard MCP server, so any MCP-capable client can use it. Claude is what it's exercised against daily, and the OAuth surface exists specifically so claude.ai, Claude mobile and Cowork can connect — those can't send a static bearer token.</p>
+      </details>
+      <details>
+        <summary>Why not just use a vector store?</summary>
+        <p>Because you can't open one and read it. Every note here is a real note in a real editor — you can correct what the model wrote, by hand, and it will read your correction next session. That round trip is the whole point.</p>
+      </details>
+      <details>
+        <summary>Is my data sent anywhere?</summary>
+        <p>Only between your MCP client and your own Trilium instance. There's no BrainLLM service, no account, and no telemetry. The npm package and this site are the only things the project publishes.</p>
+      </details>
+      <details>
+        <summary>Can I use it commercially?</summary>
+        <p>Yes. MIT. Fork it, embed it, build a product on it. If it becomes load-bearing for you, sponsorship is the way to keep it maintained.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<div class="final">
+  <h2>Free to use. Worth supporting.</h2>
+  <p>Built and maintained by one person, in production every day.</p>
+  <div class="hero-cta">
+    <a class="btn btn-primary" href="https://github.com/sponsors/miisodev">Sponsor on GitHub</a>
+    <a class="btn btn-ghost" href="docs.html#quick-start">Just get started</a>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <a class="brand" href="index.html">
+        <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
+        <span class="brand-name">BrainLLM</span>
+      </a>
+      <p>An MCP server that turns TriliumNext into a persistent second brain.</p>
+    </div>
+    <div class="foot-links">
+      <div><strong>Product</strong><a href="how-it-works.html">How it works</a><a href="use-cases.html">Use cases</a><a href="pricing.html">Pricing</a><a href="docs.html">Docs</a></div>
+      <div><strong>Project</strong><a href="https://github.com/miisodev/BrainLLM">GitHub</a><a href="https://github.com/miisodev/BrainLLM/releases">Releases</a><a href="https://github.com/sponsors/miisodev">Sponsor</a></div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

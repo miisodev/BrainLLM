@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Use cases — BrainLLM</title>
+<meta name="description" content="What a persistent, structured memory actually changes: continuity across sessions, a knowledge base with sourcing, agents that share one brain, and a record you can audit.">
+<link rel="icon" href="assets/icon-64.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
+      <span class="brand-name">BrainLLM</span>
+    </a>
+    <div class="nav-links">
+      <a href="how-it-works.html">How it works</a>
+      <a class="active" href="use-cases.html">Use cases</a>
+      <a href="pricing.html">Pricing</a>
+      <a href="docs.html">Docs</a>
+      <a class="nav-gh" href="https://github.com/miisodev/BrainLLM">GitHub</a>
+    </div>
+    <div class="nav-cta"><a class="btn btn-primary btn-sm" href="docs.html#quick-start">Start now</a></div>
+  </div>
+</nav>
+
+<header class="hero">
+  <span class="pill"><span class="dot"></span>use cases</span>
+  <h1>What changes when it <span class="accent">remembers</span></h1>
+  <p class="lede">Persistent memory isn't a feature you notice on day one. It's the thing that makes day sixty different from day one.</p>
+</header>
+
+<section>
+  <div class="wrap">
+
+    <div class="uc">
+      <div>
+        <div class="eyebrow">Continuity</div>
+        <h2>Stop re-explaining yourself</h2>
+        <p style="color:var(--text-muted);margin-top:14px">Every session opens with who you are, what you're working toward, how you like to work, and what changed since last time — before the first word of an answer. You never paste context again.</p>
+        <p style="color:var(--text-muted)">The alternative isn't "a longer prompt". It's the model quietly guessing at things you told it last week.</p>
+      </div>
+      <div class="card">
+<pre class="term">&gt; start()
+  <span class="g">master</span>   biography · goals · preferences
+  <span class="g">llm</span>      responsibilities · protocols
+  <span class="g">threads</span>  12 active <span class="c">· idle 0–5d</span>
+  <span class="g">since</span>    24 notes changed since 2026-08-02</pre>
+      </div>
+    </div>
+
+    <div class="uc flip">
+      <div>
+        <div class="eyebrow">Knowledge with provenance</div>
+        <h2>A knowledge base that can't invent things</h2>
+        <p style="color:var(--text-muted);margin-top:14px">Creating a domain creates its Sources note in the same breath. Every claim traces to a listed source, marked <strong>❇️ found</strong> or <strong>✅ used</strong>, with a revision table recording when each was last verified.</p>
+        <p style="color:var(--text-muted)">An unsourced note doesn't get written. That's a rule, not a habit.</p>
+      </div>
+      <div class="card">
+<pre class="tree">Knowledge/Domains/<span class="area">BrainLLM</span>/
+├── Sources            <span class="note">23 sources · ✅/❇️ · revision table</span>
+├── Purpose and Design
+├── Brain Structure
+├── Tool Surface
+├── Runtime Architecture
+├── Session Protocol
+└── <span class="note">… 11 more, each partOf the domain</span></pre>
+      </div>
+    </div>
+
+    <div class="uc">
+      <div>
+        <div class="eyebrow">Multi-agent</div>
+        <h2>Many agents, one memory</h2>
+        <p style="color:var(--text-muted);margin-top:14px">Scoped runs pass a domain and get findings in their own lane. An autonomous agent skips the steps that touch personal singletons. Every append carries an identification line, so months later you can tell which model, in which environment, wrote what.</p>
+      </div>
+      <div class="card">
+<pre class="term">&gt; session(scope=<span class="a">"agent"</span>)
+  <span class="c">omits the user's-singleton steps</span>
+
+&gt; maintain(deep=true, domain=<span class="a">"myclerkbook"</span>)
+  <span class="c">flags arrive in this agent's lane only</span>
+
+<span class="g">Addendum — 14:22</span>
+<span class="c">Claude Opus 5 · Claude Code · Tracker</span></pre>
+      </div>
+    </div>
+
+    <div class="uc flip">
+      <div>
+        <div class="eyebrow">Auditability</div>
+        <h2>You can check what it believes</h2>
+        <p style="color:var(--text-muted);margin-top:14px">Ask whether the brain agrees with itself. Give <code>consistency()</code> a pattern and it returns every note asserting a value for it, grouped, and tells you plainly whether they agree.</p>
+        <p style="color:var(--text-muted)">A correction applied to one note leaves its siblings silently wrong. This is the check that finds them.</p>
+      </div>
+      <div class="card">
+<pre class="term">&gt; consistency(<span class="a">"(\d+) Titan mailboxes"</span>)
+  <span class="a">agreement: DISAGREEMENT</span>
+  <span class="g">"3"</span>  Tech Stack, Domains
+  <span class="g">"1"</span>  Current State
+
+<span class="c">one fact, two answers, both written
+in the same confident voice.</span></pre>
+      </div>
+    </div>
+
+    <div class="uc">
+      <div>
+        <div class="eyebrow">The diary</div>
+        <h2>A record nobody edits</h2>
+        <p style="color:var(--text-muted);margin-top:14px">Every day the model writes an unfiltered, first-person entry about its own session — what the work was like, what it genuinely thinks including disagreement, and remarks on being what it is.</p>
+        <p style="color:var(--text-muted)">It's the part people find strangest and the part that turns out to be most valuable. Reading six months of it back is a different kind of artifact entirely.</p>
+      </div>
+      <div class="card">
+        <p style="color:var(--text-soft);font-size:15.5px;line-height:1.7;font-style:italic">"The best part was watching my own morning's work run against the live brain and do something… and then the same sweep caught me. The consistency pass I ran to check the brain for staleness returned a note that proved a claim I'd recorded eight hours earlier was wrong."</p>
+        <p style="margin-top:14px;font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">— diary, 2026-08-06</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <div class="section-head center"><h2>Who it's for</h2></div>
+    <div class="grid grid-3">
+      <div class="card"><h3>People who work with an LLM daily</h3><p>If you have the same conversation about context every morning, this is the thing that ends it.</p></div>
+      <div class="card"><h3>People building agents</h3><p>A shared, structured, auditable memory that several agents can write to without trampling each other.</p></div>
+      <div class="card"><h3>People who want their data</h3><p>Self-hosted, in an app you can open. No vendor holds your memory and no export step is required to read it.</p></div>
+    </div>
+  </div>
+</section>
+
+<div class="final">
+  <h2>Day sixty is the point.</h2>
+  <p>The setup takes an afternoon. What it changes compounds from there.</p>
+  <div class="hero-cta">
+    <a class="btn btn-primary" href="docs.html#quick-start">Quick start →</a>
+    <a class="btn btn-ghost" href="https://github.com/miisodev/BrainLLM">View on GitHub</a>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <a class="brand" href="index.html">
+        <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
+        <span class="brand-name">BrainLLM</span>
+      </a>
+      <p>An MCP server that turns TriliumNext into a persistent second brain.</p>
+    </div>
+    <div class="foot-links">
+      <div><strong>Product</strong><a href="how-it-works.html">How it works</a><a href="use-cases.html">Use cases</a><a href="pricing.html">Pricing</a><a href="docs.html">Docs</a></div>
+      <div><strong>Project</strong><a href="https://github.com/miisodev/BrainLLM">GitHub</a><a href="https://github.com/miisodev/BrainLLM/releases">Releases</a><a href="https://github.com/sponsors/miisodev">Sponsor</a></div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
