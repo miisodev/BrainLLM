@@ -1,3 +1,9 @@
+#!/usr/bin/env bun
+// The shebang names bun deliberately, not node. This server uses Bun.serve,
+// Bun.file and Bun.main directly, so it does not run on node — an `npx
+// brainllm` that resolved to node would fail at startup with an obscure
+// ReferenceError. package.json declares the same requirement in `engines`,
+// and manifest.json in `compatibility.runtimes`.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";

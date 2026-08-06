@@ -27,13 +27,32 @@
     "claude",
     "ai"
   ],
+  "bin": {
+    "brainllm": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist/index.js",
+    "public/",
+    "skills/brainllm/",
+    "config.example.json",
+    ".env.example",
+    "manifest.json",
+    "server.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "build": "bun build src/index.ts --outfile dist/index.js --target bun",
     "start": "bun run dist/index.js",
     "test": "bun run src/test.ts",
     "init": "bun run src/init.ts",
-    "icons": "bun run scripts/icons.ts"
+    "icons": "bun run scripts/icons.ts",
+    "prepublishOnly": "bun run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
