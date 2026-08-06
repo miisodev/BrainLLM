@@ -547,3 +547,53 @@ describe("upsertTableRow", () => {
     expect(r.html).toBe(doc);
   });
 });
+
+
+// ── Defect 19 regression: outline() and setSection() must agree on a name ────
+// A heading carrying inline markup was reported by headingOutline() as its
+// stripped text and refused by setSection(), which matched raw inner HTML. The
+// refusal silently appended a duplicate section rather than erroring, so
+// trusting outline()'s output produced three near-identical sections in one
+// note before anyone noticed.
+describe("setSection matches headings by text, not raw HTML", () => {
+  const withCode = `<h3><code>recall(regex=)</code> — the prior defect</h3>\n<p>old body</p>`;
+
+  test("matches a heading containing inline markup", () => {
+    const out = setSection(withCode, "recall(regex=) — the prior defect", "<p>new body</p>", "replace");
+    expect(out.matched).toBe(true);
+    expect(out.html).toContain("new body");
+    expect(out.html).not.toContain("old body");
+  });
+
+  test("does NOT append a duplicate when the heading exists", () => {
+    const out = setSection(withCode, "recall(regex=) — the prior defect", "<p>new</p>", "replace");
+    expect(headingOutline(out.html).length).toBe(1);
+  });
+
+  test("every name outline() reports is a name setSection() matches", () => {
+    const body = [
+      `<h2>Plain heading</h2><p>a</p>`,
+      `<h3><code>code()</code> — mixed</h3><p>b</p>`,
+      `<h3><strong>Bold</strong> and <em>italic</em></h3><p>c</p>`,
+      `<h4>Entity &amp; text</h4><p>d</p>`,
+    ].join("\n");
+    for (const h of headingOutline(body)) {
+      expect(setSection(body, h.text, "<p>x</p>", "replace").matched).toBe(true);
+    }
+  });
+
+  test("still misses a heading that genuinely is not there, and reports available", () => {
+    const out = setSection(withCode, "No such heading", "<p>x</p>", "replace");
+    expect(out.matched).toBe(false);
+    expect(out.available).toContain("recall(regex=) — the prior defect");
+  });
+
+  test("occurrence= still selects among same-text headings", () => {
+    const dupes = `<h3><code>Same</code></h3><p>one</p>\n<h3>Same</h3><p>two</p>`;
+    const out = setSection(dupes, "Same", "<p>edited</p>", "replace", 2);
+    expect(out.matched).toBe(true);
+    expect(out.headingCount).toBe(2);
+    expect(out.html).toContain("one");
+    expect(out.html).not.toContain("two");
+  });
+});

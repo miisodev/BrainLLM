@@ -1367,13 +1367,50 @@ a doubly-escaped tag", "which cite a 2026 date"). Backslashes must be escaped.`,
       // doubly-escaped tag" is a pattern, and finding those by guessing
       // substrings is how a corruption class stays hidden.
       if (regex) {
-        const notes = await run(`note.content %= '${escapeQueryValue(regex)}'`);
-        const filtered = notes.filter(filterNote).slice(0, max);
-        const results = await Promise.all(filtered.map(buildResult));
+        // Trilium's %= operator is the CANDIDATE filter, not the answer.
+        //
+        // Measured: a single literal pattern comes back correct, but an
+        // alternation over-matches — `zzzznotrealzzzz|triliumnext/trilium:latest`
+        // returned five notes where only three contained either alternative,
+        // and a six-term staleness sweep returned a note containing none of
+        // them. A search tool that silently widens its own filter is worse
+        // than one that refuses the query, because the results look like an
+        // answer: this is the tool you reach for to ask "has this wrong claim
+        // leaked anywhere else", and a false clean sweep reports the opposite
+        // of the truth.
+        //
+        // So the backend narrows, and we verify locally against the real
+        // regex. Costs one content fetch per candidate, bounded by limit —
+        // cheap next to being wrong about what the brain contains.
+        let re: RegExp | null = null;
+        try {
+          re = new RegExp(regex, "i");
+        } catch (e) {
+          return err(
+            "invalid_pattern",
+            `Not a valid regular expression: ${(e as Error).message}`,
+            "Escape backslashes — a JSON string needs \\\\d for \\d."
+          );
+        }
+
+        const candidates = (await run(`note.content %= '${escapeQueryValue(regex)}'`)).filter(filterNote);
+        const confirmed: Note[] = [];
+        let rejected = 0;
+        for (const n of candidates) {
+          if (confirmed.length >= max) break;
+          const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+          if (content && re.test(content)) confirmed.push(n);
+          else rejected++;
+        }
+
+        const results = await Promise.all(confirmed.map(buildResult));
         return txt({
           mode: "regex",
           pattern: regex,
           results,
+          ...(rejected
+            ? { note: `${rejected} backend candidate(s) did not actually match the pattern and were dropped — results are verified against the real regex, not just the search index.` }
+            : {}),
           ...(results.length === 0
             ? { note: "No bodies matched that pattern. Regex runs against stored HTML, so anchor on what is actually stored (tags and entities), not on rendered text." }
             : {}),
