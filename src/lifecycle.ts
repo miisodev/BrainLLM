@@ -222,9 +222,17 @@ export async function sweep(
       for (const childId of childIds) {
         if (typedIds.has(childId) || isStructural(cfg, childId)) continue;
         const child = await trilium.getNote(childId).catch(() => null);
-        if (child && !child.attributes.some((a) => a.type === "label" && a.name === "archived")) {
-          report.flagged.push(`unlabeled: ${child.title} [${childId}] in ${label} — add #noteType=${kind}`);
-        }
+        if (!child || child.attributes.some((a) => a.type === "label" && a.name === "archived")) continue;
+
+        // A `book` with children in a flat text container is the USER's own
+        // organisational folder, not an untyped content note. Knowledge/Master
+        // holds text notes, so a book there is a grouping the human made and
+        // typing it would be wrong. Knowledge/Domains is the exception — its
+        // children ARE books and genuinely want #noteType=domain — so this
+        // only skips where a typed child would never be a book.
+        if (kind !== "domain" && child.type === "book" && (child.childNoteIds?.length ?? 0) > 0) continue;
+
+        report.flagged.push(`unlabeled: ${child.title} [${childId}] in ${label} — add #noteType=${kind}`);
       }
     } catch { /* non-fatal */ }
   }
