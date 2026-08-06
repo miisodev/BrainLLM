@@ -703,11 +703,30 @@ export function setSection(
   occurrence = 1
 ): SetSectionResult {
   html = closeDangling(html);
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // Match on the heading's TEXT, not its raw inner HTML.
+  //
+  // This used to build `<h3>\s*escaped-target\s*</h3>` and test it against the
+  // raw body, which meant a heading carrying any inline markup —
+  // `<h3><code>recall(regex=)</code> — the prior defect</h3>` — could never
+  // match, because its inner HTML is not its text. headingOutline() strips
+  // those tags, so outline() and available[] reported a name that section=
+  // would then refuse: the two halves of the same contract disagreed, and the
+  // caller was handed a string by the very tool that was about to reject it.
+  //
+  // Worse, the refusal is not an error. A section= miss silently APPENDS a new
+  // section, so trusting outline()'s output produced a duplicate rather than a
+  // failure — twice in a row on one note, in the case that motivated this fix.
+  //
+  // Comparing stripped text on both sides makes the contract single-valued:
+  // any name outline() prints is a name section= will match.
+  const targetKey = decodeEntities(heading.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase();
   for (const level of [2, 3, 4]) {
     const tag = `h${level}`;
-    const globalRe = new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*${escaped}\\s*</${tag}>`, "gi");
-    const hits = [...html.matchAll(globalRe)];
+    const globalRe = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "gi");
+    const hits = [...html.matchAll(globalRe)].filter(
+      (m) => decodeEntities(m[1]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase() === targetKey
+    );
     if (!hits.length) continue;
 
     const headingCount = hits.length;
