@@ -139,7 +139,7 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "10.0.0",
+    version: "10.1.0",
     icons: brandingIcons(origin),
   });
   registerTools(s, trilium, brainRef, mode);

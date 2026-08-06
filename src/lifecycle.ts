@@ -10,8 +10,9 @@
 
 import { type TriliumClient, type Note, ownedLabel, relationSnippet, type RelationEdge } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
+import type { AnyKind } from "./types.js";
 import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, LARGE_NOTE_CHARS } from "./normalize.js";
-import { RESOLUTION_ANCHOR } from "./templates.js";
+import { RESOLUTION_ANCHOR, missingSections } from "./templates.js";
 import { localToday } from "./time.js";
 
 // ── Structural protection ──────────────────────────────────────────────────────
@@ -190,11 +191,20 @@ export async function sweep(
   // ── Unlabeled-node sweep ────────────────────────────────────────────────────
   // Fetch each typed container's direct children; diff against a typed search
   // to find children that escaped labelling (via create_note bypass or past bugs).
+  //
+  // Knowledge/Master and Knowledge/Domains were NOT covered here, and that
+  // omission is what let nine unlabeled strategy notes — the entire strategy
+  // layer — sit invisible to every read path without a single sweep flagging
+  // them. The pass that exists to catch invisible notes could not see the
+  // area where invisibility costs most, because an unlabeled knowledge note
+  // still renders perfectly in Trilium and only fails silently at recall time.
   const typedContainers: Array<{ id: string; kind: string; label: string }> = [
-    { id: cfg.memory.threads,  kind: "thread",  label: "Threads"  },
-    { id: cfg.memory.sessions, kind: "session", label: "Sessions" },
-    { id: cfg.llm.diary,       kind: "diary",   label: "Diary"    },
-    { id: cfg.insights.logs,   kind: "log",     label: "Logs"     },
+    { id: cfg.memory.threads,     kind: "thread",  label: "Threads"          },
+    { id: cfg.memory.sessions,    kind: "session", label: "Sessions"         },
+    { id: cfg.llm.diary,          kind: "diary",   label: "Diary"            },
+    { id: cfg.insights.logs,      kind: "log",     label: "Logs"             },
+    { id: cfg.knowledge.master,   kind: "user",    label: "Knowledge/Master" },
+    { id: cfg.knowledge.domains,  kind: "domain",  label: "Knowledge/Domains"},
   ];
   for (const { id, kind, label } of typedContainers) {
     if (!id) continue;
@@ -411,9 +421,37 @@ export async function sweep(
   const lintPool = (await connectable("#noteType")).filter((n) =>
     eligible(n, (kind) => RECORDS.has(kind) || kind === "domain")
   );
-  const lintCandidates = lintPool.slice(0, STRUCTURE_LINT_LIMIT);
-  if (lintPool.length > lintCandidates.length) {
-    (report.coverage ??= []).push(`structural lint: ${lintCandidates.length} of ${lintPool.length} notes read (cap ${STRUCTURE_LINT_LIMIT})`);
+
+  // The window ROTATES by date, and the skipped notes are NAMED.
+  //
+  // This used to be a plain slice(0, 40) over whatever order the search
+  // returned, so the same 40 notes were linted on every run and the remainder
+  // were a permanent blind spot — 40 of 70 every run for five days, with
+  // coverage[] reporting the count but never which 30 went unread. An unnamed
+  // blind spot is only marginally better than a silent one: the caller cannot
+  // even lint the remainder by hand.
+  //
+  // Rotating by day-of-year gives eventual full coverage over
+  // ceil(pool / limit) days at zero extra cost. Deliberately NOT a "#linted"
+  // label: writing one would bump dateModified on 40 notes per sweep, which
+  // would make every linted note look freshly touched and quietly disable the
+  // stale-review pass. That is the same trap the ack mechanic avoids by
+  // keying on blobId rather than dateModified.
+  lintPool.sort((a, b) => a.noteId.localeCompare(b.noteId)); // stable order across runs
+  let lintCandidates = lintPool;
+  if (lintPool.length > STRUCTURE_LINT_LIMIT) {
+    const epochDay = Math.floor(Date.parse(`${localToday()}T00:00:00Z`) / 86_400_000);
+    const windows = Math.ceil(lintPool.length / STRUCTURE_LINT_LIMIT);
+    const start = ((epochDay % windows) * STRUCTURE_LINT_LIMIT) % lintPool.length;
+    lintCandidates = [...lintPool.slice(start), ...lintPool.slice(0, start)].slice(0, STRUCTURE_LINT_LIMIT);
+
+    const read = new Set(lintCandidates.map((n) => n.noteId));
+    const skipped = lintPool.filter((n) => !read.has(n.noteId));
+    (report.coverage ??= []).push(
+      `structural lint: ${lintCandidates.length} of ${lintPool.length} notes read (cap ${STRUCTURE_LINT_LIMIT}); ` +
+      `window rotates daily, full coverage every ${windows} days. Unread this run — ` +
+      skipped.map((n) => `${n.title} [${n.noteId}]`).join(", ")
+    );
   }
   for (const n of lintCandidates) {
     const content = await trilium.getNoteContent(n.noteId).catch(() => "");
@@ -422,6 +460,21 @@ export async function sweep(
     const structure = structureReport(content);
     if (structure.duplicateHeadings.length) {
       report.flagged.push(`duplicate heading: ${n.title} [${n.noteId}] — '${structure.duplicateHeadings.join("', '")}' repeated in one note; merge with revise(section=…, mode=replace) or target one with occurrence=`);
+    }
+    // Completeness, not just well-formedness. The lint reads the whole note
+    // here anyway, so checking it against the section set its own kind
+    // requires costs nothing extra — and catches the class that was entirely
+    // invisible before: a thread that lost its Resolution, a Sources note with
+    // no Revision table. Both pass every structural check yet are broken.
+    const lintKind = ownedLabel(n, "noteType") as AnyKind | undefined;
+    if (lintKind) {
+      const missing = missingSections(lintKind, content);
+      if (missing.length) {
+        report.flagged.push(
+          `incomplete ${lintKind}: ${n.title} [${n.noteId}] — missing required section(s) '${missing.join("', '")}'. ` +
+          `Compare against template(kind="${lintKind}") and restore with revise(section=…), or resolve() if it is a thread wanting closure.`
+        );
+      }
     }
     if (structure.unbalancedTags.length) {
       report.flagged.push(`unbalanced tags: ${n.title} [${n.noteId}] — <${structure.unbalancedTags.join(">, <")}> left open; the next write will auto-close them, or fix now with revise(mode=replace)`);
@@ -484,6 +537,51 @@ export async function sweep(
           report.flagged.push(`duplicate: '${group[0].title}' ×${group.length} [${ids}] in Domain/${domSlug} (${domainKind}) — forget() the extras`);
         }
       }
+
+      // ── Near-title duplicate SUBJECTS ──────────────────────────────────────
+      // Equality-matching fires on the case that never occurs and stays silent
+      // on the one that does. Nobody writes a second note with a byte-identical
+      // title; they write "Authenticated Surfaces" beside an existing "Reading
+      // Authenticated Surfaces" — which is what a writer produces when they
+      // haven't read the domain's existing notes. maintain(deep) ran clean over
+      // exactly that pair three separate times.
+      //
+      // Within ONE domain, two information notes sharing a significant title
+      // token are worth a human glance. Cheap, and it targets the failure that
+      // actually happens. Cross-domain reuse stays unflagged — "Current State"
+      // in two domains is the consistency rule working.
+      if (domainKind === "information") {
+        const STOP_TOKENS = new Set(["and", "the", "for", "with", "state", "current", "notes", "note"]);
+        const significant = (title: string): string[] =>
+          title.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/)
+            .filter((t) => t.length >= 5 && !STOP_TOKENS.has(t));
+
+        const byDomain = new Map<string, Note[]>();
+        for (const n of all.results) {
+          const domSlug = n.attributes.find((a) => a.type === "label" && a.name === "domain")?.value ?? "_unknown";
+          if (!byDomain.has(domSlug)) byDomain.set(domSlug, []);
+          byDomain.get(domSlug)!.push(n);
+        }
+        for (const [domSlug, notes] of byDomain) {
+          const reported = new Set<string>();
+          for (let i = 0; i < notes.length; i++) {
+            for (let j = i + 1; j < notes.length; j++) {
+              const a = notes[i]!, bn = notes[j]!;
+              if (a.title.toLowerCase().trim() === bn.title.toLowerCase().trim()) continue; // exact — already flagged
+              const shared = significant(a.title).filter((t) => significant(bn.title).includes(t));
+              if (!shared.length) continue;
+              const pairKey = [a.noteId, bn.noteId].sort().join("|");
+              if (reported.has(pairKey)) continue;
+              reported.add(pairKey);
+              report.flagged.push(
+                `near-duplicate subject: '${a.title}' [${a.noteId}] and '${bn.title}' [${bn.noteId}] in Domain/${domSlug} ` +
+                `share '${shared.join("', '")}'. Two notes on one subject is the duplicate that actually happens — ` +
+                `read both, merge into the older one, and forget() the other. If they are genuinely distinct, maintain(ack=[…]) to silence this.`
+              );
+            }
+          }
+        }
+      }
     }
   }
 
@@ -541,7 +639,15 @@ async function hygienePasses(
     .catch(() => [] as Note[]);
   report.scanned += corrupted.length;
   for (const n of corrupted) {
-    if (isStructural(cfg, n.noteId)) continue;
+    // eligible(), not isStructural() — this pass bypassed the acknowledgement
+    // filter entirely, so an ack'd finding re-fired on every subsequent run
+    // while `suppressed` climbed for the passes that did honour it. That is
+    // exactly the "warning that always fires" failure ack= exists to prevent,
+    // occurring inside the ack mechanic. It also matters more here than
+    // elsewhere: a note DOCUMENTING the double-escape signature necessarily
+    // contains it, so this detector has permanent true positives that must
+    // stay silenceable.
+    if (!eligible(n)) continue;
     report.flagged.push(`entity-corrupted: ${n.title} [${n.noteId}] — body stores doubly-escaped markup ("&amp;lt;") that renders as literal text. Repair with revise(mode="replace") passing the decoded content; nothing decodes it as a side effect.`);
   }
 
@@ -580,7 +686,8 @@ async function hygienePasses(
     .then((r) => r.results)
     .catch(() => [] as Note[]);
   for (const n of bloated) {
-    if (isStructural(cfg, n.noteId)) continue;
+    // eligible() for the same reason as pass 1 — this also bypassed ack=.
+    if (!eligible(n)) continue;
     report.flagged.push(`revision bloat: ${n.title} [${n.noteId}] — over ${REVISION_BLOAT} revisions. Usually a repeated full-body rewrite where section=/find= would have been surgical.`);
   }
 

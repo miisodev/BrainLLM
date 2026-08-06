@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { applyResolution, isContainer, isStructural } from "./lifecycle.js";
 import { labelPlan } from "./router.js";
-import { RESOLUTION_ANCHOR } from "./templates.js";
+import { RESOLUTION_ANCHOR, isOpenResolutionOnly, missingSections } from "./templates.js";
 import { ownedLabel, type Note, type Attribute } from "./trilium.js";
 import { EMPTY_BRAINLLM } from "./config.js";
 
@@ -129,5 +129,50 @@ describe("vestigial metaThread id grants no structural protection", () => {
 
   test("is not a container", () => {
     expect(isContainer(cfg, "META_THREAD_001")).toBe(false);
+  });
+});
+
+
+// ── V10.1 regression tests ───────────────────────────────────────────────────
+// Each of these pins a defect that actually shipped and was found in use.
+
+describe("isOpenResolutionOnly — the guard that refused what remember() writes", () => {
+  test("accepts the canonical empty placeholder contentFor() itself emits", () => {
+    expect(isOpenResolutionOnly(`<h2>Context</h2>\n<h3>Goal</h3>\n<p>x</p>\n${RESOLUTION_ANCHOR}\n<p><em>— open —</em></p>`)).toBe(true);
+  });
+
+  test("accepts a bare Resolution heading with no body", () => {
+    expect(isOpenResolutionOnly(`<h2>Context</h2>\n${RESOLUTION_ANCHOR}`)).toBe(true);
+  });
+
+  test("rejects a FILLED resolution — resolve() owns the outcome", () => {
+    expect(isOpenResolutionOnly(`${RESOLUTION_ANCHOR}\n<p>We shipped it.</p>`)).toBe(false);
+  });
+
+  test("rejects a SECOND resolution being smuggled in", () => {
+    expect(isOpenResolutionOnly(`${RESOLUTION_ANCHOR}\n<p><em>— open —</em></p>\n${RESOLUTION_ANCHOR}`)).toBe(false);
+  });
+
+  test("tolerates CKEditor attribute injection on the heading", () => {
+    expect(isOpenResolutionOnly(`<h2 spellcheck="false">Resolution</h2>\n<p><em>— open —</em></p>`)).toBe(true);
+  });
+});
+
+describe("missingSections — completeness, not just well-formedness", () => {
+  test("flags a thread that lost its Resolution", () => {
+    expect(missingSections("thread", "<h2>Context</h2><h3>Goal</h3><p>x</p>")).toEqual(["Resolution"]);
+  });
+
+  test("flags a Sources note with no Revision table", () => {
+    expect(missingSections("sources", "<h2>Sources</h2><ul><li>x</li></ul>")).toEqual(["Revision"]);
+  });
+
+  test("passes a complete thread", () => {
+    expect(missingSections("thread", `<h2>Context</h2>${RESOLUTION_ANCHOR}`)).toEqual([]);
+  });
+
+  test("records have no required sections — their shape is per-block", () => {
+    expect(missingSections("diary", "<p>anything</p>")).toEqual([]);
+    expect(missingSections("session", "<p>anything</p>")).toEqual([]);
   });
 });
