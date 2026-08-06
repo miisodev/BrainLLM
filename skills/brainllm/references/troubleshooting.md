@@ -26,7 +26,7 @@
 
 | Symptom | Fix |
 |---|---|
-| BrainLLM tools time out or return connection errors | Run `C:\Users\miiso\Projects\OSS\BrainLLM\scripts\start-trilium.ps1` (PowerShell tool) — starts Trilium if it isn't running, no-ops if it is. Wait ~3 s then retry. |
+| BrainLLM tools time out or return connection errors | The backend is unreachable, not the tool — every ETAPI call is bounded at 30 s with one retry on idempotent reads, so a hang surfaces as a failed tool call rather than a stuck session. Check the instance `TRILIUM_BASE_URL` names: a hosted deploy should answer at its own URL, a local desktop install needs the Trilium app running. Then retry. |
 | `start` → `uninitialized` | `bootstrap` |
 | Deep maintenance flags the same items every session | Act on them — `connect()` orphans, `revise()`/`resolve()` stale notes — or `maintain(ack=[…])` the ones that are correct as they stand. Don't just keep ignoring them: a list you skim is a list where the item that *did* change gets missed |
 | `revise(find=)` returns `replaced: 0` | Read the hint — it names the cause. Escaped search string (`&lt;h3&gt;` against stored real tags): pass the tag literally. Spans a block boundary (`</h3>` then `<ol>`): anchor inside one element, or use `section=` with `mode="before"/"after"`. Otherwise it was already replaced, or the text genuinely differs — check with `inspect(noteId, find="<shorter substring>")` |

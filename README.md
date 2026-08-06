@@ -302,8 +302,6 @@ A handful of values in this repo reflect the author's own machine. None are secr
 | **Timezone** | `BRAINLLM_TZ` in `.env` | Your IANA zone — or unset for the host clock |
 | **Config path** | `BRAINLLM_CONFIG` env var | Only needed on persistent-volume deploys (see above) |
 | **Monthly deliverables note** | the `day()` sweep | `day()` serves a Knowledge/Master note titled by the current month name (e.g. "July") as the month's deliverables tracker — the author's convention. Adopt it (one `user` note per month) or simply ignore the `deliverables` field; everything else `day()` returns is convention-free. |
-| **Trilium launcher** | `scripts/start-trilium.ps1` | Windows convenience script — repoint the exe path and port, or ignore it |
-| **"Trilium isn't running" hint** | `skills/brainllm/SKILL.md` + `references/troubleshooting.md` | Reference the author's script path — repoint or delete |
 | **Bundle path** | your MCP client config | The real absolute path to `dist/index.js` on your machine |
 | **Author · repo · funding** | `package.json`, `.github/FUNDING.yml`, the badges above | Your own details if you fork; the funding links support the original author |
 
