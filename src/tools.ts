@@ -2239,9 +2239,17 @@ Escape backslashes. Scope with domain= or kinds= when the phrase is common.`,
         let matched = false;
         while ((m = re.exec(content)) !== null) {
           matched = true;
-          if (m.length > 1 && m[1] !== undefined) {
+          // Take the first group that actually captured, not group 1.
+          //
+          // An alternation puts the value in whichever branch matched, so
+          // `a([0-9]+)|b([0-9]+)` leaves m[1] undefined whenever the second
+          // branch wins — and reading only m[1] made the whole call silently
+          // degrade to presence mode and report "the pattern has no capture
+          // group" about a pattern that plainly has two.
+          const captured = m.slice(1).find((g) => g !== undefined);
+          if (captured !== undefined) {
             hasCaptureGroup = true;
-            const value = toText(m[1], 120).trim() || m[1].trim();
+            const value = toText(captured, 120).trim() || captured.trim();
             if (seen.has(value)) continue;
             seen.add(value);
             if (!byValue.has(value)) byValue.set(value, []);
