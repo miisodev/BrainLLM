@@ -18,6 +18,19 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # `bun build` bundles without type-checking, so a genuine type error
+      # produces a clean build and a green CI. Check types explicitly — a
+      # missing import shipped this way and was only caught by running tsc
+      # by hand.
+      - name: Type check
+        run: bunx tsc --noEmit
+
       - run: bun run build
 
-      - run: bun test src/normalize.test.ts src/lifecycle.test.ts src/trilium.test.ts
+      # All four unit suites. oauth.test.ts was previously omitted, which left
+      # the CIMD impersonation and code-harvesting tests — the ones written
+      # specifically to run against hostile documents — outside CI entirely.
+      # src/test.ts stays out: it is the integration runner and needs a live
+      # Trilium instance.
+      - name: Unit tests
+        run: bun test src/normalize.test.ts src/lifecycle.test.ts src/trilium.test.ts src/oauth.test.ts

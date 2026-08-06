@@ -9,8 +9,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { TriliumClient } from "./trilium.js";
+import { TriliumClient, ownedLabel } from "./trilium.js";
 import { localToday } from "./time.js";
+import { labelPlan } from "./router.js";
+import type { BrainLLMConfig } from "./config.js";
+import type { Kind } from "./types.js";
 
 const txt = (obj: unknown) => ({
   content: [{ type: "text" as const, text: typeof obj === "string" ? obj : JSON.stringify(obj, null, 2) }],
@@ -26,7 +29,17 @@ const attrStub = (a: { attributeId: string; noteId: string; type: string; name: 
   id: a.attributeId, noteId: a.noteId, type: a.type, name: a.name, value: a.value,
 });
 
-export function registerAdvancedTools(server: McpServer, trilium: TriliumClient): void {
+/** The raw surface is brain-agnostic by design and takes no config — with one
+ *  exception. `undelete_note` has to re-apply the BrainLLM label set, because
+ *  Trilium's restore drops attributes and a note without #noteType is
+ *  invisible to every read path. That needs to know which container maps to
+ *  which kind, so the brain accessor is threaded in for that single use. */
+export function registerAdvancedTools(
+  server: McpServer,
+  trilium: TriliumClient,
+  brainRef: { config: BrainLLMConfig }
+): void {
+  const b = () => brainRef.config;
   // ── Notes ───────────────────────────────────────────────────────────────────
 
   server.tool(
@@ -128,11 +141,79 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "undelete_note",
-    "Recover a recently Trilium-deleted note from Trilium's trash. canBeUndeleted must be true (check note_history). Distinct from recover() which restores BrainLLM-archived notes.",
+    "Recover a recently Trilium-deleted note from Trilium's trash. canBeUndeleted must be true (check note_history). Distinct from recover() which restores BrainLLM-archived notes. Re-applies the BrainLLM label set for the container it lands in — the restore itself does not bring attributes back, and a note without #noteType is invisible to every read path.",
     { noteId: z.string() },
     async ({ noteId }) => {
       await trilium.undeleteNote(noteId);
-      return txt({ ok: true, undeleted: noteId });
+
+      // Trilium's undelete restores the note, its title, its content and its
+      // placement — but NOT its attributes. Every BrainLLM read filters on
+      // #noteType, so a restored note comes back present in Trilium and
+      // absent from every tool. This is not hypothetical: on 2026-08-01
+      // eleven thread stubs were restored with their original noteIds and no
+      // labels, and brain() reported 9 notes where 25 existed. Two thirds of
+      // the brain was invisible until it was repaired by hand.
+      //
+      // Re-derive the kind from the container the note sits in and re-apply
+      // the label plan. Never overwrite an existing label — if the restore
+      // did preserve attributes, or the note has since been typed, that is
+      // authoritative and this is a no-op.
+      const cfg = b();
+      const note = await trilium.getNote(noteId).catch(() => null);
+      const restored: string[] = [];
+      let inferredKind: string | undefined;
+
+      if (note) {
+        const already = ownedLabel(note, "noteType");
+        if (already) {
+          inferredKind = already;
+        } else {
+          const parents = note.parentNoteIds ?? [];
+          const byContainer: Array<[string | undefined, Kind]> = [
+            [cfg.memory.sessions, "session"],
+            [cfg.memory.threads, "thread"],
+            [cfg.llm.diary, "diary"],
+            [cfg.insights.logs, "log"],
+            [cfg.knowledge.master, "user"],
+            [cfg.knowledge.domains, "domain"],
+          ];
+          for (const [containerId, kind] of byContainer) {
+            if (containerId && parents.includes(containerId)) {
+              inferredKind = kind;
+              break;
+            }
+          }
+          // A thread's day-child sits under a thread book, not under Threads.
+          if (!inferredKind && parents.length) {
+            const parent = await trilium.getNote(parents[0]!).catch(() => null);
+            if (parent && ownedLabel(parent, "noteType") === "thread") inferredKind = "threadEntry";
+            else if (parent && ownedLabel(parent, "noteType") === "domain") inferredKind = "information";
+          }
+
+          if (inferredKind) {
+            for (const l of labelPlan(inferredKind as Kind, {}, localToday())) {
+              if (!ownedLabel(note, l.name)) {
+                await trilium.addLabel(noteId, l.name, l.value, l.inheritable ?? false).catch(() => null);
+                restored.push(l.value ? `${l.name}=${l.value}` : l.name);
+              }
+            }
+          }
+        }
+      }
+
+      return txt({
+        ok: true,
+        undeleted: noteId,
+        ...(inferredKind ? { kind: inferredKind } : {}),
+        ...(restored.length ? { labelsRestored: restored } : {}),
+        ...(note && !inferredKind
+          ? {
+              warning:
+                "Could not infer this note's kind from its placement, so no #noteType was applied — it is currently INVISIBLE to brain(), recall() and every surface read. " +
+                "Move it under its proper container and re-run, or set the label with add_label.",
+            }
+          : {}),
+      });
     }
   );
 

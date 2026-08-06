@@ -29,6 +29,7 @@ import {
 import {
   normalizeTitle,
   sameTitle,
+  titleKey,
   slugify,
   normalizeIcon,
   toText,
@@ -55,7 +56,7 @@ import {
   duplicateHeadings,
   leadingIdentification,
 } from "./normalize.js";
-import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES } from "./templates.js";
+import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES, isOpenResolutionOnly } from "./templates.js";
 import {
   dedupScope,
   labelPlan,
@@ -257,7 +258,27 @@ export function registerTools(
     const res = await trilium
       .searchNotes(`#noteType=${kind}`, { ancestorNoteId: scope, fastSearch: true, limit: 100 })
       .catch(() => ({ results: [] as Note[] }));
-    return res.results.find((n) => sameTitle(n.title, title)) ?? null;
+    const typedHit = res.results.find((n) => sameTitle(n.title, title));
+    if (typedHit) return typedHit;
+
+    // Title-and-container fallback.
+    //
+    // The typed scan above only sees notes that already carry #noteType, which
+    // means the exact population that needs repairing is the population dedup
+    // cannot see. remember(kind="thread", title="Tracker") against an existing
+    // UNTYPED note titled Tracker returned action:"created" and minted a
+    // duplicate beside it — so the natural repair attempt made the problem
+    // worse. Fall back to matching by title among the container's own children
+    // and adopt an untyped match instead of duplicating it.
+    const container = await trilium.getNote(scope).catch(() => null);
+    if (!container?.childNoteIds?.length) return null;
+    for (const childId of container.childNoteIds) {
+      const child = await trilium.getNote(childId).catch(() => null);
+      if (!child || !sameTitle(child.title, title)) continue;
+      if (ownedLabel(child, "noteType")) continue; // typed and a different kind — genuinely not ours
+      return child;
+    }
+    return null;
   }
 
   /** Append a dated block into a thread's day-child note, creating today's
@@ -919,11 +940,15 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
 
       // Threads carry exactly one Resolution — the bottom section, owned by
       // resolve(). A body smuggling its own is refused before any write.
-      if (kind === "thread" && /<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/i.test(html)) {
+      if (
+        kind === "thread" &&
+        /<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/i.test(html) &&
+        !isOpenResolutionOnly(html)
+      ) {
         return err(
           "structure_violation",
-          "Thread bodies must not carry a Resolution heading — a thread has exactly one Resolution, at the bottom, owned by resolve().",
-          "Remove the Resolution section from the body; close the thread with resolve(noteId, outcome) when the work completes."
+          "Thread bodies must not carry a FILLED or duplicate Resolution — a thread has exactly one Resolution, at the bottom, owned by resolve(). A single empty '— open —' placeholder is the canonical skeleton and is accepted.",
+          "Remove the Resolution content from the body; close the thread with resolve(noteId, outcome) when the work completes."
         );
       }
 
@@ -1049,7 +1074,15 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         const finalHtml = await trilium.getNoteContent(sid).catch(() => "");
         const revisionKeys = tableRows(finalHtml, "Revision").map((cells) => cells[0]).filter(Boolean);
         const placeholderLeft = hasPlaceholderRow(finalHtml, "Revision");
-        const looseProse = wrote && !createdDomain && !!html && !/<(?:ul|ol|li|h[34]|table)\b/i.test(html);
+        // `wrote` is also set by the revision-row upsert below, which runs with
+        // no body at all — and renderBody("") returns "<p></p>", which is
+        // truthy. So `!!html` was true on every revision-only call and this
+        // hint fired nine times in a row claiming a loose block had been
+        // appended when nothing had been. Test emptiness the way the merge
+        // branch above already does (html && toText(html, 50)), and require
+        // that the body write actually happened rather than any write.
+        const bodyWritten = !!html && !!toText(html, 50);
+        const looseProse = bodyWritten && !createdDomain && !/<(?:ul|ol|li|h[34]|table)\b/i.test(html);
 
         return txt({
           action: wrote ? "maintained" : "already_written",
@@ -1317,7 +1350,17 @@ a doubly-escaped tag", "which cite a 2026 date"). Backslashes must be escaped.`,
         return base;
       };
 
-      const noMatch = { note: "No matches. Content may not be stored yet — remember() it if the user provides it." };
+      // A no-match says something about the QUERY first, not about the brain.
+      // The old wording ("Content may not be stored yet — remember() it if the
+      // user provides it") actively pointed the caller at writing a duplicate
+      // of something already stored, which is the worst possible advice from a
+      // memory system's search. Never conclude "not in the brain" from one miss.
+      const noMatch = {
+        note:
+          "No matches for this query. That is evidence about the query, not about the brain — do NOT conclude the content is unstored, and do not remember() it as new. " +
+          "Retry with domain(name) for anything venture- or subject-scoped, recall(query, domain=…) to scope the ranking, or 2-3 content words instead of a sentence. " +
+          "Only treat it as absent once a domain read confirms it.",
+      };
 
       // Regex mode: a body-pattern question, not a keyword one. Answers what
       // keyword search structurally cannot — "which notes still carry a
@@ -1357,18 +1400,39 @@ a doubly-escaped tag", "which cite a 2026 date"). Backslashes must be escaped.`,
         }
       };
 
-      const [byLabel, byTitle, byText] = await Promise.all([
+      // Title matching is OR + per-token scoring, not AND.
+      //
+      // The AND join meant a note scored ZERO from titles unless its title
+      // contained EVERY query token, which is the opposite of what a title is
+      // for. Measured: a note titled exactly "Tool Surface" did not appear in
+      // the top 5 for `tool surface full mode` — "full" and "mode" are not in
+      // its title, so the whole title strategy dropped it, leaving it tied on
+      // full-text weight 1 with every other note mentioning those words and
+      // broken by recency. Scoring each matched token separately, plus a
+      // decisive bonus when the title actually IS the query, makes an exact
+      // title win the way a caller expects.
+      const [byLabel, byTitleRaw, byText] = await Promise.all([
         slug.length >= 3 ? run(`#topic='${slug}' OR #domain='${slug}'`, true) : Promise.resolve([] as Note[]),
-        tokens.length && !fast
-          ? run(tokens.map((t) => `note.title *=* '${escapeQueryValue(t)}'`).join(" AND "))
-          : tokens.length
-          ? run(tokens.map((t) => `note.title *=* '${escapeQueryValue(t)}'`).join(" AND "), true)
+        tokens.length
+          ? run(tokens.map((t) => `note.title *=* '${escapeQueryValue(t)}'`).join(" OR "), fast || undefined)
           : Promise.resolve([] as Note[]),
         fast ? Promise.resolve([] as Note[]) : run(escapeQueryValue(query)),
       ]);
       add(byLabel, 3);
-      add(byTitle, 2);
       add(byText, 1);
+
+      // Per-token title weight (2 each), then an exact/prefix-title bonus.
+      const queryKey = titleKey(query);
+      for (const n of byTitleRaw) {
+        const lowerTitle = n.title.toLowerCase();
+        const hits = tokens.filter((t) => lowerTitle.includes(t)).length;
+        if (!hits) continue;
+        let weight = 2 * hits;
+        const noteKey = titleKey(n.title);
+        if (noteKey === queryKey) weight += 8;              // the title IS the query
+        else if (queryKey.startsWith(noteKey) || noteKey.startsWith(queryKey)) weight += 4;
+        add([n], weight);
+      }
 
       // Fuzzy fallback. Trilium's ~= (fuzzy exact) and ~* (fuzzy contains)
       // tolerate typos and spelling variants — ≥3 characters, edit distance ≤2,
@@ -1710,11 +1774,16 @@ find=; to add content next to a heading without touching its body, use mode="bef
 
         // Threads carry exactly one Resolution, owned by resolve() — refuse an
         // appended body that smuggles its own.
-        if (noteKind === "thread" && mode !== "replace" && /<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/i.test(html)) {
+        if (
+          noteKind === "thread" &&
+          mode !== "replace" &&
+          /<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/i.test(html) &&
+          !isOpenResolutionOnly(html)
+        ) {
           return err(
             "structure_violation",
-            "Thread bodies must not carry a Resolution heading — a thread has exactly one Resolution, at the bottom, owned by resolve().",
-            "Remove the Resolution section from the body; close the thread with resolve(noteId, outcome) when the work completes."
+            "Thread bodies must not carry a FILLED or duplicate Resolution — a thread has exactly one Resolution, at the bottom, owned by resolve(). A single empty '— open —' placeholder is the canonical skeleton and is accepted.",
+            "Remove the Resolution content from the body; close the thread with resolve(noteId, outcome) when the work completes."
           );
         }
 
@@ -1913,8 +1982,47 @@ setting updated itself.`,
     async ({ noteId, name, value, remove }) => {
       if (isContainer(b(), noteId))
         return err("protected_note", `Note ${noteId} is a container — its labels cannot be edited directly.`);
-      if (name === "noteType")
-        return err("protected_label", "noteType defines a note's kind and is owned by remember()/bootstrap() — it cannot be edited directly.", "To change what a note represents, create it fresh with remember() under the right kind.");
+      const noteForGuard = name === "noteType" ? await trilium.getNote(noteId).catch(() => null) : null;
+      if (name === "noteType") {
+        // noteType is never EDITABLE — but it must be REPAIRABLE.
+        //
+        // The blanket refusal was right for changing a kind and wrong for
+        // restoring a missing one. Combined with dedup being blind to untyped
+        // notes, it left no core path back from an untyped note holding real
+        // content: dedup would not find it, and this tool would not type it.
+        // Repairing one required dropping to full-mode add_label. So the guard
+        // now refuses only what it was actually protecting — an existing kind.
+        if (!noteForGuard)
+          return err("not_found", `Note ${noteId} could not be read.`, "Check the noteId.");
+        const existing = ownedLabel(noteForGuard, "noteType");
+        if (existing)
+          return err(
+            "protected_label",
+            `noteType is already set to "${existing}" and defines this note's kind — it cannot be changed.`,
+            "To change what a note represents, create it fresh with remember() under the right kind."
+          );
+        if (remove)
+          return err("protected_label", "noteType cannot be removed — a note without it is invisible to every read path.");
+        if (!value || !(Kinds as readonly string[]).includes(value))
+          return err(
+            "invalid_value",
+            `"${value ?? ""}" is not a valid kind.`,
+            `Repairing an untyped note requires one of: ${Kinds.join(" · ")}`
+          );
+        await trilium.addLabel(noteId, "noteType", value, false);
+        // A repaired note also needs the rest of its label plan, or it is typed
+        // but ages wrongly and reports no dates.
+        const applied: string[] = [`noteType=${value}`];
+        for (const l of labelPlan(value as AnyKind, {}, today())) {
+          if (l.name === "noteType" || ownedLabel(noteForGuard, l.name)) continue;
+          await trilium.addLabel(noteId, l.name, l.value, l.inheritable ?? false).catch(() => null);
+          applied.push(l.value ? `${l.name}=${l.value}` : l.name);
+        }
+        return txt({
+          ok: true, noteId, name, value, action: "repaired", applied,
+          note: "This note was untyped and therefore invisible to brain(), recall() and every surface read. It is now typed and will appear.",
+        });
+      }
 
       const note = await trilium.getNote(noteId);
 
@@ -2025,6 +2133,121 @@ calling twice is safe. Use remove=true to delete an edge.`,
           return txt(path ? { mode, found: true, hops: path.length - 1, path } : { mode, found: false });
         }
       }
+    }
+  );
+
+  server.tool(
+    "consistency",
+    `Cross-note agreement check: take a pattern, find every note that asserts a value for it, and
+report whether they agree.
+
+The brain's hardest failure is not a missing fact — it is the SAME fact recorded differently in
+several notes, where every copy reads as authoritative. Nothing else surfaces that: recall() ranks
+by relevance, maintain() checks structure, and a correction applied to one note leaves its siblings
+silently wrong. This is the check that answers "is what I just corrected still contradicted
+somewhere else".
+
+Pass a regex with ONE capture group naming the value that should agree:
+  consistency("(\\\\d+) Titan mailboxes")            → do all notes agree on the count
+  consistency("founded (?:in )?(\\\\w+ \\\\d{4})")       → do all notes agree on the date
+  consistency("BRAINLLM_MODE[=: ]+(\\\\w+)")          → do all notes agree on the mode
+
+Without a capture group it degrades to a presence check — which notes mention this at all.
+
+Matches STORED HTML, so anchor on what is actually stored (tags and entities), not rendered text.
+Escape backslashes. Scope with domain= or kinds= when the phrase is common.`,
+    {
+      pattern: z.string().describe("Regex over note bodies. One capture group = the value that should agree across notes."),
+      domain: z.string().optional().describe("Restrict to one knowledge domain"),
+      kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds"),
+      includeArchived: z.boolean().optional().describe("Include archived notes (default false)"),
+      limit: z.number().optional().describe("Max notes to examine (default 60)"),
+    },
+    async ({ pattern, domain, kinds, includeArchived, limit }) => {
+      let re: RegExp;
+      try {
+        re = new RegExp(pattern, "gi");
+      } catch (e) {
+        return err("invalid_pattern", `Not a valid regular expression: ${(e as Error).message}`, "Escape backslashes — a JSON string needs \\\\d for \\d.");
+      }
+
+      const max = limit ?? 60;
+      const clauses = [`note.content %= '${escapeQueryValue(pattern)}'`];
+      if (domain) clauses.push(`#domain='${slugify(domain)}'`);
+      const notes = await trilium
+        .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: max, includeArchivedNotes: includeArchived ?? false })
+        .then((r) => r.results)
+        .catch(() => [] as Note[]);
+
+      const scoped = notes.filter((n) => {
+        const kind = ownedLabel(n, "noteType");
+        if (!kind) return false;
+        return !kinds?.length || (kinds as string[]).includes(kind);
+      });
+
+      // Group by the captured value. A note asserting the value more than once
+      // contributes each distinct capture, because a note that contradicts
+      // ITSELF is the same defect at smaller scale.
+      const byValue = new Map<string, Array<{ id: string; title: string; kind: string }>>();
+      const noCapture: Array<{ id: string; title: string; kind: string }> = [];
+      let hasCaptureGroup = false;
+
+      for (const n of scoped) {
+        const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+        if (!content) continue;
+        const stub = { id: n.noteId, title: n.title, kind: ownedLabel(n, "noteType") ?? "" };
+        const seen = new Set<string>();
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        let matched = false;
+        while ((m = re.exec(content)) !== null) {
+          matched = true;
+          if (m.length > 1 && m[1] !== undefined) {
+            hasCaptureGroup = true;
+            const value = toText(m[1], 120).trim() || m[1].trim();
+            if (seen.has(value)) continue;
+            seen.add(value);
+            if (!byValue.has(value)) byValue.set(value, []);
+            byValue.get(value)!.push(stub);
+          }
+          if (m[0] === "") re.lastIndex++; // guard against a zero-width match looping
+        }
+        if (matched && !seen.size) noCapture.push(stub);
+      }
+
+      if (!hasCaptureGroup) {
+        return txt({
+          mode: "presence",
+          pattern,
+          notes: noCapture,
+          total: noCapture.length,
+          note:
+            noCapture.length === 0
+              ? "No note body matched that pattern. Regex runs against stored HTML — anchor on tags and entities, not rendered text."
+              : "The pattern has no capture group, so this is a presence check only. Add one — consistency(\"(\\\\d+) users\") — to compare the values these notes actually assert.",
+        });
+      }
+
+      const groups = [...byValue.entries()]
+        .map(([value, notes]) => ({ value, count: notes.length, notes }))
+        .sort((a, b) => b.count - a.count);
+
+      const agrees = groups.length <= 1;
+      return txt({
+        mode: "consistency",
+        pattern,
+        ...(domain ? { domain: slugify(domain) } : {}),
+        notesExamined: scoped.length,
+        distinctValues: groups.length,
+        agreement: groups.length === 0 ? "no-data" : agrees ? "unanimous" : "DISAGREEMENT",
+        groups,
+        ...(noCapture.length ? { matchedWithoutValue: noCapture } : {}),
+        note: agrees
+          ? groups.length === 0
+            ? "No note asserted a value for that pattern. That is evidence about the pattern, not about the brain — check it against a note you know contains the fact."
+            : `All ${groups[0]!.count} note(s) agree on "${groups[0]!.value}".`
+          : `${groups.length} DIFFERENT values are asserted across ${scoped.length} notes. Establish which is true from evidence, correct every note that disagrees, and wire ~corrects from the note that overturns the old claim — revising in place leaves no trace the wrong value was ever believed.`,
+      });
     }
   );
 
@@ -2373,8 +2596,39 @@ re-wire with connect() first). To undo an archive, use recover().`,
             backlinks,
           });
         }
+
+        // Blast radius. Trilium's delete takes the whole SUBTREE when this is
+        // the last branch, and a cloned note lives in several containers at
+        // once — so a hard delete aimed at one stub can take its children, or
+        // remove a note from a container the caller never mentioned. This is
+        // the only code path in the core surface that destroys content
+        // (verified: the sweep's `deleted` field is never populated, and
+        // neither close() nor generateDailyLog() deletes anything), so it is
+        // the one place worth making the caller look before it fires.
+        const children = note.childNoteIds ?? [];
+        const parents = note.parentNoteIds ?? [];
+        if (children.length > 0 || parents.length > 1) {
+          const childTitles = await Promise.all(
+            children.slice(0, 25).map((id) =>
+              trilium.getNote(id).then((c) => `${c.title} [${id}]`).catch(() => id)
+            )
+          );
+          return txt({
+            blocked: true,
+            why:
+              children.length > 0
+                ? `Hard delete takes the whole subtree — ${children.length} child note(s) would be destroyed with it.`
+                : `This note is cloned into ${parents.length} containers; deleting it removes it from all of them, not just the one you have in mind.`,
+            children: childTitles,
+            parentNoteIds: parents,
+            hint:
+              "Archive instead (omit hard), or delete the children first if losing them is genuinely intended. " +
+              "Threads keep their day-to-day content in threadEntry children, so a thread almost never wants a hard delete.",
+          });
+        }
+
         await trilium.deleteNote(noteId);
-        return txt({ ok: true, deleted: noteId, title: note.title });
+        return txt({ ok: true, deleted: noteId, title: note.title, hardDeleted: true });
       }
 
       if (reason) {
@@ -2858,6 +3112,6 @@ immediately, no restart needed.`,
 
   // ── Full-mode raw surface (opt-in) ───────────────────────────────────────────
   if (mode === "full") {
-    registerAdvancedTools(server, trilium);
+    registerAdvancedTools(server, trilium, brainRef);
   }
 }

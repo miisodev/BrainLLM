@@ -6,7 +6,7 @@
 
 **A persistent, graph-structured second brain for Claude and other LLMs — built on [TriliumNext Notes](https://github.com/TriliumNext/Notes), served over the [Model Context Protocol](https://modelcontextprotocol.io).**
 
-[![Version](https://img.shields.io/badge/version-10.0.0-6d28d9?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-10.1.0-6d28d9?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-f9f1e1?style=flat-square&logo=bun&logoColor=black)](https://bun.sh)
@@ -188,13 +188,13 @@ Every tool declares whether it reads, writes, or destroys, so your client can gr
 
 The classification lives in one reviewable table ([`src/annotations.ts`](./src/annotations.ts)) rather than scattered across registrations, and its default is deliberately unsafe-side: a tool missing from the table is treated as a **write**, never a read, and says so at startup. Three are worth knowing because they look like reads and aren't — `start()` creates today's diary and session stubs, `session()` runs the maintenance sweep, and `graph()` writes the rendered graph note.
 
-### Core — universal verbs (28)
+### Core — universal verbs (29)
 
 | Group | Tools |
 |---|---|
 | Session lifecycle | `start` · `day` · `session` · `remarks` · `close` · `backup` |
 | Writing | `remember` · `diary` · `revise` · `resolve` · `withdraw` · `recover` |
-| Reading & search | `recall` · `domain` · `brain` · `outline` · `inspect` · `template` |
+| Reading & search | `recall` · `domain` · `brain` · `outline` · `inspect` · `template` · `consistency` |
 | Graph | `connect` · `explore` · `graph` |
 | Attachments & labels | `attach` · `detach` · `label` |
 | Maintenance & system | `addendum` · `maintain` · `forget` · `bootstrap` |

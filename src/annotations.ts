@@ -49,6 +49,7 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   inspect: READ,
   template: READ,
   explore: READ,
+  consistency: READ,
   master: READ, master_recall: READ,
   llm: READ, llm_recall: READ,
   memory: READ, memory_recall: READ,

@@ -13,6 +13,32 @@ import type { AnyKind } from "./types.js";
 export const RESOLUTION_ANCHOR = "<h2>Resolution</h2>";
 const OPEN_RESOLUTION = `${RESOLUTION_ANCHOR}\n<p><em>— open —</em></p>`;
 
+/** True when a body carries EXACTLY one Resolution and it is still the empty
+ *  "— open —" placeholder that contentFor() itself writes.
+ *
+ *  The guard on thread writes used to refuse any body containing a Resolution
+ *  heading at all — which meant remember() wrote a structure that revise()
+ *  then refused to accept back, and template("thread") documented a skeleton
+ *  neither path agreed on. A thread created through remember() carried the
+ *  placeholder; a thread repaired through revise() could not be given one, so
+ *  the two diverged structurally. Restoring parity needed full-mode surgery.
+ *
+ *  The guard's real intent is to stop a SECOND Resolution being smuggled in,
+ *  or a FILLED one being written where resolve() should own the outcome. An
+ *  idempotent empty placeholder is structure, not content, so it is allowed. */
+export function isOpenResolutionOnly(html: string): boolean {
+  const headings = html.match(/<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/gi) ?? [];
+  if (headings.length !== 1) return false;
+  const idx = html.search(/<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/i);
+  const after = html
+    .slice(idx)
+    .replace(/<h[2-4](?:\s[^>]*)?>\s*Resolution\s*<\/h[2-4]>/i, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .trim();
+  return after === "" || after === "— open —" || after === "- open -";
+}
+
 function metaLine(parts: Array<string | undefined>): string {
   const cleaned = parts.filter((p): p is string => !!p && p.trim().length > 0);
   return `<p><em>${cleaned.map(escapeHtml).join(" · ")}</em></p>\n<hr>`;
@@ -33,6 +59,35 @@ export const STRUCTURED_SINGLETONS = new Set<AnyKind>([
 
 const hasHeading = (html: string, text: string) =>
   new RegExp(`<h[2-4](?:\\s[^>]*)?>\\s*${text}\\s*</h[2-4]>`, "i").test(html);
+
+/** The sections a note of each kind MUST carry to be structurally complete.
+ *
+ *  The structural lint checked well-formedness — duplicate headings, unbalanced
+ *  tags — and never completeness, so a thread that had lost its Resolution
+ *  section entirely, a Sources note with no Revision table, and an information
+ *  note with no header all passed every check the server had. Each of those is
+ *  mechanically checkable against the skeleton the server already writes, which
+ *  is the point: the shape is server policy, so a note drifting off it is a
+ *  server-detectable defect rather than a matter of taste.
+ *
+ *  Records (diary/session/log/threadEntry) are deliberately absent — they are
+ *  append-only and their shape is per-block, not per-note. */
+export const REQUIRED_SECTIONS: Partial<Record<AnyKind, readonly string[]>> = {
+  thread: ["Context", "Resolution"],
+  sources: ["Sources", "Revision"],
+  biography: ["Overview", "Background", "Present"],
+  goals: ["Near-term", "Long-term"],
+  preferences: ["Communication", "Working style", "Tools and stack"],
+  responsibilities: ["Core", "Current priorities"],
+  protocols: ["Operating", "Self-correction"],
+};
+
+/** Which of a kind's required sections are missing from a body. */
+export function missingSections(kind: AnyKind, html: string): string[] {
+  const required = REQUIRED_SECTIONS[kind];
+  if (!required) return [];
+  return required.filter((section) => !hasHeading(html, section));
+}
 
 /** The enforced structure for a note of a kind. The model supplies content;
  *  this owns the shape. Thread and sources carry the canonical structures
