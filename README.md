@@ -10,7 +10,7 @@ A persistent, graph-structured second brain for Claude and any MCP client — bu
 
 [**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
 
-[![Version](https://img.shields.io/badge/version-10.2.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-10.3.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -192,16 +192,16 @@ Every tool declares whether it reads, writes, or destroys, so your client can gr
 
 The classification lives in one reviewable table ([`src/annotations.ts`](./src/annotations.ts)) rather than scattered across registrations, and its default is deliberately unsafe-side: a tool missing from the table is treated as a **write**, never a read, and says so at startup. Three are worth knowing because they look like reads and aren't — `start()` creates today's diary and session stubs, `session()` runs the maintenance sweep, and `graph()` writes the rendered graph note.
 
-### Core — universal verbs (29)
+### Core — universal verbs (31)
 
 | Group | Tools |
 |---|---|
 | Session lifecycle | `start` · `day` · `session` · `remarks` · `close` · `backup` |
 | Writing | `remember` · `diary` · `revise` · `resolve` · `withdraw` · `recover` |
-| Reading & search | `recall` · `domain` · `brain` · `outline` · `inspect` · `template` · `consistency` |
+| Reading & search | `recall` · `domain` · `brain` · `outline` · `inspect` · `diff` · `template` · `consistency` |
 | Graph | `connect` · `explore` · `graph` |
 | Attachments & labels | `attach` · `detach` · `label` |
-| Maintenance & system | `addendum` · `maintain` · `forget` · `bootstrap` |
+| Maintenance & system | `addendum` · `maintain` · `claim` · `forget` · `bootstrap` |
 
 ### Core — surface reads (10, dual-mode)
 
