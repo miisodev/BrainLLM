@@ -34,6 +34,8 @@ import {
   normalizeIcon,
   toText,
   escapeQueryValue,
+  escapeQueryRegex,
+  stripTagsWithMap,
   queryTokens,
   escapeHtml,
   sanitizeHtml,
@@ -926,6 +928,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       })).optional().describe("kind=sources only: upsert Revision-table rows by source name — re-verifying a source replaces its existing row's Marker/Date in place instead of appending a new one"),
       topics: z.array(z.string()).optional().describe("Topic tags — slugged server-side"),
       supersedes: z.string().optional().describe("noteId this replaces — old note is archived and wired supersedes"),
+      mustCreate: z.boolean().optional().describe("Refuse instead of adopting an existing note when the title already exists — turns a silent overwrite on a generic title (Current State, Sources, Technology Stack) into a catchable error"),
       connect: z.array(z.object({
         relation: z.enum(RelationTypes),
         toNoteId: z.string(),
@@ -933,7 +936,23 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name ("brain"); normalized server-side'),
       date: z.string().optional().describe("ISO date override (default: today)"),
     },
-    async ({ kind, title, body, goal, identity, domain, revision, topics, supersedes, connect: connectRels, icon, date }) => {
+    async ({ kind, title, body, goal, identity, domain, revision, topics, supersedes, mustCreate, connect: connectRels, icon, date }) => {
+      /** mustCreate turns adoption into a refusal.
+       *
+       *  Dedup-by-title is what makes remember() idempotent, and it is also a
+       *  loaded weapon: "Current State", "Sources", "Technology Stack" and
+       *  "Product and Business" each exist in four or more domains, so a caller
+       *  that believes it is creating a note can silently REPLACE one. That is
+       *  not hypothetical — it cost an 8,259-byte note, recovered from a
+       *  revision only because someone checked. The receipt said action:
+       *  "updated" and nothing was wrong with it; the caller simply was not
+       *  expecting to have written over anything. */
+      const refuseAdoption = (existingId: string, existingTitle: string, where: string) =>
+        err(
+          "already_exists",
+          `A ${kind} note titled "${existingTitle}" already exists ${where} [${existingId}] — mustCreate=true refuses to adopt it.`,
+          `Read it first with ${kind === "thread" ? "memory" : "knowledge"}(${existingId}). To add to it deliberately, re-run without mustCreate, or use revise(${existingId}, …). To keep both, pick a title that distinguishes them.`
+        );
       const opts: RememberOpts = { domain, topics, date };
       const d = date ?? today();
       const { html, warnings: sanitizeWarnings } = renderBody(body ?? "");
@@ -1116,6 +1135,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           .searchNotes("#noteType=information", { ancestorNoteId: domainId, fastSearch: true, limit: 100 })
           .catch(() => ({ results: [] as Note[] }));
         const existing = inDomain.results.find((n) => sameTitle(n.title, subTitle));
+        if (existing && mustCreate) return refuseAdoption(existing.noteId, existing.title, `in domain "${domainTitle}"`);
         if (existing) {
           const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
           if (isDuplicateAppend(current, html)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title, domainId });
@@ -1167,6 +1187,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         return err("missing_param", `kind="${kind}" requires a title.`, 'Add title="<note title>" to your call.');
 
       const existing = await findExisting(kind, cleanTitle);
+      if (existing && mustCreate) return refuseAdoption(existing.noteId, existing.title, `in ${KIND_AREA[kind] ?? "the brain"}`);
       if (existing) {
         // Canonical thread structure: every addendum block opens with the
         // identification line (h3). Enforced on thread appends.
@@ -1393,27 +1414,42 @@ a doubly-escaped tag", "which cite a 2026 date"). Backslashes must be escaped.`,
           );
         }
 
-        const candidates = (await run(`note.content %= '${escapeQueryValue(regex)}'`)).filter(filterNote);
+        // escapeQueryRegex, not escapeQueryValue: the latter replaces every
+        // backslash with a SPACE, so "(\d+)" reached the backend as "( d+)"
+        // and returned nothing — a silent empty sweep on the tool whose whole
+        // job is proving a claim has not leaked. Trilium's lexer also consumes
+        // one level of escaping, so backslashes are doubled on the way out.
+        const candidates = (await run(`note.content %= '${escapeQueryRegex(regex)}'`)).filter(filterNote);
         const confirmed: Note[] = [];
         let rejected = 0;
+        let tagSpanning = 0;
         for (const n of candidates) {
           if (confirmed.length >= max) break;
           const content = await trilium.getNoteContent(n.noteId).catch(() => "");
-          if (content && re.test(content)) confirmed.push(n);
-          else rejected++;
+          if (!content) { rejected++; continue; }
+          // Verify against the raw body AND a tag-stripped projection: the
+          // backend matches a striptags'd copy, so a phrase broken by an
+          // inline <strong> or <code> is a real hit that raw-only checking
+          // would have thrown away as a false positive.
+          const rawHit = re.test(content);
+          const projectedHit = !rawHit && re.test(stripTagsWithMap(content).text);
+          if (rawHit || projectedHit) {
+            if (projectedHit) tagSpanning++;
+            confirmed.push(n);
+          } else rejected++;
         }
 
         const results = await Promise.all(confirmed.map(buildResult));
+        const notes = [
+          rejected ? `${rejected} backend candidate(s) did not actually match the pattern and were dropped — results are verified against the real regex, not just the search index.` : null,
+          tagSpanning ? `${tagSpanning} match(es) were found only after stripping markup — the phrase is split by an inline tag there.` : null,
+          results.length === 0 ? "No bodies matched that pattern, searched both as stored HTML and tag-stripped. Note that Trilium's %= pre-filter reads a striptags'd copy, so a pattern anchored ON tags may never reach verification — consistency() scans exhaustively if you need certainty." : null,
+        ].filter(Boolean);
         return txt({
           mode: "regex",
           pattern: regex,
           results,
-          ...(rejected
-            ? { note: `${rejected} backend candidate(s) did not actually match the pattern and were dropped — results are verified against the real regex, not just the search index.` }
-            : {}),
-          ...(results.length === 0
-            ? { note: "No bodies matched that pattern. Regex runs against stored HTML, so anchor on what is actually stored (tags and entities), not on rendered text." }
-            : {}),
+          ...(notes.length ? { note: notes.join(" ") } : {}),
         });
       }
 
@@ -2191,16 +2227,23 @@ Pass a regex with ONE capture group naming the value that should agree:
 
 Without a capture group it degrades to a presence check — which notes mention this at all.
 
-Matches STORED HTML, so anchor on what is actually stored (tags and entities), not rendered text.
-Escape backslashes. Scope with domain= or kinds= when the phrase is common.`,
+Matched against BOTH the stored HTML and a tag-stripped projection of it, so a phrase split by an
+inline <strong> or <code> tag is found, and so is a pattern deliberately anchored on tags.
+Escape backslashes. Scope with domain= or kinds= when the phrase is common.
+
+Scans every in-scope note by default. Trilium's %= backend filter is a LOSSY pre-filter — it
+reads a striptags'd copy of the content, so it drops notes this tool should examine — and on a
+contradiction sweep a falsely clean result is worse than a slow one. Pass fast=true to use it
+anyway when scope is wide and speed matters more than completeness.`,
     {
       pattern: z.string().describe("Regex over note bodies. One capture group = the value that should agree across notes."),
       domain: z.string().optional().describe("Restrict to one knowledge domain"),
       kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds"),
       includeArchived: z.boolean().optional().describe("Include archived notes (default false)"),
       limit: z.number().optional().describe("Max notes to examine (default 60)"),
+      fast: z.boolean().optional().describe("Pre-filter candidates with Trilium's %= operator — faster, but its striptags'd corpus silently drops notes (default: false, scan every in-scope note)"),
     },
-    async ({ pattern, domain, kinds, includeArchived, limit }) => {
+    async ({ pattern, domain, kinds, includeArchived, limit, fast }) => {
       let re: RegExp;
       try {
         re = new RegExp(pattern, "gi");
@@ -2209,7 +2252,13 @@ Escape backslashes. Scope with domain= or kinds= when the phrase is common.`,
       }
 
       const max = limit ?? 60;
-      const clauses = [`note.content %= '${escapeQueryValue(pattern)}'`];
+      // Candidate acquisition. The %= pre-filter is opt-in because it is lossy
+      // in BOTH directions: Trilium matches a striptags'd copy, so a pattern
+      // anchored on tags returns nothing, and its lexer eats a level of
+      // backslash escaping (hence escapeQueryRegex, which doubles them —
+      // escapeQueryValue used to replace each backslash with a SPACE, quietly
+      // rewriting the regex before the backend ever saw it).
+      const clauses = fast ? [`note.content %= '${escapeQueryRegex(pattern)}'`] : ["#noteType"];
       if (domain) clauses.push(`#domain='${slugify(domain)}'`);
       const notes = await trilium
         .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: max, includeArchivedNotes: includeArchived ?? false })
@@ -2229,46 +2278,66 @@ Escape backslashes. Scope with domain= or kinds= when the phrase is common.`,
       const noCapture: Array<{ id: string; title: string; kind: string }> = [];
       let hasCaptureGroup = false;
 
+      /** Run the pattern over one corpus, returning every captured value and
+       *  whether the pattern matched at all.
+       *
+       *  Takes the first group that actually captured, not group 1. An
+       *  alternation puts the value in whichever branch matched, so
+       *  `a([0-9]+)|b([0-9]+)` leaves m[1] undefined whenever the second branch
+       *  wins — and reading only m[1] made the whole call silently degrade to
+       *  presence mode and report "the pattern has no capture group" about a
+       *  pattern that plainly has two. */
+      const scan = (haystack: string): { values: string[]; matched: boolean } => {
+        const values: string[] = [];
+        let matched = false;
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(haystack)) !== null) {
+          matched = true;
+          const captured = m.slice(1).find((g) => g !== undefined);
+          if (captured !== undefined) values.push(toText(captured, 120).trim() || captured.trim());
+          if (m[0] === "") re.lastIndex++; // guard against a zero-width match looping
+        }
+        return { values, matched };
+      };
+
+      let tagSpanning = 0;
       for (const n of scoped) {
         const content = await trilium.getNoteContent(n.noteId).catch(() => "");
         if (!content) continue;
         const stub = { id: n.noteId, title: n.title, kind: ownedLabel(n, "noteType") ?? "" };
+
+        // Two corpora, unioned: the raw stored body (so a pattern anchored on
+        // tags or entities still works) and a tag-stripped projection (so a
+        // phrase broken by an inline <strong> or <code> is not invisible).
+        // Matching only the raw body is what made a split phrase report zero
+        // with no warning that the regex could not traverse markup.
+        const raw = scan(content);
+        const projected = scan(stripTagsWithMap(content).text);
+        if (projected.matched && !raw.matched) tagSpanning++;
+
         const seen = new Set<string>();
-        re.lastIndex = 0;
-        let m: RegExpExecArray | null;
-        let matched = false;
-        while ((m = re.exec(content)) !== null) {
-          matched = true;
-          // Take the first group that actually captured, not group 1.
-          //
-          // An alternation puts the value in whichever branch matched, so
-          // `a([0-9]+)|b([0-9]+)` leaves m[1] undefined whenever the second
-          // branch wins — and reading only m[1] made the whole call silently
-          // degrade to presence mode and report "the pattern has no capture
-          // group" about a pattern that plainly has two.
-          const captured = m.slice(1).find((g) => g !== undefined);
-          if (captured !== undefined) {
-            hasCaptureGroup = true;
-            const value = toText(captured, 120).trim() || captured.trim();
-            if (seen.has(value)) continue;
-            seen.add(value);
-            if (!byValue.has(value)) byValue.set(value, []);
-            byValue.get(value)!.push(stub);
-          }
-          if (m[0] === "") re.lastIndex++; // guard against a zero-width match looping
+        for (const value of [...raw.values, ...projected.values]) {
+          hasCaptureGroup = true;
+          if (seen.has(value)) continue;
+          seen.add(value);
+          if (!byValue.has(value)) byValue.set(value, []);
+          byValue.get(value)!.push(stub);
         }
-        if (matched && !seen.size) noCapture.push(stub);
+        if ((raw.matched || projected.matched) && !seen.size) noCapture.push(stub);
       }
 
       if (!hasCaptureGroup) {
         return txt({
           mode: "presence",
           pattern,
+          scan: fast ? "fast (%= pre-filter)" : "exhaustive",
+          notesExamined: scoped.length,
           notes: noCapture,
           total: noCapture.length,
           note:
             noCapture.length === 0
-              ? "No note body matched that pattern. Regex runs against stored HTML — anchor on tags and entities, not rendered text."
+              ? `No note body matched that pattern across ${scoped.length} note(s), searched both as stored HTML and tag-stripped.${fast ? " fast=true used Trilium's %= pre-filter, which reads a striptags'd copy and can drop notes — re-run without it before concluding anything." : " That is evidence about the pattern, not the brain."}`
               : "The pattern has no capture group, so this is a presence check only. Add one — consistency(\"(\\\\d+) users\") — to compare the values these notes actually assert.",
         });
       }
@@ -2281,8 +2350,10 @@ Escape backslashes. Scope with domain= or kinds= when the phrase is common.`,
       return txt({
         mode: "consistency",
         pattern,
+        scan: fast ? "fast (%= pre-filter)" : "exhaustive",
         ...(domain ? { domain: slugify(domain) } : {}),
         notesExamined: scoped.length,
+        ...(tagSpanning ? { tagSpanning, tagSpanningNote: `${tagSpanning} note(s) matched only once markup was stripped — the phrase is split by an inline tag there. Before v10.3 those were invisible.` } : {}),
         distinctValues: groups.length,
         agreement: groups.length === 0 ? "no-data" : agrees ? "unanimous" : "DISAGREEMENT",
         groups,
@@ -2597,20 +2668,29 @@ domain="<name>" narrows the deep passes to one domain's notes — the equivalent
 scoping addendum() already has, so a scoped agent's flags arrive in its own lane instead of it
 re-deriving each run that the cross-venture findings belong to someone else.
 
+repair=[noteId, …] fixes an entity-corrupted body in place instead of reporting it: one level of
+double-escaping is unwound ("&amp;lt;" → "&lt;", "&amp;nbsp;" → "&nbsp;"), with a revision taken
+first. The substitution is always the same one, so it is a first-class action rather than
+something each caller reinvents with revise(mode="replace"). Compose with dryRun to see the
+outcome without writing. A note that DOCUMENTS the signature rather than carrying it comes back
+unchanged and is reported as such — ack= those.
+
 coverage names any pass that hit a cap, so a short list is never mistaken for a clean one.`,
     {
       deep: z.boolean().optional().describe("Deep pass: stale-review + orphan/sink + structural lint + duplicate titles across Memory/Threads and Knowledge (default: false)"),
       dryRun: z.boolean().optional().describe("Report what would change without changing it"),
       domain: z.string().optional().describe("Narrow the deep passes to one domain's notes (slugged server-side) — for scoped agents working a single lane"),
       ack: z.array(z.string()).optional().describe("Note ids to mark reviewed-and-correct — suppresses their findings until the note's content changes"),
+      repair: z.array(z.string()).optional().describe("Note ids to auto-repair entity corruption on — unwinds one level of double-escaping, revision taken first"),
     },
-    async ({ deep, dryRun, domain, ack }) => {
+    async ({ deep, dryRun, domain, ack, repair }) => {
       await markStep("maintain");
       const report = await sweep(trilium, b(), {
         deep: deep ?? false,
         dryRun: dryRun ?? false,
         ...(domain ? { domain } : {}),
         ...(ack?.length ? { ack } : {}),
+        ...(repair?.length ? { repair } : {}),
       });
       return txt(report);
     }
@@ -3038,12 +3118,21 @@ Structural containers are excluded; only content notes appear.`,
           .catch(() => []);
       };
 
+      // parent is not decoration — it is the field whose absence caused a real
+      // data loss. Each group below is a FLAT list of every descendant, so a
+      // domain book and its information/sources children arrive interleaved
+      // with nothing distinguishing them; the sequence LOOKS nested and is not.
+      // An audit read that ordering, concluded a domain held only a Sources
+      // note, and wrote a replacement whose generic title ("Current State")
+      // deduped onto the real note and overwrote it. The value was already
+      // loaded on every note in the result — it was simply never read.
       const row = (n: Note) => {
         const relations = relationSnippet(n);
         return {
           id: n.noteId,
           title: n.title,
           kind: labelOf(n, "noteType"),
+          parent: n.parentNoteIds?.[0],
           status: labelOf(n, "status") ?? undefined,
           created: labelOf(n, "created") ?? n.dateCreated.slice(0, 10),
           modified: n.dateModified.slice(0, 10),

@@ -41,7 +41,10 @@ export function isOpenResolutionOnly(html: string): boolean {
 
 function metaLine(parts: Array<string | undefined>): string {
   const cleaned = parts.filter((p): p is string => !!p && p.trim().length > 0);
-  return `<p><em>${cleaned.map(escapeHtml).join(" · ")}</em></p>\n<hr>`;
+  // Explicit arrow, not a point-free `.map(escapeHtml)`: escapeHtml now takes a
+  // second parameter, and map would hand it the array index — escaping the
+  // first part one way and every other part the other.
+  return `<p><em>${cleaned.map((p) => escapeHtml(p)).join(" · ")}</em></p>\n<hr>`;
 }
 
 export interface TemplateOpts {

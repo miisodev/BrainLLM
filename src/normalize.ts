@@ -39,9 +39,30 @@ export function decodeEntities(s: string): string {
   return prev;
 }
 
-export function escapeHtml(s: string): string {
+/** Escape text for embedding in HTML.
+ *
+ *  `preserveEntities` (the default) leaves an ALREADY well-formed entity alone
+ *  rather than escaping its ampersand a second time. This is the producer side
+ *  of the entity-corruption defect, and it is why that defect kept recurring
+ *  after being declared fixed: every paragraph, heading, list item and table
+ *  cell taking the markdown path in toHtml() runs through here, so a body
+ *  carrying "&nbsp;" copied out of a prior read — or a stray "&lt;", or a URL
+ *  with an ampersand — was stored as "&amp;nbsp;" and rendered as visible
+ *  literal text. The 09 Aug work hardened looksLikeEncodedHtml() and
+ *  decodeEncodedHtml(), which are the DETECTOR and the REPAIRER; the producer
+ *  was never touched. The guard below is the same one decodeEncodedHtml()
+ *  already used, one function away.
+ *
+ *  Preserving an entity is also the safe direction: "&lt;script&gt;" survives
+ *  as those characters and renders as literal text, it does not become a tag —
+ *  and sanitizeHtml() still runs downstream regardless.
+ *
+ *  Pass preserveEntities=false for fenced code blocks, where the content is
+ *  literal by definition and an author writing "&amp;" means those five
+ *  characters. */
+export function escapeHtml(s: string, preserveEntities = true): string {
   return s
-    .replace(/&/g, "&amp;")
+    .replace(preserveEntities ? /&(?![a-zA-Z][a-zA-Z0-9]*;|#\d+;|#x[0-9a-fA-F]+;)/g : /&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
@@ -182,6 +203,25 @@ export function decodeEncodedHtml(body: string): string {
   return s.replace(/&(?![a-zA-Z]+;|#\d+;|#x[0-9a-fA-F]+;)/g, "&amp;");
 }
 
+/** Unwind exactly ONE level of double-escaping from a stored body.
+ *
+ *  "&amp;lt;h2&amp;gt;" becomes "&lt;h2&gt;" and "&amp;nbsp;" becomes "&nbsp;" —
+ *  the entity the author wrote, rendering as the character they meant, rather
+ *  than as visible literal text. The substitution is always the same one, which
+ *  is exactly why it belongs here instead of being reinvented by every caller
+ *  that maintain() hands a flag to.
+ *
+ *  One level only, and deliberately: repeating until stable would turn a body
+ *  legitimately DOCUMENTING the "&amp;lt;" signature into real markup, which is
+ *  a worse outcome than leaving damage in place. A body needing two passes gets
+ *  two explicit calls. */
+export function repairDoubleEscaping(html: string): string {
+  return html.replace(
+    /&amp;((?:[a-zA-Z][a-zA-Z0-9]*|#\d+|#x[0-9a-fA-F]+);)/g,
+    (_, entity) => `&${entity}`
+  );
+}
+
 function inlineMd(escaped: string): string {
   return escaped
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
@@ -243,7 +283,7 @@ export function toHtml(body: string): string {
   for (const line of lines) {
     if (code !== null) {
       if (/^```/.test(line)) {
-        out.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+        out.push(`<pre><code>${escapeHtml(code.join("\n"), false)}</code></pre>`);
         code = null;
       } else {
         code.push(line);
@@ -290,7 +330,7 @@ export function toHtml(body: string): string {
     flushList();
     para.push(line.trim());
   }
-  if (code !== null) out.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+  if (code !== null) out.push(`<pre><code>${escapeHtml(code.join("\n"), false)}</code></pre>`);
   flushTable();
   flushPara(); flushList();
 
@@ -316,9 +356,81 @@ export function toText(html: string, maxLength = 300): string {
   return (lastSpace > maxLength * 0.6 ? cut.slice(0, lastSpace) : cut) + "…";
 }
 
-/** Escape a value for embedding inside a quoted Trilium search string. */
+export interface StrippedText {
+  /** The body with tags removed and entities decoded. */
+  text: string;
+  /** map[i] is the index in the ORIGINAL html of text[i] — so a match found in
+   *  the projection can be reported against the stored body it came from. */
+  map: number[];
+}
+
+/** Tags that imply a word boundary: their removal must leave a space behind, or
+ *  "<p>foo</p><p>bar</p>" projects to "foobar" and matches a phrase that was
+ *  never written. Inline tags leave nothing, so "Brain<strong>LLM</strong>"
+ *  projects to "BrainLLM" — which is the whole point of the projection. */
+const BLOCK_BOUNDARY = /^<\/?(?:p|div|h[1-6]|li|ul|ol|tr|td|th|table|thead|tbody|blockquote|pre|hr|br|section|figure|figcaption)\b/i;
+
+/** Project stored HTML onto plain text, keeping an index map back to the
+ *  original.
+ *
+ *  Regex tools matched the raw stored body while Trilium's `%=` matched content
+ *  that its own preprocessor had already put through striptags — two different
+ *  documents behind one query, failing in both directions. A phrase split by a
+ *  <strong> or <code> tag is found by the backend and then silently dropped
+ *  client-side; a pattern anchored ON tags never enters the candidate set at
+ *  all. Matching against BOTH this projection and the raw body closes the gap
+ *  without giving up the ability to search markup. */
+export function stripTagsWithMap(html: string): StrippedText {
+  const chars: string[] = [];
+  const map: number[] = [];
+  const emit = (s: string, at: number) => {
+    for (const ch of s) { chars.push(ch); map.push(at); }
+  };
+
+  const token = /<[^>]*>|&(?:[a-zA-Z][a-zA-Z0-9]*|#\d+|#x[0-9a-fA-F]+);/g;
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = token.exec(html)) !== null) {
+    for (let i = cursor; i < m.index; i++) { chars.push(html[i]!); map.push(i); }
+    if (m[0].startsWith("<")) {
+      if (BLOCK_BOUNDARY.test(m[0])) emit(" ", m.index);
+    } else {
+      const decoded = decodeEntitiesOnce(m[0]);
+      emit(decoded === m[0] ? m[0] : decoded, m.index);
+    }
+    cursor = m.index + m[0].length;
+  }
+  for (let i = cursor; i < html.length; i++) { chars.push(html[i]!); map.push(i); }
+
+  return { text: chars.join(""), map };
+}
+
+/** Escape a value for embedding inside a quoted Trilium search string.
+ *
+ *  Lossy by design — it flattens a free-text VALUE (a title, a token) so it
+ *  cannot break out of the quotes. Never use it on a regex: it replaces every
+ *  backslash with a space. See escapeQueryRegex(). */
 export function escapeQueryValue(s: string): string {
   return s.replace(/["\\]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Escape a REGEX for embedding inside a single-quoted Trilium search string.
+ *
+ *  escapeQueryValue() replaces every backslash with a space, so routing a
+ *  pattern through it silently rewrote the regex before the backend ever saw
+ *  it: "(\d+) migrations" arrived as "( d+) migrations" and matched nothing,
+ *  while "([0-9]+) migrations" found the real answer. A zero-result run of a
+ *  contradiction sweep reads as "the brain agrees" — the exact opposite of the
+ *  truth — so this was a silent wrong answer, not a failed call.
+ *
+ *  Trilium itself is not the problem: `%=` compiles the string with
+ *  `new RegExp(str, "ms")` and supports \d fine. But its LEXER consumes one
+ *  level of backslash escaping even inside quotes (lex.ts treats "\" as an
+ *  escape character unconditionally), so a literal backslash must be DOUBLED
+ *  on the way out, not merely preserved. Single quotes are escaped for the
+ *  same reason — they would otherwise close the token early. */
+export function escapeQueryRegex(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 /** Tokenize a recall query into significant search terms. */
