@@ -43,6 +43,7 @@ export const Kinds = [
   "sources",          // the per-domain sources note
   // Insights — the brain's record of itself
   "log",              // dated, auto-generated change log under Insights/logs
+  "claim",            // a checkable assertion under Insights/claims — see claim()
 ] as const;
 
 export type Kind = (typeof Kinds)[number];
@@ -56,7 +57,7 @@ export const KIND_AREA: Record<Kind, Area> = {
   responsibilities: "llm", protocols: "llm", diary: "llm",
   session: "memory", thread: "memory", threadEntry: "memory",
   user: "knowledge", domain: "knowledge", information: "knowledge", sources: "knowledge",
-  log: "insights",
+  log: "insights", claim: "insights",
 };
 
 // Singletons — exactly one maintained note exists; writes upsert into it instead

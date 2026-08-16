@@ -63,6 +63,7 @@ export function kindHome(cfg: BrainLLMConfig, kind: AnyKind): string {
     case "information":      return ""; // domain-resolved
     case "sources":          return ""; // domain-resolved
     case "log":              return cfg.insights.logs;
+    case "claim":            return ""; // container resolved on demand — see resolveClaimsContainer() in tools.ts
   }
 }
 
@@ -205,5 +206,6 @@ export function locationLabel(kind: AnyKind, domainTitle?: string): string {
     case "information":      return `Knowledge → Domains → ${domainTitle ?? "General"}`;
     case "sources":          return `Knowledge → Domains → ${domainTitle ?? "General"} → Sources`;
     case "log":              return "Insights → Logs";
+    case "claim":            return "Insights → Claims";
   }
 }
