@@ -81,7 +81,6 @@ import { registerLlmTools } from "./tools-llm.js";
 import { registerMemoryTools } from "./tools-memory.js";
 import { registerKnowledgeTools } from "./tools-knowledge.js";
 import { registerInsightsTools } from "./tools-insights.js";
-import { registerAdvancedTools } from "./tools-advanced.js";
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -132,11 +131,20 @@ function isDuplicateAppend(current: string, incomingHtml: string): boolean {
 
 // ── Registration ──────────────────────────────────────────────────────────────
 
+/** Register the CORE surface: the universal verbs plus the ten dual-mode
+ *  surface reads.
+ *
+ *  Core only. The raw ETAPI tools live in tools-advanced.ts and are registered
+ *  by the caller — this function used to take a `mode` flag and reach into that
+ *  module itself, which made "core" and "full" one tangled surface with the
+ *  boundary expressed as a boolean halfway down a 3,800-line file. Composing
+ *  them at the call site makes the split structural: what a mode contains is
+ *  visible where the decision is made, and the two sets cannot silently overlap
+ *  the way they did when both paths could register the same tool. */
 export function registerTools(
   server: McpServer,
   trilium: TriliumClient,
-  brainRef: { config: BrainLLMConfig },
-  mode: "core" | "full" = "core"
+  brainRef: { config: BrainLLMConfig }
 ): void {
   const b = () => brainRef.config;
 
@@ -3861,9 +3869,4 @@ immediately, no restart needed.`,
   registerMemoryTools(server, trilium, brainRef);
   registerKnowledgeTools(server, trilium, brainRef);
   registerInsightsTools(server, trilium, brainRef);
-
-  // ── Full-mode raw surface (opt-in) ───────────────────────────────────────────
-  if (mode === "full") {
-    registerAdvancedTools(server, trilium, brainRef);
-  }
 }

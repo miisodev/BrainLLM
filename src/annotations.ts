@@ -50,6 +50,8 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   template: READ,
   explore: READ,
   consistency: READ,
+  assembly: READ,
+  diff: READ,             // reads a revision snapshot and current content; takes none
   master: READ, master_recall: READ,
   llm: READ, llm_recall: READ,
   memory: READ, memory_recall: READ,
@@ -66,6 +68,14 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   graph: WRITE,
   maintain: WRITE,
   addendum: READ,         // searches and reports; the merging is done by revise
+  // claim() is mode-inferred, and its modes disagree: listing and reading write
+  // nothing, registering is idempotent (deduped by assertion), and recording a
+  // verification appends a dated line every time. A tool gets one annotation,
+  // so it takes the weakest guarantee any of its modes can honour — APPEND
+  // rather than WRITE, because a second verify call really is a second effect.
+  // Classifying it by its cheapest mode would be the mistake this table exists
+  // to prevent.
+  claim: APPEND,
   remember: WRITE,
   diary: APPEND,
   revise: WRITE,
