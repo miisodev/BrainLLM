@@ -11,7 +11,7 @@
 import { type TriliumClient, type Note, ownedLabel, relationSnippet, type RelationEdge } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import type { AnyKind } from "./types.js";
-import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, escapeQueryRegex, repairDoubleEscaping, LARGE_NOTE_CHARS } from "./normalize.js";
+import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, sectionProfile, escapeQueryRegex, repairDoubleEscaping, LARGE_NOTE_CHARS } from "./normalize.js";
 import { RESOLUTION_ANCHOR, missingSections } from "./templates.js";
 import { localToday } from "./time.js";
 
@@ -76,6 +76,9 @@ export interface SweepReport {
   /** Passes that hit a cap — what was NOT looked at, stated rather than implied
    *  by a short list. */
   coverage?: string[];
+  /** What to do with a flag that belongs to another lane — present on an
+   *  unscoped deep run that produced findings. */
+  laneHint?: string;
   dryRun: boolean;
   policy: { dormantAfterDays: number; archiveDormantAfterDays: number; staleAfterDays: number };
 }
@@ -95,6 +98,17 @@ function reviewKey(n: Note): string {
  *  costs one content fetch each; the cap is reported when reached rather than
  *  silently truncating the findings. */
 const STRUCTURE_LINT_LIMIT = 40;
+
+/** Past this many sections, choosing the right heading is the failure mode —
+ *  outline() stops being optional. */
+const SECTION_EDIT_RISK_COUNT = 25;
+
+/** Past this, one section= replace destroys more than a caller pictures. */
+const SECTION_EDIT_RISK_CHARS = 8000;
+
+/** Singletons served in full even at digest depth — the two a session must have
+ *  whole to orient from its first message. See readSlot() for the reasoning. */
+const ALWAYS_FULL_SLOTS = new Set(["preferences", "protocols"]);
 
 /** The V10 maintenance sweep.
  *  Lite (auto, inside start/close): age stale threads + unlabeled-node check.
@@ -487,6 +501,27 @@ export async function sweep(
     if (structure.unbalancedTags.length) {
       report.flagged.push(`unbalanced tags: ${n.title} [${n.noteId}] — <${structure.unbalancedTags.join(">, <")}> left open; the next write will auto-close them, or fix now with revise(mode=replace)`);
     }
+
+    // Has this note outgrown safe section-targeted editing? A different
+    // question from "can it be read whole", and it goes wrong earlier: picking
+    // the right heading out of thirty is where the mistake happens, and a
+    // replace on a section holding a third of the note destroys far more than
+    // the caller pictured. The read-ceiling warning catches neither.
+    const profile = sectionProfile(content);
+    const biggest = profile.largest[0];
+    const crowded = profile.count >= SECTION_EDIT_RISK_COUNT;
+    const lopsided = !!biggest && biggest.chars >= SECTION_EDIT_RISK_CHARS;
+    if (crowded || lopsided) {
+      const reasons = [
+        crowded ? `${profile.count} sections` : null,
+        lopsided ? `largest is '${biggest!.text}' at ${Math.round(biggest!.chars / 1000)}k characters` : null,
+        profile.ambiguous.length ? `${profile.ambiguous.length} heading text(s) repeated ('${profile.ambiguous.slice(0, 3).join("', '")}') — those need occurrence= to target` : null,
+      ].filter(Boolean);
+      report.flagged.push(
+        `section-edit-risk: ${n.title} [${n.noteId}] — ${reasons.join("; ")}. ` +
+        `Read outline(${n.noteId}) before any section= edit here, prefer find= for anything smaller than a section, and consider splitting the note.`
+      );
+    }
   }
 
   // ── Deep: hygiene passes ────────────────────────────────────────────────────
@@ -570,6 +605,22 @@ export async function sweep(
           if (!byDomain.has(domSlug)) byDomain.set(domSlug, []);
           byDomain.get(domSlug)!.push(n);
         }
+        // Heading sets, fetched once per note and only for notes that actually
+        // land in a flagged pair. A shared title token says two notes MIGHT be
+        // about one subject; their heading sets are what says whether they are.
+        // Without them the flag gave nothing to judge on, so callers ack'd from
+        // relation shape or reputation instead of reading either body — which is
+        // acking a finding without evaluating it, the exact habit ack= exists to
+        // avoid.
+        const headingCache = new Map<string, string[]>();
+        const headingsOf = async (n: Note): Promise<string[]> => {
+          if (!headingCache.has(n.noteId)) {
+            const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+            headingCache.set(n.noteId, headingOutline(content).filter((h) => h.level <= 3).map((h) => h.text));
+          }
+          return headingCache.get(n.noteId)!;
+        };
+
         for (const [domSlug, notes] of byDomain) {
           const reported = new Set<string>();
           for (let i = 0; i < notes.length; i++) {
@@ -581,10 +632,17 @@ export async function sweep(
               const pairKey = [a.noteId, bn.noteId].sort().join("|");
               if (reported.has(pairKey)) continue;
               reported.add(pairKey);
+
+              const [ha, hb] = await Promise.all([headingsOf(a), headingsOf(bn)]);
+              const overlap = ha.filter((h) => hb.some((x) => x.toLowerCase() === h.toLowerCase()));
+              const show = (h: string[]) => (h.length ? h.slice(0, 8).join(" · ") + (h.length > 8 ? " · …" : "") : "(no headings)");
+
               report.flagged.push(
                 `near-duplicate subject: '${a.title}' [${a.noteId}] and '${bn.title}' [${bn.noteId}] in Domain/${domSlug} ` +
-                `share '${shared.join("', '")}'. Two notes on one subject is the duplicate that actually happens — ` +
-                `read both, merge into the older one, and forget() the other. If they are genuinely distinct, maintain(ack=[…]) to silence this.`
+                `share '${shared.join("', '")}'. Sections — '${a.title}': ${show(ha)} | '${bn.title}': ${show(hb)}. ` +
+                (overlap.length
+                  ? `${overlap.length} heading(s) in common (${overlap.slice(0, 5).join(", ")}), which is what a genuine split subject looks like — read both, merge into the older one, and forget() the other.`
+                  : `No headings in common, so these are most likely distinct notes that happen to share a title word — maintain(ack=["${a.noteId}"]) to silence this once you have confirmed it.`)
               );
             }
           }
@@ -594,6 +652,29 @@ export async function sweep(
   }
 
   if (suppressed) report.suppressed = suppressed;
+
+  // Scope guidance, both directions.
+  //
+  // The reported harm was never that the default is unscoped — a deep pass
+  // exists to surface the cross-cutting problems a single-lane view cannot see,
+  // and defaulting it to one lane would remove the reason to run it. The harm
+  // was that a scoped session could neither honestly ack an out-of-lane flag
+  // (ack= asserts the note was reviewed, and it was not) nor safely ignore it
+  // (ignoring flags every run is what trains the skim). Neither is a scoping
+  // problem; both are a missing instruction. Saying plainly what to do with a
+  // flag that is not yours costs nothing and resolves it.
+  if (deep) {
+    if (domainSlug) {
+      report.coverage = [
+        ...(report.coverage ?? []),
+        `scoped to domain '${domainSlug}' — findings outside it were not evaluated, including the cross-domain ones (duplicate titles across domains, orphans elsewhere) that only an unscoped run can see. Re-run without domain= periodically.`,
+      ];
+    } else if (report.flagged.length) {
+      report.laneHint =
+        "Flags here span the whole brain and may cover work this session never touched. LEAVE those — do not ack= them: an acknowledgement asserts the note's current content was reviewed, so acking unread is the one thing that makes the mechanism useless. Ack only what you actually read, act on what is yours, and pass domain= if you want a single lane.";
+    }
+  }
+
   return report;
 }
 
@@ -824,7 +905,16 @@ export async function buildDigest(
     if (!id) return null;
     const content = await trilium.getNoteContent(id).catch(() => "");
     if (!content) return null;
-    if (depth === "full") {
+    // Two singletons always come back in full, even at digest depth.
+    //
+    // Preferences carries the schedule and working style; protocols carries the
+    // operating rules governing the session itself. They are the two a session
+    // needs whole to orient correctly from its FIRST message — before it knows
+    // enough to decide it needed them, which is exactly when a digest sends it
+    // back for a second round-trip. Biography, goals and responsibilities are
+    // stabler and rarely load-bearing turn to turn, so they stay at headings
+    // depth and the token cost of this stays bounded.
+    if (depth === "full" || ALWAYS_FULL_SLOTS.has(slot)) {
       const summary = toText(content, Infinity);
       return summary ? { slot, summary } : null;
     }
