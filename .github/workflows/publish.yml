@@ -115,12 +115,33 @@ jobs:
       - name: Publish to the MCP Registry
         run: ./mcp-publisher publish
 
+      # Verify from outside — with retries, because both registries are
+      # eventually consistent and the first version of this step was not.
+      #
+      # On v10.4.1 both publishes succeeded and this step failed anyway: it
+      # called `npm view` immediately after `npm publish` and npm's CDN had not
+      # caught up, so it reported "the publish did not take effect" about a
+      # publish that had. A check added to prevent false confidence produced a
+      # false alarm instead, which is the worse failure of the two — a red that
+      # is routinely wrong is a red nobody reads.
       - name: Verify both registries from outside
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          echo "npm:      $(npm view brainllm version)"
-          echo "registry: $(curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=brainllm" | head -c 200)"
-          if [ "$(npm view brainllm version)" != "$TAG" ]; then
-            echo "::error::npm still does not serve $TAG — the publish did not take effect."
-            exit 1
-          fi
+
+          verify() { # name, command, expected-substring
+            for i in $(seq 1 12); do
+              GOT=$(eval "$2" 2>/dev/null || true)
+              case "$GOT" in
+                *"$3"*) echo "$1: $3 (attempt $i)"; return 0 ;;
+              esac
+              echo "$1: not serving $3 yet (attempt $i/12) — got: ${GOT:-<empty>}"
+              sleep 15
+            done
+            echo "::error::$1 never served $3 after 3 minutes. The publish step reported success, so check the registry directly before re-tagging — do NOT assume it failed."
+            return 1
+          }
+
+          verify "npm" "npm view brainllm version" "$TAG"
+          verify "MCP Registry" \
+            "curl -s 'https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.miisodev/brainllm'" \
+            "\"version\":\"$TAG\""
