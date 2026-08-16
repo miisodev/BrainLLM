@@ -1,6 +1,6 @@
 {
   "name": "brainllm",
-  "version": "10.4.1",
+  "version": "10.5.0",
   "mcpName": "io.github.miisodev/brainllm",
   "description": "MCP server that turns TriliumNext Notes into a persistent, graph-structured second brain for Claude and other LLM clients.",
   "author": "Kevin Miiso Novo <miisodev@gmail.com>",
