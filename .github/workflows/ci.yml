@@ -27,10 +27,18 @@ jobs:
 
       - run: bun run build
 
-      # All four unit suites. oauth.test.ts was previously omitted, which left
-      # the CIMD impersonation and code-harvesting tests — the ones written
-      # specifically to run against hostile documents — outside CI entirely.
-      # src/test.ts stays out: it is the integration runner and needs a live
-      # Trilium instance.
+      # Every *.test.ts, discovered rather than listed.
+      #
+      # This used to name each suite explicitly, which meant a new suite was
+      # outside CI until someone remembered to add it — and nothing failed when
+      # they didn't. It happened twice: oauth.test.ts (the CIMD impersonation
+      # and code-harvesting tests, written specifically to run against hostile
+      # documents) sat outside CI for a release, and kinds.test.ts did the same
+      # the day it was written. A list that must be maintained by hand to stay
+      # correct will eventually be wrong, and its being wrong looks exactly like
+      # its being right: green.
+      #
+      # src/test.ts is excluded by the pattern, not by omission — it is the
+      # integration runner and needs a live Trilium instance.
       - name: Unit tests
-        run: bun test src/normalize.test.ts src/lifecycle.test.ts src/trilium.test.ts src/oauth.test.ts
+        run: bun test src/*.test.ts
