@@ -101,7 +101,7 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
         <tr><td><code>TRILIUM_BASE_URL</code></td><td>Yes</td><td>URL of your TriliumNext instance</td></tr>
         <tr><td><code>TRILIUM_ETAPI_TOKEN</code></td><td>Yes*</td><td>ETAPI bearer token</td></tr>
         <tr><td><code>TRILIUM_PASSWORD</code></td><td>—</td><td>* Alternative to the token — mints and caches one on first start</td></tr>
-        <tr><td><code>BRAINLLM_MODE</code></td><td>—</td><td><code>core</code> (41 tools, default) or <code>full</code> (+33 raw ETAPI tools)</td></tr>
+        <tr><td><code>BRAINLLM_MODE</code></td><td>—</td><td><code>core</code> (42 tools, default) or <code>full</code> (+33 raw ETAPI tools)</td></tr>
         <tr><td><code>BRAINLLM_TZ</code></td><td>—</td><td>IANA timezone for date stamping on hosted deploys</td></tr>
         <tr><td><code>PORT</code></td><td>—</td><td>Presence switches to HTTP-connector mode. Never set it for local stdio</td></tr>
         <tr><td><code>MCP_AUTH_TOKEN</code></td><td>—</td><td>Bearer token required on <code>/mcp</code> in HTTP mode</td></tr>
@@ -111,12 +111,12 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
       </table>
 
       <h2 id="tools">Tool surface</h2>
-      <p><strong>41 tools by default</strong> — 31 universal verbs plus 10 dual-mode surface reads. <code>BRAINLLM_MODE=full</code> adds 33 raw ETAPI tools, for a total of 74.</p>
+      <p><strong>42 tools by default</strong> — 32 universal verbs plus 10 dual-mode surface reads. <code>BRAINLLM_MODE=full</code> adds 33 raw ETAPI tools, for a total of 75.</p>
       <table>
         <tr><th>Group</th><th>Tools</th></tr>
         <tr><td>Session lifecycle</td><td><code>start</code> · <code>day</code> · <code>session</code> · <code>remarks</code> · <code>close</code> · <code>backup</code></td></tr>
         <tr><td>Writing</td><td><code>remember</code> · <code>diary</code></td></tr>
-        <tr><td>Reading &amp; search</td><td><code>recall</code> · <code>domain</code> · <code>brain</code> · <code>template</code> · <code>graph</code> · <code>consistency</code></td></tr>
+        <tr><td>Reading &amp; search</td><td><code>recall</code> · <code>domain</code> · <code>brain</code> · <code>assembly</code> · <code>template</code> · <code>graph</code> · <code>consistency</code></td></tr>
         <tr><td>Updating</td><td><code>revise</code> · <code>resolve</code> · <code>withdraw</code> · <code>recover</code> · <code>label</code> · <code>forget</code></td></tr>
         <tr><td>Graph &amp; inspection</td><td><code>connect</code> · <code>explore</code> · <code>outline</code> · <code>inspect</code> · <code>diff</code></td></tr>
         <tr><td>Attachments</td><td><code>attach</code> · <code>detach</code></td></tr>

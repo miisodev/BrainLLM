@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.miisodev/brainllm",
   "description": "Persistent, graph-structured memory for LLMs, stored in TriliumNext Notes. Enforced note structure, a session protocol with a durable pre-close gate, a typed knowledge graph, and a maintenance lifecycle — in a note application the human can read and edit too.",
-  "version": "10.3.0",
+  "version": "10.4.0",
   "websiteUrl": "https://github.com/miisodev/BrainLLM#readme",
   "repository": {
     "url": "https://github.com/miisodev/BrainLLM",
@@ -12,7 +12,7 @@
     {
       "registryType": "npm",
       "identifier": "brainllm",
-      "version": "10.3.0",
+      "version": "10.4.0",
       "transport": {
         "type": "stdio"
       },
