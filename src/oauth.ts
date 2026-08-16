@@ -327,45 +327,112 @@ const esc = (s: string): string =>
  *  displaying it would let anyone render a consent screen that says
  *  "Anthropic". The host is the one part of the identity that DNS and TLS
  *  vouch for. */
-function consentPage(params: Record<string, string>, clientHost: string, error?: string): string {
+/** The landing site's design tokens, and the shell every served page uses.
+ *
+ *  Deliberately NOT the site's font <link>: docs/ pulls Space Grotesk and Inter
+ *  from Google Fonts, and this page must not. It is a consent screen, so a
+ *  third-party request here would tell fonts.googleapis.com that someone is
+ *  authorizing access to their memory, add a dependency the authorization flow
+ *  cannot function without, and hand the page a blocking request on exactly the
+ *  networks most likely to be restricted. The stacks below name the same fonts
+ *  first — a machine that has them renders identically — and fall back to
+ *  system faces rather than fetching anything.
+ *
+ *  Dark-only, like the site. The brand commits to one scheme; a consent screen
+ *  that renders light while the product renders dark reads as a different
+ *  application, which is the exact doubt a consent screen must not create. */
+const PAGE_CSS = `
+  :root {
+    --bg:#0a0a0f; --bg-raised:#12121a; --bg-pill:#1a1a24;
+    --text:#fafafa; --text-muted:#a1a1aa; --text-soft:#d4d4d8;
+    --accent:#f59e0b; --accent-glow:rgba(245,158,11,.3);
+    --border:rgba(255,255,255,.08); --border-strong:rgba(255,255,255,.15);
+    --font-display:"Space Grotesk","Inter",system-ui,sans-serif;
+    --font-body:"Inter",system-ui,-apple-system,sans-serif;
+    --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    color-scheme: dark;
+  }
+  *,*::before,*::after { box-sizing:border-box; }
+  body {
+    margin:0; min-height:100dvh; display:grid; place-items:center; padding:24px;
+    background:var(--bg); color:var(--text);
+    font-family:var(--font-body); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(circle at 50% 0%, rgba(245,158,11,.07) 0%, rgba(0,0,0,0) 60%);
+  }
+  .card {
+    width:min(430px,100%); background:var(--bg-raised);
+    border:1px solid var(--border); border-radius:16px; padding:32px;
+  }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:26px; }
+  .brand-mark { display:grid; grid-template-columns:repeat(3,4px); gap:3px; }
+  .brand-mark i { width:4px; height:4px; border-radius:50%; background:var(--accent); display:block; }
+  .brand-mark i.off { background:#3f3f46; }
+  .brand-name { font-family:var(--font-display); font-size:19px; font-weight:700; letter-spacing:-.475px; }
+  h1 { font-family:var(--font-display); font-size:24px; font-weight:700; letter-spacing:-.02em; line-height:1.2; margin:0 0 8px; }
+  p { margin:0 0 20px; color:var(--text-muted); font-size:14.5px; }
+  .host {
+    font-family:var(--font-mono); font-size:13px; color:var(--text);
+    background:var(--bg-pill); border:1px solid var(--border-strong);
+    border-radius:6px; padding:2px 7px;
+  }
+  .scope {
+    display:flex; gap:11px; align-items:flex-start; padding:14px 16px; font-size:14px;
+    background:var(--bg-pill); border:1px solid var(--border); border-radius:11px;
+    margin-bottom:22px; color:var(--text-soft);
+  }
+  .scope .dot { width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px rgba(245,158,11,.8); flex:none; margin-top:7px; }
+  label { display:block; font-size:13px; font-weight:600; margin-bottom:7px; color:var(--text-soft); }
+  input[type=password] {
+    width:100%; padding:12px 14px; font-size:15px; font-family:inherit;
+    background:var(--bg); color:var(--text);
+    border:1px solid var(--border-strong); border-radius:9px; margin-bottom:20px;
+  }
+  input[type=password]:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(245,158,11,.15); }
+  .row { display:flex; gap:10px; }
+  button {
+    flex:1; padding:13px; font-size:15px; font-weight:600; font-family:inherit;
+    border-radius:11px; border:1px solid transparent; cursor:pointer;
+    transition:transform .12s, box-shadow .2s, background .2s;
+  }
+  .approve { background:var(--accent); color:#0a0a0f; box-shadow:0 0 40px var(--accent-glow); }
+  .approve:hover { transform:translateY(-1px); box-shadow:0 0 56px rgba(245,158,11,.42); }
+  .deny { background:transparent; color:var(--text); border-color:var(--border-strong); font-weight:500; }
+  .deny:hover { background:rgba(255,255,255,.04); }
+  .err {
+    background:rgba(239,68,68,.1); border:1px solid rgba(239,68,68,.3); color:#fca5a5;
+    padding:11px 14px; border-radius:9px; font-size:14px; margin-bottom:18px;
+  }
+  .foot { margin:22px 0 0; font-size:12.5px; color:var(--text-dim,#52525b); text-align:center; }
+  @media (prefers-reduced-motion: reduce) { button { transition:none; } .approve:hover { transform:none; } }
+`;
+
+/** The 3×3 node grid the site uses as its mark — six lit, three dark. Pure CSS,
+ *  so it costs no request and cannot go stale against a rasterised copy. */
+const BRAND_MARK =
+  `<span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>`;
+
+const shell = (title: string, body: string): string => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0a0a0f">
+<meta name="robots" content="noindex,nofollow">
+<title>${esc(title)}</title>
+<style>${PAGE_CSS}</style></head>
+<body>${body}</body></html>`;
+
+export function consentPage(params: Record<string, string>, clientHost: string, error?: string): string {
   const hidden = Object.entries(params)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
     .join("");
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Authorize access to your brain</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 0;
-         min-height: 100dvh; display: grid; place-items: center; padding: 24px;
-         background: #faf9f7; color: #1a1a1a; }
-  @media (prefers-color-scheme: dark) { body { background: #16151a; color: #ececf1; } }
-  .card { width: min(420px, 100%); background: light-dark(#fff, #1f1e26); border-radius: 14px;
-          padding: 28px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.08); }
-  h1 { font-size: 19px; margin: 0 0 6px; letter-spacing: -0.01em; }
-  p { margin: 0 0 18px; color: light-dark(#5c5a66, #a5a3b0); font-size: 14.5px; }
-  .host { font-weight: 600; color: light-dark(#1a1a1a, #ececf1); }
-  .scope { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; font-size: 14px;
-           background: light-dark(#f4f3f0, #26252e); border-radius: 9px; margin-bottom: 18px; }
-  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-  input[type=password] { width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 15px;
-    border: 1px solid light-dark(#dcdae2, #3a3945); border-radius: 8px; margin-bottom: 16px;
-    background: light-dark(#fff, #16151a); color: inherit; }
-  .row { display: flex; gap: 10px; }
-  button { flex: 1; padding: 11px; font-size: 15px; font-weight: 600; border-radius: 8px;
-           border: 1px solid transparent; cursor: pointer; font-family: inherit; }
-  .approve { background: #6d28d9; color: #fff; }
-  .deny { background: transparent; border-color: light-dark(#dcdae2, #3a3945); color: inherit; }
-  .err { background: #fee2e2; color: #991b1b; padding: 10px 12px; border-radius: 8px;
-         font-size: 14px; margin-bottom: 16px; }
-  @media (prefers-color-scheme: dark) { .err { background: #45161a; color: #fca5a5; } }
-</style></head>
-<body><form class="card" method="POST" action="/authorize">
-  <h1>Authorize access to your brain</h1>
-  <p><span class="host">${esc(clientHost)}</span> is requesting access to your BrainLLM memory.</p>
+  return shell(
+    "Authorize access to your brain",
+    `<form class="card" method="POST" action="/authorize">
+  <div class="brand">${BRAND_MARK}<span class="brand-name">BrainLLM</span></div>
+  <h1>Authorize access</h1>
+  <p><span class="host">${esc(clientHost)}</span> is requesting access to your brain.</p>
   ${error ? `<div class="err">${esc(error)}</div>` : ""}
-  <div class="scope"><span>🧠</span><span>Read and write everything in your brain — memories, threads, knowledge and your diary.</span></div>
+  <div class="scope"><span class="dot"></span><span>Read and write everything in your brain — memories, threads, knowledge and your diary.</span></div>
   <label for="pw">Owner password</label>
   <input id="pw" type="password" name="password" autocomplete="current-password" autofocus required>
   ${hidden}
@@ -373,7 +440,9 @@ function consentPage(params: Record<string, string>, clientHost: string, error?:
     <button class="deny" type="submit" name="decision" value="deny">Deny</button>
     <button class="approve" type="submit" name="decision" value="approve">Authorize</button>
   </div>
-</form></body></html>`;
+  <p class="foot">Only the host above is shown, and it is the one DNS and TLS vouch for.</p>
+</form>`
+  );
 }
 
 // ── /authorize ────────────────────────────────────────────────────────────────
@@ -384,11 +453,24 @@ const redirectWith = (uri: string, params: Record<string, string>): Response => 
   return new Response(null, { status: 302, headers: { Location: u.href } });
 };
 
+/** The error page shares the consent screen's shell.
+ *
+ *  It used to be inline styles on a bare body — which meant the two pages a user
+ *  can reach in this flow looked like they came from different products, and the
+ *  one they hit when something has gone wrong was the unbranded one. That is
+ *  backwards: an authorization error is exactly when someone should be sure what
+ *  they are looking at. */
 const htmlError = (message: string, status = 400): Response =>
   new Response(
-    `<!doctype html><meta charset="utf-8"><title>Authorization error</title>` +
-    `<body style="font:16px/1.6 ui-sans-serif,system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 24px">` +
-    `<h1 style="font-size:19px">Authorization error</h1><p>${esc(message)}</p></body>`,
+    shell(
+      "Authorization error",
+      `<div class="card">
+  <div class="brand">${BRAND_MARK}<span class="brand-name">BrainLLM</span></div>
+  <h1>Authorization error</h1>
+  <div class="err">${esc(message)}</div>
+  <p class="foot">Nothing was authorized. Close this window and start again from your client.</p>
+</div>`
+    ),
     { status, headers: { "Content-Type": "text/html; charset=utf-8" } }
   );
 

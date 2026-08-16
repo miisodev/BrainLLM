@@ -10,6 +10,7 @@ import {
   authorizationServerMetadata,
   wwwAuthenticate,
   validateAccessToken,
+  consentPage,
   SCOPE,
 } from "./oauth.js";
 
@@ -191,5 +192,64 @@ describe("redirect_uri matching", () => {
     expect(redirectUriAllowed("https://claude.ai/api/mcp/auth_callback", declared)).toBe(true);
     expect(redirectUriAllowed("https://claude.ai/api/mcp/auth_callback?x=1", declared)).toBe(false);
     expect(redirectUriAllowed("https://claude.ai.evil.com/api/mcp/auth_callback", declared)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Consent screen. These lock in two decisions that are invisible in the markup
+// and easy to undo by accident.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("consent screen", () => {
+  const params = {
+    client_id: "https://claude.ai/api/mcp/client-metadata.json",
+    redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+    state: "abc123",
+  };
+
+  test("makes NO external requests — every asset is inline", () => {
+    // The landing site pulls Space Grotesk and Inter from Google Fonts. This
+    // page must not: a third-party request here tells that host someone is
+    // authorizing access to their memory, adds a dependency the flow cannot
+    // work without, and blocks on exactly the networks most likely to restrict
+    // it. The brand mark is CSS dots for the same reason — no image request.
+    const html = consentPage(params, "claude.ai");
+    const external = html.match(/(?:src|href)\s*=\s*["']https?:\/\/[^"']+/gi) ?? [];
+    expect(external).toEqual([]);
+    expect(html).not.toContain("fonts.googleapis.com");
+    expect(html).not.toContain("fonts.gstatic.com");
+    expect(html).not.toContain("@import");
+  });
+
+  test("names the HOST, and escapes it", () => {
+    // The host is the one part of a client's identity DNS and TLS vouch for.
+    // client_name is self-asserted text in a document the requester controls,
+    // so displaying it would let anyone render a screen that says "Anthropic".
+    expect(consentPage(params, "claude.ai")).toContain("claude.ai");
+
+    const hostile = consentPage(params, '"><script>alert(1)</script>');
+    expect(hostile).not.toContain("<script>alert(1)</script>");
+    expect(hostile).toContain("&lt;script&gt;");
+  });
+
+  test("escapes carried params, which come straight from the query string", () => {
+    const html = consentPage({ state: '"><img src=x onerror=alert(1)>' }, "claude.ai");
+    expect(html).not.toContain("<img src=x");
+    expect(html).toContain("&quot;&gt;&lt;img");
+  });
+
+  test("carries every param forward as a hidden field", () => {
+    const html = consentPage(params, "claude.ai");
+    for (const [k, v] of Object.entries(params)) {
+      expect(html).toContain(`name="${k}"`);
+      expect(html).toContain(v.replace(/&/g, "&amp;"));
+    }
+  });
+
+  test("renders the error state without losing the form", () => {
+    const html = consentPage(params, "claude.ai", "Incorrect password.");
+    expect(html).toContain("Incorrect password.");
+    expect(html).toContain('type="password"');
+    expect(html).toContain('value="approve"');
   });
 });
