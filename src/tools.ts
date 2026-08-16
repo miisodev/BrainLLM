@@ -44,6 +44,7 @@ import {
   closeDangling,
   setSection,
   getSection,
+  mergeUnderSection,
   nearestContext,
   headingOutline,
   sectionLevelFor,
@@ -331,7 +332,11 @@ export function registerTools(
 
   server.tool(
     "start",
-    `Boot BrainLLM — call ONCE at the start of every session, before responding.
+    `Boot BrainLLM — call ONCE at the start of every session, before responding. Master
+PREFERENCES and LLM PROTOCOLS always come back in full, even at the default digest depth: they
+carry the schedule, the working style and the operating rules governing the session itself, so a
+session needs them whole before it knows enough to ask for them. Biography, goals and
+responsibilities come back as section headings + preview.
 Runs maintenance, creates today's diary and session notes if not yet open, then returns: today
 and weekday, the Master digest (biography / goals / preferences), the LLM digest
 (responsibilities / protocols / today's diary preview and ID), this session's note ID, active
@@ -453,7 +458,7 @@ sessions need one section, not five documents.`,
         changesSinceLastSession: changesSinceLastSession.length ? changesSinceLastSession : undefined,
         ...(newDay ? { newDay: true, newDayHint: "First session of the day — call day() for the sweep payload (previous session + log + changes + monthly deliverables in one call)." } : {}),
         ...((depth ?? "digest") === "digest"
-          ? { depthHint: "Singletons are section headings + preview. Pull the one you need with master(which) / llm(which); re-run start(depth=\"full\") only if the session genuinely needs the whole self-model." }
+          ? { depthHint: "Preferences and protocols came back IN FULL — the two needed whole to orient from the first message. Biography, goals and responsibilities are section headings + preview; pull one with master(which) / llm(which), or a single section with their section= parameter. start(depth=\"full\") serves all five inline." }
           : {}),
         hygiene: { scanned: hygiene.scanned, fixed: hygiene.fixed.length, transitions: hygiene.transitions, flagged: hygiene.flagged, ...(hygiene.suppressed ? { suppressed: hygiene.suppressed } : {}) },
       });
@@ -470,6 +475,14 @@ you what moved). Pass full=true to include every singleton's content and the dia
 instead (rarely needed; token-heavy).
 
 Idempotent: fetches are read-only, the sweep is non-destructive, safe to call multiple times.
+
+Returns pending= — how much each remaining step actually has to do (addendum markers outstanding,
+maintenance flags already raised, diary blocks written today, which singletons were written
+today). The close protocol is ~7 tools landing exactly when context is scarcest, and reciting
+every step unconditionally spends that context on steps with nothing to do. Also returns audit=,
+a cross-singleton check nothing else performs: whether the five singletons agree with each other,
+AND whether the LLM's operating rules still serve what the user's goals and preferences call for
+— a semantic question, not a textual one, which consistency() and maintain() cannot answer.
 
 After session() returns, work through this protocol — order doesn't matter mechanically (each
 step is tracked by the tool call itself, not by sequence), but close() enforces that every one
@@ -542,6 +555,35 @@ rather than listing them unconditionally for every caller to work around.`,
       // Lightweight maintenance sweep (non-fatal).
       const hygiene = await sweep(trilium, cfg, { deep: false, dryRun: false }).catch(() => null);
 
+      // What is actually pending, measured rather than listed.
+      //
+      // The close protocol is roughly a dozen calls landing exactly when context
+      // is scarcest, and next[] recited all of them unconditionally — including
+      // the ones with nothing to do. Every value below was already computed by
+      // this call before it returned; reporting them lets the remaining context
+      // go to the diary and the log, which are the two things only the agent
+      // can write.
+      const pendingAddendums = await trilium
+        .searchNotes("#noteType note.content *=* 'Addendum'", { ancestorNoteId: cfg.root, fastSearch: false, limit: 40 })
+        .then((r) => r.results.filter((n) => {
+          const kind = labelOf(n, "noteType");
+          return kind && !["session", "diary", "log", "threadEntry", "thread"].includes(kind);
+        }).length)
+        .catch(() => null);
+
+      const singletonStubs = [
+        ["biography", biography], ["goals", goals], ["preferences", preferences],
+        ["responsibilities", responsibilities], ["protocols", protocols],
+      ] as const;
+      const touchedToday = singletonStubs.filter(([, s]) => s.lastModified === d).map(([name]) => name);
+
+      const pending = {
+        addendums: pendingAddendums === null ? "unknown" : pendingAddendums,
+        maintenanceFlags: hygiene?.flagged.length ?? 0,
+        diaryBlocksToday: (diaryEntry as { blocks?: number } | null)?.blocks ?? 0,
+        singletonsWrittenToday: touchedToday.length ? touchedToday : "none",
+      };
+
       const scoped = scope === "agent";
       return txt({
         date: d,
@@ -553,6 +595,20 @@ rather than listing them unconditionally for every caller to work around.`,
         maintenance: hygiene
           ? { scanned: hygiene.scanned, fixed: hygiene.fixed.length, transitions: hygiene.transitions, flagged: hygiene.flagged, ...(hygiene.suppressed ? { suppressed: hygiene.suppressed } : {}) }
           : "skipped",
+        pending,
+        // The audit that nothing else performs. consistency() checks the brain
+        // against itself and maintain() checks structure; neither asks whether
+        // the LLM's operating rules still SERVE what the user's goals and
+        // preferences call for. That is a semantic question, it can only be
+        // answered by reading, and pre-close is when the session's evidence for
+        // it is freshest.
+        audit: scoped
+          ? undefined
+          : {
+              consistency: "Read all five singletons and check for ambiguity, internal contradiction, or claims that disagree across them. Fix what you find with revise() BEFORE close(), so the log records a brain that already agrees with itself.",
+              alignment: "Then check correlation, not just agreement: do responsibilities and protocols actually serve what biography, goals and preferences describe? A protocol can be perfectly consistent and still be serving a goal that has moved.",
+              readThem: `master("biography"|"goals"|"preferences") and llm("responsibilities"|"protocols") — or one section at a time with section=. Written today: ${touchedToday.length ? touchedToday.join(", ") : "none"}.`,
+            },
         next: [
           ...(scoped
             ? ["Scoped run — the user's master singletons and your LLM singletons are OUT of scope and deliberately not listed here."]
@@ -560,12 +616,19 @@ rather than listing them unconditionally for every caller to work around.`,
                 "Update master singletons (biography / goals / preferences) via revise() with session observations about the user.",
                 "Update LLM singletons (responsibilities / protocols) via revise() with session observations about yourself.",
               ]),
+          ...(scoped
+            ? []
+            : ["Audit the singletons against each other and against each other's PURPOSE — see audit= above. This is the step that catches an operating rule still serving a goal that has moved."]),
           scoped
-            ? "Call addendum() — fold only what is in your lane; leaving out-of-scope addendums for the next interactive session is correct, and the call itself satisfies the gate."
-            : "Call addendum() — find and merge any pending addendums.",
+            ? `Call addendum() — fold only what is in your lane; leaving out-of-scope addendums for the next interactive session is correct, and the call itself satisfies the gate. (${pending.addendums} note(s) currently carry addendum markers.)`
+            : pending.addendums === 0
+            ? "Call addendum() — 0 notes currently carry addendum markers, so this should come back clean; the call still satisfies the gate."
+            : `Call addendum() — ${pending.addendums} note(s) carry addendum markers; fold each into its section.`,
           scoped
             ? "Call maintain() — audit brain hygiene; pass domain= to keep the flags in your lane."
-            : "Call maintain() — audit and fix brain hygiene.",
+            : pending.maintenanceFlags === 0
+            ? "Call maintain() — the lite sweep just ran clean, so this is a formality unless you want deep=true."
+            : `Call maintain() — the lite sweep already flagged ${pending.maintenanceFlags} item(s), listed above.`,
           "Call remarks() — get the diary cues: your experience, opinions, and existence this session, plus BrainLLM remarks.",
           "Call diary() — write the day's unfiltered record with the cues in hand; the gate counts it only after remarks().",
           "Call close() — commit the session log (mandatory, last). Refuses until every step ran and session → remarks → diary held; pass force=true only when a skipped step genuinely has nothing to log.",
@@ -1037,6 +1100,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
               .catch(() => ({ results: [] as Note[] }));
         let sid = sourcesId ?? found.results[0]?.noteId;
         let wrote = false;
+        let sourceMerge: { mergedIntoGroups?: string[]; newGroups?: string[] } = {};
         if (!sid) {
           // Legacy domain without a Sources note — create the canonical one.
           const created = await trilium.createNote(domainId, "Sources", contentFor("sources", { date: d, body: html, domain: domainTitle }));
@@ -1049,7 +1113,12 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           const current = await trilium.getNoteContent(sid).catch(() => "");
           if (!current.includes(html)) {
             await trilium.createRevision(sid).catch(() => null);
-            const merged = setSection(current, "Sources", html, "append");
+            // Group-by-group, not a wholesale append: appending an incoming
+            // block under Sources created a SECOND copy of any h3 the note
+            // already had, so re-filing under an existing group split it in two
+            // instead of adding to it.
+            const merged = mergeUnderSection(current, html, "Sources");
+            sourceMerge = { ...(merged.mergedInto.length ? { mergedIntoGroups: merged.mergedInto } : {}), ...(merged.appended.length ? { newGroups: merged.appended } : {}) };
             const stamped = bumpLastUpdated(merged.html, d);
             await trilium.updateNoteContent(sid, stamped.html);
             await trilium.updateLabelValue(sid, "updated", d);
@@ -1110,6 +1179,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           noteId: sid, kind, domainId, location: locationLabel(kind, domainTitle),
           ...(createdDomain ? { createdDomain: domainTitle } : {}),
           ...(revisionChanges.length ? { revision: revisionChanges } : {}),
+          ...sourceMerge,
           ...(revisionKeys.length ? { revisionRows: revisionKeys } : {}),
           ...(placeholderLeft
             ? { structureHint: "The Revision table still holds only its placeholder row. Every source marked ✅ was verified by someone — record that with revision=[{source, marker, date}] so the table says so too; marker dates live there, never inline." }

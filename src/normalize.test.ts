@@ -16,6 +16,8 @@ import {
   getSection,
   nearestContext,
   addendumIndex,
+  mergeUnderSection,
+  sectionProfile,
   queryTokens,
   looksLikeHtml,
   looksLikeEncodedHtml,
@@ -872,5 +874,82 @@ describe("addendumIndex", () => {
 
   test("empty for a note with no addendum blocks", () => {
     expect(addendumIndex("<h2>Context</h2><p>just a book</p>")).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V10.3 Phase 4 — maintained documents and edit-risk.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SOURCES =
+  "<h2>Sources</h2><p>legend</p>" +
+  "<h3>Official documentation</h3><ul><li>✅ the docs</li></ul>" +
+  "<h3>Community</h3><ul><li>❇️ a forum</li></ul>" +
+  "<h2>Revision</h2><table><tr><td>the docs</td></tr></table>";
+
+describe("mergeUnderSection — merge into an existing group, don't duplicate it", () => {
+  test("an incoming group with an existing name folds into it", () => {
+    const r = mergeUnderSection(SOURCES, "<h3>Official documentation</h3><ul><li>✅ the API reference</li></ul>", "Sources");
+    expect(r.mergedInto).toEqual(["Official documentation"]);
+    expect(r.appended).toEqual([]);
+    // One heading of that name, not two — the defect was a second copy.
+    expect(headingOutline(r.html).filter((h) => h.text === "Official documentation")).toHaveLength(1);
+    expect(r.html).toContain("the API reference");
+    expect(r.html).toContain("the docs");
+  });
+
+  test("a genuinely new group is appended as one", () => {
+    const r = mergeUnderSection(SOURCES, "<h3>Source code</h3><ul><li>❇️ the repo</li></ul>", "Sources");
+    expect(r.appended).toEqual(["Source code"]);
+    expect(r.mergedInto).toEqual([]);
+    expect(headingOutline(r.html).some((h) => h.text === "Source code")).toBe(true);
+  });
+
+  test("mixed incoming: one merged, one appended, in a single write", () => {
+    const r = mergeUnderSection(
+      SOURCES,
+      "<h3>Community</h3><ul><li>❇️ a chat</li></ul><h3>Papers</h3><ul><li>❇️ a preprint</li></ul>",
+      "Sources"
+    );
+    expect(r.mergedInto).toEqual(["Community"]);
+    expect(r.appended).toEqual(["Papers"]);
+    expect(headingOutline(r.html).filter((h) => h.text === "Community")).toHaveLength(1);
+  });
+
+  test("stays inside the parent — a same-named heading elsewhere is untouched", () => {
+    const doc = "<h2>Sources</h2><h3>Notes</h3><p>a</p><h2>Revision</h2><h3>Notes</h3><p>b</p>";
+    const r = mergeUnderSection(doc, "<h3>Notes</h3><p>c</p>", "Sources");
+    expect(r.mergedInto).toEqual(["Notes"]);
+    // The Revision copy keeps its own body and gains nothing.
+    expect(getSection(r.html, "Revision").content).toContain("b");
+    expect(getSection(r.html, "Revision").content).not.toContain("c");
+  });
+
+  test("loose content with no group still lands in the section", () => {
+    const r = mergeUnderSection(SOURCES, "<p>a loose note</p>", "Sources");
+    expect(getSection(r.html, "Sources").content).toContain("a loose note");
+  });
+});
+
+describe("sectionProfile — is a section= edit safe on this note", () => {
+  test("reports count, the largest sections, and ambiguous headings", () => {
+    const doc =
+      "<h2>Alpha</h2><p>" + "x".repeat(500) + "</p>" +
+      "<h2>Beta</h2><p>short</p>" +
+      "<h3>Beta</h3><p>also short</p>";
+    const p = sectionProfile(doc);
+    expect(p.count).toBe(3);
+    expect(p.largest[0]!.text).toBe("Alpha");
+    expect(p.largest[0]!.chars).toBeGreaterThan(500);
+    // Same text at DIFFERENT levels is not ambiguous — occurrence= is per level.
+    expect(p.ambiguous).toEqual([]);
+  });
+
+  test("same text at the same level is ambiguous and needs occurrence=", () => {
+    expect(sectionProfile("<h3>Same</h3><p>a</p><h3>Same</h3><p>b</p>").ambiguous).toEqual(["same"]);
+  });
+
+  test("a flat note profiles as zero sections rather than throwing", () => {
+    expect(sectionProfile("<p>no headings at all</p>").count).toBe(0);
   });
 });

@@ -1078,6 +1078,119 @@ export function setSection(
   };
 }
 
+/** Split a body at its h3 boundaries: any lead content, then one entry per
+ *  group. Used to merge an incoming block group-by-group rather than wholesale. */
+function splitByH3(html: string): Array<{ headingText?: string; body: string; raw: string }> {
+  const re = /<h3(?:\s[^>]*)?>([\s\S]*?)<\/h3>/gi;
+  const hits = [...html.matchAll(re)];
+  if (!hits.length) return html.trim() ? [{ body: html.trim(), raw: html.trim() }] : [];
+
+  const out: Array<{ headingText?: string; body: string; raw: string }> = [];
+  const lead = html.slice(0, hits[0]!.index!).trim();
+  if (lead) out.push({ body: lead, raw: lead });
+  for (const [i, m] of hits.entries()) {
+    const from = m.index! + m[0].length;
+    const to = i + 1 < hits.length ? hits[i + 1]!.index! : html.length;
+    out.push({
+      headingText: decodeEntities(m[1]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim(),
+      body: html.slice(from, to).trim(),
+      raw: html.slice(m.index!, to).trim(),
+    });
+  }
+  return out;
+}
+
+export interface SectionMergeResult {
+  html: string;
+  /** Group headings folded into an existing group of the same name. */
+  mergedInto: string[];
+  /** Group headings that were genuinely new and appended as such. */
+  appended: string[];
+}
+
+/** Merge an incoming block into a parent section GROUP BY GROUP.
+ *
+ *  A plain append under the parent duplicates any h3 the section already has —
+ *  writing a second "Official documentation" beside the first instead of adding
+ *  to it, which is the opposite of what a maintained list wants and exactly the
+ *  drift the merge-don't-stack rule exists to prevent. Matching existing groups
+ *  by heading text and appending inside them keeps one group per subject.
+ *
+ *  Everything is done on the parent section in isolation and written back in one
+ *  replace, so an h3 with the same name living OUTSIDE the parent (a Revision
+ *  table's subheading, say) is never the thing that gets written into. */
+export function mergeUnderSection(current: string, incoming: string, parentHeading: string): SectionMergeResult {
+  const groups = splitByH3(incoming);
+  if (!groups.length) return { html: current, mergedInto: [], appended: [] };
+
+  const parent = getSection(current, parentHeading);
+  if (!parent.matched) {
+    return { html: setSection(current, parentHeading, incoming, "append").html, mergedInto: [], appended: groups.flatMap((g) => (g.headingText ? [g.headingText] : [])) };
+  }
+
+  let section = parent.content;
+  const mergedInto: string[] = [];
+  const appended: string[] = [];
+  const leftovers: string[] = [];
+
+  for (const g of groups) {
+    if (!g.headingText) { leftovers.push(g.raw); continue; }
+    const key = g.headingText.toLowerCase();
+    const exists = headingOutline(section).some((h) => h.level === 3 && h.text.toLowerCase() === key);
+    if (exists && g.body) {
+      section = setSection(section, g.headingText, g.body, "append").html;
+      mergedInto.push(g.headingText);
+    } else {
+      leftovers.push(g.raw);
+      appended.push(g.headingText);
+    }
+  }
+  if (leftovers.length) section = `${section}\n${leftovers.join("\n")}`;
+
+  return { html: setSection(current, parentHeading, section, "replace").html, mergedInto, appended };
+}
+
+export interface SectionProfile {
+  count: number;
+  /** Sections by size, largest first. */
+  largest: Array<{ text: string; level: 2 | 3 | 4; chars: number }>;
+  /** Heading texts that appear more than once at the same level — every one of
+   *  these needs occurrence= to target unambiguously. */
+  ambiguous: string[];
+}
+
+/** How risky is a section= edit on this note?
+ *
+ *  The read-ceiling warning answers "can this be read whole", which is a
+ *  different question from "will a targeted edit land where I meant". A note
+ *  becomes hazardous to edit by heading well before it becomes impossible to
+ *  read: picking the right name out of thirty is where the mistake happens, and
+ *  a replace on a section holding half the note destroys far more than the
+ *  caller pictured. Both are measurable up front. */
+export function sectionProfile(html: string): SectionProfile {
+  const re = /<h([2-4])(?:\s[^>]*)?>([\s\S]*?)<\/h\1>/gi;
+  const hits = [...html.matchAll(re)];
+  const seen = new Map<string, number>();
+  const sizes: Array<{ text: string; level: 2 | 3 | 4; chars: number }> = [];
+
+  for (const [i, m] of hits.entries()) {
+    const level = Number(m[1]) as 2 | 3 | 4;
+    const text = decodeEntities(m[2]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const key = `${level}::${text.toLowerCase()}`;
+    seen.set(key, (seen.get(key) ?? 0) + 1);
+    const from = m.index! + m[0].length;
+    const to = i + 1 < hits.length ? hits[i + 1]!.index! : html.length;
+    sizes.push({ text, level, chars: to - from });
+  }
+
+  return {
+    count: sizes.length,
+    largest: sizes.sort((a, b) => b.chars - a.chars).slice(0, 3),
+    ambiguous: [...seen.entries()].filter(([, n]) => n > 1).map(([k]) => k.split("::")[1]!),
+  };
+}
+
 // ── Structural lint ───────────────────────────────────────────────────────────
 
 /** Unclosed block-level tags left open at the end of a body. Counterpart to
