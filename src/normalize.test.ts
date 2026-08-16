@@ -8,6 +8,11 @@ import {
   titleCaseSlug,
   toHtml,
   toText,
+  escapeHtml,
+  escapeQueryValue,
+  escapeQueryRegex,
+  stripTagsWithMap,
+  repairDoubleEscaping,
   queryTokens,
   looksLikeHtml,
   looksLikeEncodedHtml,
@@ -595,5 +600,124 @@ describe("setSection matches headings by text, not raw HTML", () => {
     expect(out.headingCount).toBe(2);
     expect(out.html).toContain("one");
     expect(out.html).not.toContain("two");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V10.3 — the three silent-wrongness defects.
+//
+// Each test below asserts the FAILURE mode, not just the fix. All three of
+// these shipped once with a passing suite, because the suite tested what the
+// code did rather than what it was for.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("escapeHtml does not double-escape a well-formed entity", () => {
+  test("leaves an existing entity alone instead of escaping its ampersand", () => {
+    // The producer of the entity-corruption defect. Before v10.3 this returned
+    // "&amp;nbsp;", which stores and renders as visible literal text.
+    expect(escapeHtml("a&nbsp;b")).toBe("a&nbsp;b");
+    expect(escapeHtml("&lt;h3&gt;")).toBe("&lt;h3&gt;");
+    expect(escapeHtml("&#8212; and &#x2014;")).toBe("&#8212; and &#x2014;");
+  });
+
+  test("still escapes a bare ampersand", () => {
+    expect(escapeHtml("Tom & Jerry")).toBe("Tom &amp; Jerry");
+    expect(escapeHtml("a & b&nbsp;c")).toBe("a &amp; b&nbsp;c");
+    // "&notanentity" has no semicolon, so it is a bare ampersand.
+    expect(escapeHtml("&notanentity")).toBe("&amp;notanentity");
+  });
+
+  test("still escapes angle brackets and quotes", () => {
+    expect(escapeHtml('<script>"x"</script>')).toBe("&lt;script&gt;&quot;x&quot;&lt;/script&gt;");
+  });
+
+  test("preserveEntities=false restores blanket escaping, for code blocks", () => {
+    expect(escapeHtml("&amp;", false)).toBe("&amp;amp;");
+    expect(escapeHtml("&nbsp;", false)).toBe("&amp;nbsp;");
+  });
+
+  test("the markdown write path no longer corrupts a copied &nbsp;", () => {
+    // The real-world case: prose copied out of a prior read carries CKEditor's
+    // own &nbsp;, goes back in as plain text, and took the markdown path.
+    const html = toHtml("A line with a&nbsp;hard space.");
+    expect(html).toContain("a&nbsp;hard");
+    expect(html).not.toContain("&amp;nbsp;");
+  });
+
+  test("a fenced code block still escapes its ampersands literally", () => {
+    const html = toHtml("```\nx &amp; y\n```");
+    expect(html).toContain("&amp;amp;");
+  });
+});
+
+describe("escapeQueryRegex preserves the regex it is given", () => {
+  // String.raw throughout: these assertions are ABOUT backslashes, and writing
+  // them with ordinary escapes is how the first draft of this suite silently
+  // tested "(d+)" and passed.
+  test("escapeQueryValue destroys backslashes — the defect, pinned", () => {
+    // Kept as a regression anchor: this is what consistency() and
+    // recall(regex=) used to route their patterns through, which is why
+    // "(\d+) migrations" silently matched nothing while "([0-9]+)" worked.
+    expect(escapeQueryValue(String.raw`(\d+) migrations`)).toBe("( d+) migrations");
+  });
+
+  test("doubles backslashes, because Trilium's lexer eats one level", () => {
+    expect(escapeQueryRegex(String.raw`(\d+) migrations`)).toBe(String.raw`(\\d+) migrations`);
+    expect(escapeQueryRegex(String.raw`\bword\b`)).toBe(String.raw`\\bword\\b`);
+  });
+
+  test("escapes single quotes so the pattern cannot close its own token", () => {
+    expect(escapeQueryRegex("it's")).toBe(String.raw`it\'s`);
+  });
+
+  test("leaves an ordinary pattern untouched", () => {
+    expect(escapeQueryRegex("([0-9]+) Titan mailboxes")).toBe("([0-9]+) Titan mailboxes");
+  });
+});
+
+describe("stripTagsWithMap", () => {
+  test("a phrase split by an inline tag becomes findable", () => {
+    const html = "<p>we run <strong>12</strong> mailboxes</p>";
+    expect(/12 mailboxes/.test(html)).toBe(false);        // the defect
+    expect(/12 mailboxes/.test(stripTagsWithMap(html).text)).toBe(true);
+  });
+
+  test("inline tags leave no gap, block tags leave a space", () => {
+    expect(stripTagsWithMap("Brain<strong>LLM</strong>").text).toBe("BrainLLM");
+    // Both the closing and the opening block tag emit a boundary, so two
+    // paragraphs are separated by two spaces. What matters is that they are
+    // separated at all — "foobar" is a phrase nobody wrote.
+    expect(stripTagsWithMap("<p>foo</p><p>bar</p>").text.trim()).toBe("foo  bar");
+    expect(stripTagsWithMap("<p>foo</p><p>bar</p>").text).not.toContain("foobar");
+  });
+
+  test("decodes entities so a pattern written in plain text matches", () => {
+    expect(stripTagsWithMap("<p>a&nbsp;b &amp; c</p>").text).toContain("a b & c");
+  });
+
+  test("the map points back at the original body", () => {
+    const html = "<p>we run <strong>12</strong> mailboxes</p>";
+    const { text, map } = stripTagsWithMap(html);
+    expect(map.length).toBe(text.length);
+    const at = text.indexOf("12");
+    expect(html.slice(map[at]!, map[at]! + 2)).toBe("12");
+  });
+});
+
+describe("repairDoubleEscaping", () => {
+  test("unwinds exactly one level", () => {
+    expect(repairDoubleEscaping("&amp;lt;h2&amp;gt;")).toBe("&lt;h2&gt;");
+    expect(repairDoubleEscaping("a&amp;nbsp;b")).toBe("a&nbsp;b");
+    expect(repairDoubleEscaping("&amp;amp;")).toBe("&amp;");
+  });
+
+  test("leaves real markup and ordinary escaped ampersands alone", () => {
+    expect(repairDoubleEscaping("<h2>fine</h2>")).toBe("<h2>fine</h2>");
+    expect(repairDoubleEscaping("Tom &amp; Jerry")).toBe("Tom &amp; Jerry");
+  });
+
+  test("one pass only — a note documenting the signature is not turned into markup", () => {
+    // Two levels deep stays escaped after a single call, deliberately.
+    expect(repairDoubleEscaping("&amp;amp;lt;")).toBe("&amp;lt;");
   });
 });

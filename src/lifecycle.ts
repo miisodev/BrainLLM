@@ -11,7 +11,7 @@
 import { type TriliumClient, type Note, ownedLabel, relationSnippet, type RelationEdge } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import type { AnyKind } from "./types.js";
-import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, LARGE_NOTE_CHARS } from "./normalize.js";
+import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, escapeQueryRegex, repairDoubleEscaping, LARGE_NOTE_CHARS } from "./normalize.js";
 import { RESOLUTION_ANCHOR, missingSections } from "./templates.js";
 import { localToday } from "./time.js";
 
@@ -110,9 +110,9 @@ const STRUCTURE_LINT_LIMIT = 40;
 export async function sweep(
   trilium: TriliumClient,
   cfg: BrainLLMConfig,
-  opts: { deep?: boolean; dryRun?: boolean; domain?: string; ack?: string[] } = {}
+  opts: { deep?: boolean; dryRun?: boolean; domain?: string; ack?: string[]; repair?: string[] } = {}
 ): Promise<SweepReport> {
-  const { deep = false, dryRun = false, ack } = opts;
+  const { deep = false, dryRun = false, ack, repair } = opts;
   const policy = cfg.policy;
   const report: SweepReport = {
     scanned: 0, fixed: [], transitions: [], deleted: [], flagged: [], dryRun,
@@ -490,7 +490,7 @@ export async function sweep(
   }
 
   // ── Deep: hygiene passes ────────────────────────────────────────────────────
-  await hygienePasses(trilium, cfg, report, { eligible, connectable, dryRun });
+  await hygienePasses(trilium, cfg, report, { eligible, connectable, dryRun, repair: new Set(repair ?? []) });
 
   // ── Deep: duplicate-title detection ────────────────────────────────────────
   // Flat containers: group by normalised title, flag any group > 1.
@@ -620,6 +620,8 @@ interface HygieneCtx {
   eligible: (n: Note, skip?: (kind: string) => boolean) => boolean;
   connectable: (query: string, limit?: number) => Promise<Note[]>;
   dryRun: boolean;
+  /** Note ids the caller asked to REPAIR rather than merely report. */
+  repair: Set<string>;
 }
 
 /** The correctness-and-convention passes, all server-side filtered.
@@ -636,13 +638,20 @@ async function hygienePasses(
 ): Promise<void> {
   const { eligible } = ctx;
 
-  // 1. Entity-corrupted bodies. A body written with escaped markup used to be
-  //    escaped a SECOND time on the way in, storing "&amp;lt;h2&amp;gt;" and
-  //    rendering it as visible literal text — with a clean write receipt. The
-  //    write path no longer does this, but nothing detects notes already
-  //    carrying the damage, and it reached eight of them before anyone noticed.
+  // 1. Entity-corrupted bodies — a body escaped a SECOND time on the way in,
+  //    storing "&amp;lt;h2&amp;gt;" and rendering it as visible literal text,
+  //    with a clean write receipt.
+  //
+  //    Two things were wrong here until v10.3. The producer (escapeHtml's
+  //    blanket & → &amp;) was never fixed — only the detector and repairer
+  //    were — so this kept recurring after being declared solved. And the
+  //    detector itself only ever looked for "&amp;lt;", while the same bug
+  //    produces "&amp;nbsp;" and "&amp;amp;" far more often: a body carrying an
+  //    &nbsp; copied out of a prior read is the commonest case of all, and it
+  //    was produced and then never flagged. The pattern below matches any
+  //    doubly-escaped entity, not one spelling of it.
   const corrupted = await trilium
-    .searchNotes("#noteType note.content *=* '&amp;lt;'", { ancestorNoteId: cfg.root, limit: 50 })
+    .searchNotes(`#noteType note.content %= '${escapeQueryRegex("&amp;(?:[a-zA-Z][a-zA-Z0-9]*|#\\d+|#x[0-9a-fA-F]+);")}'`, { ancestorNoteId: cfg.root, limit: 50 })
     .then((r) => r.results)
     .catch(() => [] as Note[]);
   report.scanned += corrupted.length;
@@ -656,7 +665,21 @@ async function hygienePasses(
     // contains it, so this detector has permanent true positives that must
     // stay silenceable.
     if (!eligible(n)) continue;
-    report.flagged.push(`entity-corrupted: ${n.title} [${n.noteId}] — body stores doubly-escaped markup ("&amp;lt;") that renders as literal text. Repair with revise(mode="replace") passing the decoded content; nothing decodes it as a side effect.`);
+    if (ctx.repair.has(n.noteId)) {
+      const before = await trilium.getNoteContent(n.noteId).catch(() => "");
+      const after = repairDoubleEscaping(before);
+      if (after === before) {
+        report.flagged.push(`entity-corrupted: ${n.title} [${n.noteId}] — repair requested but the body did not change; the match is a note DOCUMENTING the signature rather than carrying it. maintain(ack=["${n.noteId}"]) to silence.`);
+        continue;
+      }
+      if (!ctx.dryRun) {
+        await trilium.createRevision(n.noteId).catch(() => null);
+        await trilium.updateNoteContent(n.noteId, after);
+      }
+      report.fixed.push(`entity-repaired: ${n.title} [${n.noteId}] — unwound one level of double-escaping${ctx.dryRun ? " (dry run, not written)" : ", snapshot taken first"}.`);
+      continue;
+    }
+    report.flagged.push(`entity-corrupted: ${n.title} [${n.noteId}] — body stores doubly-escaped markup ("&amp;lt;", "&amp;nbsp;") that renders as literal text. Repair with maintain(repair=["${n.noteId}"]) — the substitution is always the same, so it is a first-class action rather than something each caller reinvents. Read it first if you need to be sure.`);
   }
 
   // 2. Titles that break the dedup key. A dated or run-numbered title defeats
