@@ -763,6 +763,42 @@ async function hygienePasses(
     report.flagged.push(`entity-corrupted: ${n.title} [${n.noteId}] — body stores doubly-escaped markup ("&amp;lt;", "&amp;nbsp;") that renders as literal text. Repair with maintain(repair=["${n.noteId}"]) — the substitution is always the same, so it is a first-class action rather than something each caller reinvents. Read it first if you need to be sure.`);
   }
 
+  // 1b. Claims whose verification has lapsed, or which are known broken.
+  //
+  //     This is the only pass that checks the brain against the WORLD rather
+  //     than against itself. consistency() compares notes to each other and
+  //     every other pass here checks structure — none of which notices that a
+  //     recorded fact quietly stopped being true of the thing it describes.
+  //     Registering a claim is what converts "is the brain stale" from a
+  //     question answered by luck into one answered by a query.
+  const claims = await trilium
+    .searchNotes("#noteType=claim", { ancestorNoteId: cfg.root, fastSearch: true, limit: 200 })
+    .then((r) => r.results)
+    .catch(() => [] as Note[]);
+  report.scanned += claims.length;
+  for (const n of claims) {
+    if (!eligible(n)) continue;
+    const state = ownedLabel(n, "claimState");
+    const verifiedOn = ownedLabel(n, "verified");
+    const interval = Number(ownedLabel(n, "interval") ?? 30);
+    if (state === "broken") {
+      report.flagged.push(
+        `claim broken: "${n.title}" [${n.noteId}] — last check FAILED${verifiedOn ? ` on ${verifiedOn}` : ""}. ` +
+        `Correct every note asserting it (consistency() will find the others), then re-verify with claim(claimId="${n.noteId}", holds=true, evidence=…). ` +
+        `A broken claim left in the register is a known-wrong fact with a timestamp on it.`
+      );
+      continue;
+    }
+    const due = !verifiedOn || verifiedOn < isoDaysAgo(interval);
+    if (due) {
+      report.flagged.push(
+        `claim ${verifiedOn ? "lapsed" : "unverified"}: "${n.title}" [${n.noteId}] — ` +
+        `${verifiedOn ? `last verified ${verifiedOn}, interval ${interval}d` : "never verified since registration"}. ` +
+        `Read its check with claim(claimId="${n.noteId}"), run it, and record the result.`
+      );
+    }
+  }
+
   // 2. Titles that break the dedup key. A dated or run-numbered title defeats
   //    dedup-by-title outright; an over-long one is the documented signal that
   //    the CONTENT wants splitting.
