@@ -61,7 +61,7 @@ import {
   duplicateHeadings,
   leadingIdentification,
 } from "./normalize.js";
-import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES, isOpenResolutionOnly } from "./templates.js";
+import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES, isOpenResolutionOnly, purposeContent } from "./templates.js";
 import {
   dedupScope,
   labelPlan,
@@ -73,7 +73,7 @@ import {
   type RememberOpts,
 } from "./router.js";
 import { sweep, buildDigest, applyResolution, isStructural, isContainer, type SweepReport } from "./lifecycle.js";
-import { createBrainLLMStructure } from "./bootstrap.js";
+import { createBrainLLMStructure, containerPurposes } from "./bootstrap.js";
 import { generateDailyLog } from "./journal.js";
 import { localToday, localNowTime } from "./time.js";
 import { registerMasterTools } from "./tools-master.js";
@@ -3628,6 +3628,155 @@ Structural containers are excluded; only content notes appear.`,
   );
 
   server.tool(
+    "assembly",
+    `What the brain HOLDS — every note by title, grouped under the surface it lives in, with each
+surface's own purpose alongside it. The awareness read: "what do I already know here", answered
+in one call before deciding whether to look something up.
+
+Distinct from brain(), which is an inventory: brain() returns id, kind, status, parent, dates and
+relations for every note, and is what you want when auditing or locating one. assembly() answers
+a different question and is shaped for it:
+
+- **Dated collections collapse.** Sessions, diary entries and logs are titled [yyyy-mm-dd], so
+  listing them is a wall of dates carrying no information about content. They come back as a
+  count and a span instead. This is the difference between a listing and an awareness read — the
+  full titles are one brain() call away when you actually need them.
+- **Domains nest.** Each domain book appears with its own information and sources notes beneath
+  it, which is the real shape of what the brain knows rather than the flat list brain() returns.
+- **Threads group by status**, newest activity first — the working set is the actionable part.
+- **Purposes are read from the container notes themselves**, the text bootstrap engraved on them,
+  so this can never drift from what the brain actually says about itself.
+
+Pass area= to zoom into one surface and get its full detail.`,
+    {
+      area: z.enum(["master", "llm", "memory", "knowledge", "insights"]).optional().describe("Zoom into one surface instead of all five"),
+      includeArchived: z.boolean().optional().describe("Include archived/resolved notes (default: false)"),
+    },
+    async ({ area, includeArchived }) => {
+      const cfg = b();
+      if (!cfg.root) return txt({ status: "uninitialized", action: "Run bootstrap first." });
+
+      const fetchFrom = async (id: string | undefined): Promise<Note[]> => {
+        if (!id) return [];
+        return trilium
+          .searchNotes("#noteType", {
+            ancestorNoteId: id, fastSearch: true, limit: 400,
+            includeArchivedNotes: includeArchived ?? false,
+            orderBy: "dateModified", orderDirection: "desc",
+          })
+          .then((r) => r.results)
+          .catch(() => []);
+      };
+
+      /** The purpose engraved on a container at bootstrap. Read rather than
+       *  hardcoded: a copy here would silently disagree with the note the
+       *  moment either changed, and the note is the one the user can see. */
+      const purposeOf = async (id: string | undefined): Promise<string | undefined> => {
+        if (!id) return undefined;
+        const content = await trilium.getNoteContent(id).catch(() => "");
+        const text = toText(content, 400).trim();
+        return text || undefined;
+      };
+
+      const dateOf = (n: Note) => labelOf(n, "created") ?? n.dateCreated.slice(0, 10);
+      /** Dated records summarised rather than listed — see the tool description. */
+      const span = (notes: Note[], label: string) => {
+        if (!notes.length) return { count: 0, note: `No ${label} yet.` };
+        const dates = notes.map(dateOf).sort();
+        return {
+          count: notes.length,
+          earliest: dates[0],
+          latest: dates[dates.length - 1],
+          note: `${notes.length} ${label}, ${dates[0]} → ${dates[dates.length - 1]}. Titles are all [yyyy-mm-dd] — read one with its surface tool, or brain() for the full list.`,
+        };
+      };
+      const titles = (notes: Note[]) => notes.map((n) => n.title);
+
+      const want = (a: string) => !area || area === a;
+      const out: Record<string, unknown> = {};
+
+      if (want("master")) {
+        const notes = await fetchFrom(cfg.master.root);
+        out.Master = { purpose: await purposeOf(cfg.master.root), singletons: titles(notes) };
+      }
+
+      if (want("llm")) {
+        const [all, diary] = await Promise.all([fetchFrom(cfg.llm.root), fetchFrom(cfg.llm.diary)]);
+        const diaryIds = new Set(diary.map((n) => n.noteId));
+        out.LLM = {
+          purpose: await purposeOf(cfg.llm.root),
+          singletons: titles(all.filter((n) => !diaryIds.has(n.noteId))),
+          diary: span(diary, "diary entries"),
+        };
+      }
+
+      if (want("memory")) {
+        const [threads, sessions] = await Promise.all([fetchFrom(cfg.memory.threads), fetchFrom(cfg.memory.sessions)]);
+        // Thread books only — day-children are the thread's content, not
+        // separate things the brain knows.
+        const books = threads.filter((n) => labelOf(n, "noteType") === "thread");
+        const byStatus = (s: string) => titles(books.filter((n) => (labelOf(n, "status") ?? "active") === s));
+        out.Memory = {
+          purpose: await purposeOf(cfg.memory.root),
+          threads: {
+            active: byStatus("active"),
+            ...(byStatus("dormant").length ? { dormant: byStatus("dormant") } : {}),
+            ...(byStatus("eternal").length ? { eternal: byStatus("eternal") } : {}),
+            ...(includeArchived && byStatus("resolved").length ? { resolved: byStatus("resolved") } : {}),
+          },
+          sessions: span(sessions.filter((n) => labelOf(n, "noteType") === "session"), "sessions"),
+        };
+      }
+
+      if (want("knowledge")) {
+        const [master, domainNotes] = await Promise.all([fetchFrom(cfg.knowledge.master), fetchFrom(cfg.knowledge.domains)]);
+        // Nest by parent — the flat listing is exactly the shape that got a
+        // domain misread as empty once, and the reason brain() now reports
+        // parent at all.
+        const books = domainNotes.filter((n) => labelOf(n, "noteType") === "domain");
+        const domains = books.map((book) => {
+          const children = domainNotes.filter((n) => n.noteId !== book.noteId && n.parentNoteIds?.includes(book.noteId));
+          return {
+            domain: book.title,
+            sources: children.some((c) => labelOf(c, "noteType") === "sources"),
+            notes: titles(children.filter((c) => labelOf(c, "noteType") === "information")),
+          };
+        });
+        const orphaned = domainNotes.filter(
+          (n) => labelOf(n, "noteType") !== "domain" && !books.some((bk) => n.parentNoteIds?.includes(bk.noteId))
+        );
+        out.Knowledge = {
+          purpose: await purposeOf(cfg.knowledge.root),
+          aboutTheUser: titles(master),
+          domains,
+          ...(orphaned.length
+            ? { unparented: titles(orphaned), hint: "These carry a knowledge kind but sit under no domain book — inspect() them for their real parent." }
+            : {}),
+        };
+      }
+
+      if (want("insights")) {
+        const [logs, all] = await Promise.all([fetchFrom(cfg.insights.logs), fetchFrom(cfg.insights.root)]);
+        const claims = all.filter((n) => labelOf(n, "noteType") === "claim");
+        out.Insights = {
+          purpose: await purposeOf(cfg.insights.root),
+          logs: span(logs.filter((n) => labelOf(n, "noteType") === "log"), "daily logs"),
+          claims: claims.length
+            ? { count: claims.length, assertions: titles(claims), note: "Each claim's title IS its assertion. claim(claimId) reads one with its verification history." }
+            : { count: 0, note: "No claims registered — nothing is currently being checked against the world." },
+        };
+      }
+
+      return txt({
+        brain: await purposeOf(cfg.root),
+        ...(area ? { scope: area } : {}),
+        ...out,
+        ...(includeArchived ? {} : { note: "Archived and resolved notes are excluded — pass includeArchived=true to see them." }),
+      });
+    }
+  );
+
+  server.tool(
     "bootstrap",
     `Initialize the BrainLLM structure in Trilium (idempotent — safe to re-run; refreshes config
 if the structure already exists). Creates the five areas — Master (Biography/Goals/Preferences),
@@ -3646,9 +3795,36 @@ immediately, no restart needed.`,
             })
           );
           const saved = saveConfig(brainRef.config);
+          // Re-engrave container purposes.
+          //
+          // These are written once at bootstrap and are then unreachable:
+          // revise() refuses containers, so nothing in the tool surface can
+          // update them, and a purpose that goes stale stays stale for the life
+          // of the brain. That was invisible until assembly() started serving
+          // this text to orient a session — Insights still described itself as
+          // holding only per-day logs, long after it gained the graph and the
+          // claims register. Re-running bootstrap now heals them.
+          //
+          // Only genuinely different text is written, and every change is
+          // reported: this overwrites a note the user can see, so it must never
+          // be a silent side effect of a call made for another reason.
+          const refreshed: string[] = [];
+          for (const [id, purpose] of containerPurposes(brainRef.config)) {
+            if (!id) continue;
+            const current = await trilium.getNoteContent(id).catch(() => null);
+            if (current === null) continue;
+            const wanted = purposeContent(purpose);
+            if (toText(current, 400).trim() === toText(wanted, 400).trim()) continue;
+            await trilium.updateNoteContent(id, wanted).catch(() => null);
+            const note = await trilium.getNote(id).catch(() => null);
+            refreshed.push(note?.title ?? id);
+          }
           return txt({
             status: "already_initialized",
             message: `BrainLLM structure exists. Config refreshed at: ${saved}`,
+            ...(refreshed.length
+              ? { purposesRefreshed: refreshed, note: "These containers described themselves with text that no longer matched the canonical purpose, and have been re-engraved. Container notes are unreachable through revise(), so bootstrap is the only path that can correct them." }
+              : {}),
             root: { id: existing.noteId, title: existing.title },
             children,
           });
