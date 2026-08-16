@@ -1,0 +1,131 @@
+# Publish a release: npm, then the MCP Registry.
+#
+# Triggered by a version tag, because tagging is the one release step nobody
+# forgets — it is what a human already does to mark a release. Everything
+# downstream of it used to be manual, and twice it simply did not happen: six
+# commits shipped between v10.1.0 and v10.2.0 with npm still serving 10.1.0,
+# and v10.3.0 shipped complete with docs, site and a live deploy while npm, the
+# tags, the releases and the MCP Registry all stayed where they were. Both
+# times every local signal was green. This removes the class.
+#
+# NO SECRETS. Both publishes authenticate by OIDC from this workflow's own
+# identity:
+#   - npm trusted publishing, configured on the package at
+#     npmjs.com/package/brainllm/access — needs `id-token: write`, npm CLI
+#     >= 11.5.1 and Node >= 22.14.0, and generates provenance automatically.
+#   - mcp-publisher login github-oidc, which proves the io.github.miisodev/*
+#     namespace from the repository owner.
+# A token would have been the other option and is worse: the granular npm token
+# offered by default expires in 30 days, and an expired one fails `npm publish`
+# with a 404 on PUT rather than a 401 — npm answers unauthenticated writes that
+# way so it does not leak whether a package exists. That failure already cost a
+# release.
+#
+# Ordering is not stylistic. The MCP Registry validates ownership by fetching
+# the npm package at the exact version in server.json and reading its `mcpName`
+# field, so npm MUST publish first or the registry step fails validation.
+#
+# GitHub Releases stay manual on purpose: their notes are prose about what
+# changed and why, which is the one part of a release worth writing by hand.
+
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC, for BOTH npm trusted publishing and mcp-publisher
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1"
+
+      - run: bun install --frozen-lockfile
+
+      # The same gates CI runs. A tag should never be the first time these run,
+      # but a release is the worst possible moment to find out they were skipped.
+      - name: Type check
+        run: bunx tsc --noEmit
+
+      - name: Build
+        run: bun run build
+
+      - name: Unit tests
+        run: bun test src/*.test.ts
+
+      # The version sites drift independently — there are six of them across
+      # five files, and two separate releases shipped with one or more stale.
+      # A tag that disagrees with the manifest would publish the wrong version
+      # number to two registries at once, so it fails here instead.
+      - name: Tag matches the manifests
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG=$(node -p "require('./package.json').version")
+          SRV=$(node -p "require('./server.json').version")
+          SRVPKG=$(node -p "require('./server.json').packages[0].version")
+          MANIFEST=$(node -p "require('./manifest.json').version")
+          echo "tag=$TAG package.json=$PKG server.json=$SRV server.json/packages[0]=$SRVPKG manifest.json=$MANIFEST"
+          for V in "$PKG" "$SRV" "$SRVPKG" "$MANIFEST"; do
+            if [ "$V" != "$TAG" ]; then
+              echo "::error::Version mismatch — tag v$TAG but a manifest says $V. Bump all six sites before tagging."
+              exit 1
+            fi
+          done
+
+      # The registry proves npm ownership by reading this field off the
+      # published package, so a mismatch here is only discovered one release
+      # too late to fix in place — npm versions are immutable.
+      - name: mcpName matches the server name
+        run: |
+          MCP=$(node -p "require('./package.json').mcpName || ''")
+          NAME=$(node -p "require('./server.json').name")
+          if [ "$MCP" != "$NAME" ]; then
+            echo "::error::package.json mcpName '$MCP' != server.json name '$NAME'. The MCP Registry will reject this."
+            exit 1
+          fi
+
+      # npm CLI >= 11.5.1 and Node >= 22.14.0 are required for trusted
+      # publishing; the runner's bundled npm is not guaranteed to be new enough,
+      # so it is upgraded explicitly rather than hoped for.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      # No NODE_AUTH_TOKEN: the CLI detects the OIDC credential itself.
+      - name: Publish to npm
+        run: npm publish
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to the MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to the MCP Registry
+        run: ./mcp-publisher publish
+
+      - name: Verify both registries from outside
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "npm:      $(npm view brainllm version)"
+          echo "registry: $(curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=brainllm" | head -c 200)"
+          if [ "$(npm view brainllm version)" != "$TAG" ]; then
+            echo "::error::npm still does not serve $TAG — the publish did not take effect."
+            exit 1
+          fi
