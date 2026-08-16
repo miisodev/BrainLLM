@@ -13,9 +13,19 @@ export function registerKnowledgeTools(server: McpServer, trilium: TriliumClient
 
   server.tool(
     "knowledge",
-    "Read a Knowledge note in full by id — a user-knowledge note, a domain information note, or a Sources note.",
-    { id: z.string() },
-    async ({ id }) => txt(await readFull(trilium, id))
+    `Read a Knowledge note by id — a user-knowledge note, a domain information note, or a Sources note.
+
+Pass section="<heading>" to read ONE section instead of the whole body — the read-side
+counterpart to revise(section=), matching on the same heading contract, so a name that reads
+also writes. Use it on anything large: a note past the read ceiling cannot be returned whole at
+all, and outline(id) lists the headings to choose from. occurrence= disambiguates repeated
+heading texts.`,
+    {
+      id: z.string(),
+      section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
+      occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
+    },
+    async ({ id, section, occurrence }) => txt(await readFull(trilium, id, { section, occurrence }))
   );
 
   server.tool(

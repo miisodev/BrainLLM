@@ -356,6 +356,88 @@ export function toText(html: string, maxLength = 300): string {
   return (lastSpace > maxLength * 0.6 ? cut.slice(0, lastSpace) : cut) + "…";
 }
 
+export interface AddendumBlock {
+  /** The marker heading, e.g. "Addendum — 13:35". */
+  marker: string;
+  /** The block's identification line (its h3), when it carries one. */
+  identity?: string;
+  /** First line of actual content, for orientation. */
+  lead: string;
+}
+
+/** Index the addendum blocks in a chronological record.
+ *
+ *  A thread day-child's index preview used to be a 160-character slice from the
+ *  TOP of the body — which on every such note is the record header, so the
+ *  preview was identical across children and told you nothing about which day
+ *  held what. The tool's own docs conceded it was "a hint, not proof". The
+ *  blocks and who wrote them ARE the useful index. */
+export function addendumIndex(html: string): AddendumBlock[] {
+  const markerRe = /<h2(?:\s[^>]*)?>\s*((?:Addendum|Withdrawn|Recovered|Reopened)[^<]*)<\/h2>/gi;
+  const out: AddendumBlock[] = [];
+  const hits = [...html.matchAll(markerRe)];
+  for (const [i, m] of hits.entries()) {
+    const from = m.index! + m[0].length;
+    const to = i + 1 < hits.length ? hits[i + 1]!.index! : html.length;
+    const body = html.slice(from, to);
+    const idMatch = body.match(/<h3(?:\s[^>]*)?>([\s\S]*?)<\/h3>/i);
+    const identity = idMatch ? decodeEntities(idMatch[1]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim() : undefined;
+    out.push({
+      marker: decodeEntities(m[1]!).replace(/\s+/g, " ").trim(),
+      ...(identity ? { identity } : {}),
+      lead: toText(idMatch ? body.slice(idMatch.index! + idMatch[0].length) : body, 120),
+    });
+  }
+  return out;
+}
+
+export interface NearMatch {
+  /** The longest fragment of the search string that IS present in the body. */
+  fragment: string;
+  /** The stored text around it, so the caller can see how it really differs. */
+  context: string;
+  index: number;
+}
+
+/** Find the longest fragment of `needle` that actually occurs in `source`, and
+ *  return the stored text around it.
+ *
+ *  A find= miss used to report only that the string was absent, which is the one
+ *  thing the caller already knew. Diagnosing it meant guessing a variant,
+ *  re-reading with inspect(content=true), and guessing again — three or four
+ *  round-trips to discover a CKEditor-injected attribute or a different dash.
+ *  Showing the nearest real text answers it in one. */
+export function nearestContext(source: string, needle: string, radius = 40): NearMatch | null {
+  if (!source || needle.length < 4) return null;
+
+  // Longest prefix of the needle present in the source, by binary search — the
+  // failure is nearly always at the END of the string (a trailing attribute, a
+  // changed word), so the prefix is what survives.
+  const longestFrom = (take: (n: number) => string): { frag: string; at: number } | null => {
+    let lo = 4, hi = needle.length, best: { frag: string; at: number } | null = null;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const frag = take(mid);
+      const at = source.indexOf(frag);
+      if (at !== -1) { best = { frag, at }; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return best;
+  };
+
+  const prefix = longestFrom((n) => needle.slice(0, n));
+  const suffix = longestFrom((n) => needle.slice(needle.length - n));
+  const best = !prefix ? suffix : !suffix ? prefix : suffix.frag.length > prefix.frag.length ? suffix : prefix;
+  if (!best) return null;
+
+  const from = Math.max(0, best.at - radius);
+  const to = Math.min(source.length, best.at + best.frag.length + radius);
+  return {
+    fragment: best.frag,
+    context: `${from > 0 ? "…" : ""}${source.slice(from, to)}${to < source.length ? "…" : ""}`,
+    index: best.at,
+  };
+}
+
 export interface StrippedText {
   /** The body with tags removed and entities decoded. */
   text: string;
@@ -745,6 +827,10 @@ export interface HeadingNode {
   /** 1-based index among headings sharing this text at this level — the value
    *  to pass as `occurrence` to reach this one specifically. */
   occurrence: number;
+  /** The heading's inner HTML as STORED, present only when it differs from
+   *  text — i.e. when the heading carries inline markup. section= matches text
+   *  and needs `text`; find= matches stored HTML and needs this. */
+  raw?: string;
 }
 
 /** Every h2–h4 heading in a body, in document order, with its level and its
@@ -757,12 +843,19 @@ export function headingOutline(html: string): HeadingNode[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     const level = Number(m[1]) as 2 | 3 | 4;
-    const text = decodeEntities(m[2].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+    const raw = m[2]!;
+    const text = decodeEntities(raw.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
     if (!text) continue;
     const key = `${level}::${text.toLowerCase()}`;
     const occurrence = (seen.get(key) ?? 0) + 1;
     seen.set(key, occurrence);
-    out.push({ level, text, occurrence });
+    // raw is surfaced only when it DIFFERS from text — i.e. when the heading
+    // carries inline markup. section= matches on text and is unaffected, but
+    // find= matches stored HTML, so a find built from this outline's own output
+    // would miss on exactly these headings and on no others. Reporting it only
+    // where it differs makes the exception visible instead of burying it in
+    // noise on every ordinary heading.
+    out.push({ level, text, occurrence, ...(raw.trim() !== text ? { raw: raw.trim() } : {}) });
   }
   return out;
 }
@@ -786,6 +879,102 @@ export interface SetSectionResult {
   /** The note's existing headings, returned on a miss so the caller can correct
    *  the section name without a separate read. */
   available?: string[];
+  /** Nested headings that were INSIDE the replaced section, and so went with it.
+   *  Taking child headings along is correct and documented, but the receipt used
+   *  to say only matched: true — the caller could not tell whether it had
+   *  replaced a leaf or displaced four subsections until it read the note back. */
+  replacedSubsections?: string[];
+}
+
+interface SectionSpan {
+  level: 2 | 3 | 4;
+  /** Index of the opening <hN>. */
+  headingStart: number;
+  /** Index just past </hN> — where the section's body begins. */
+  contentStart: number;
+  /** Index of the next heading at this level or shallower, else html.length. */
+  end: number;
+  /** How many headings share this text at the matched level. */
+  headingCount: number;
+  /** The heading's inner HTML, as stored. */
+  headingRaw: string;
+}
+
+/** Locate a section by heading text. THE single matching contract — setSection()
+ *  and getSection() both go through here, so a heading name that reads also
+ *  writes, and one that writes also reads.
+ *
+ *  Matching is on the heading's TEXT, not its raw inner HTML: a heading carrying
+ *  inline markup — `<h3><code>recall(regex=)</code> — the prior defect</h3>` —
+ *  has an inner HTML that is not its text, and comparing raw meant outline()
+ *  handed callers a name section= would then refuse. Two halves of one contract
+ *  disagreeing, and the refusal was silent (a section= miss APPENDS), so
+ *  trusting outline()'s own output produced duplicate sections rather than an
+ *  error. Keeping the comparison in one function is what stops that recurring. */
+function locateSection(html: string, heading: string, occurrence = 1): SectionSpan | null {
+  const key = (s: string) => decodeEntities(s.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase();
+  const targetKey = key(heading);
+  for (const level of [2, 3, 4] as const) {
+    const tag = `h${level}`;
+    const globalRe = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "gi");
+    const hits = [...html.matchAll(globalRe)].filter((m) => key(m[1]!) === targetKey);
+    if (!hits.length) continue;
+
+    const headingCount = hits.length;
+    const match = hits[Math.min(Math.max(occurrence, 1), headingCount) - 1]!;
+    const headingStart = match.index!;
+    const contentStart = headingStart + match[0].length;
+    const nextMatch = html.slice(contentStart).search(new RegExp(`<h[2-${level}]`));
+    return {
+      level,
+      headingStart,
+      contentStart,
+      end: nextMatch === -1 ? html.length : contentStart + nextMatch,
+      headingCount,
+      headingRaw: match[1]!,
+    };
+  }
+  return null;
+}
+
+export interface GetSectionResult {
+  matched: boolean;
+  /** The section body — everything under the heading, excluding the heading. */
+  content: string;
+  /** The heading as stored, inline markup included. */
+  headingRaw?: string;
+  level?: 2 | 3 | 4;
+  headingCount?: number;
+  /** Nested headings inside the returned section. */
+  subsections?: string[];
+  /** On a miss, the note's real heading texts — so the caller can re-target
+   *  without falling back to a whole-note read, which is the cost this exists
+   *  to avoid in the first place. */
+  available?: string[];
+}
+
+/** Read ONE section of a note — the read-side counterpart to setSection().
+ *
+ *  Every write tool could target a heading and no read tool could, so the only
+ *  way to see one section was to read the whole note. That is a real cost on the
+ *  notes where it matters most: a Current State note grew 53k → 108k characters
+ *  across five sessions and at one point could not be returned at all, which
+ *  made the largest notes precisely the ones the brain could no longer read. */
+export function getSection(html: string, heading: string, occurrence = 1): GetSectionResult {
+  const closed = closeDangling(html);
+  const found = locateSection(closed, heading, occurrence);
+  if (!found) {
+    return { matched: false, content: "", available: headingOutline(closed).map((h) => h.text) };
+  }
+  const content = closed.slice(found.contentStart, found.end).trim();
+  return {
+    matched: true,
+    content,
+    headingRaw: found.headingRaw,
+    level: found.level,
+    headingCount: found.headingCount,
+    ...(headingOutline(content).length ? { subsections: headingOutline(content).map((h) => h.text) } : {}),
+  };
 }
 
 /** Replace, append within, or insert around a heading section (h2/h3/h4 tried
@@ -811,7 +1000,7 @@ export function setSection(
   html: string,
   heading: string,
   content: string,
-  mode: "replace" | "append" | "before" | "after",
+  mode: "replace" | "append" | "before" | "after" | "remove",
   occurrence = 1
 ): SetSectionResult {
   html = closeDangling(html);
@@ -832,38 +1021,54 @@ export function setSection(
   //
   // Comparing stripped text on both sides makes the contract single-valued:
   // any name outline() prints is a name section= will match.
-  const targetKey = decodeEntities(heading.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase();
-  for (const level of [2, 3, 4]) {
-    const tag = `h${level}`;
-    const globalRe = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "gi");
-    const hits = [...html.matchAll(globalRe)].filter(
-      (m) => decodeEntities(m[1]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase() === targetKey
-    );
-    if (!hits.length) continue;
+  const found = locateSection(html, heading, occurrence);
+  if (found) {
+    const { headingStart, contentStart, end, headingCount } = found;
 
-    const headingCount = hits.length;
-    const match = hits[Math.min(Math.max(occurrence, 1), headingCount) - 1];
-    const headingStart = match.index!;
-    const after = headingStart + match[0].length;
-
+    // Deleting a section had no first-class path at all: revise(section=,
+    // mode="replace") with an empty body reported "metadata-only" and did
+    // nothing, because the whole section machinery sat behind an `if (body)`
+    // guard. Removal takes the heading AND its body, and reports what went with
+    // it for the same reason a replace does.
+    if (mode === "remove") {
+      const removed = html.slice(contentStart, end).trim();
+      return {
+        html: `${html.slice(0, headingStart)}${html.slice(end)}`.replace(/\n{3,}/g, "\n\n"),
+        matched: true,
+        headingCount,
+        ...(headingOutline(removed).length ? { replacedSubsections: headingOutline(removed).map((h) => h.text) } : {}),
+      };
+    }
     if (mode === "before") {
       return { html: `${html.slice(0, headingStart)}${content}\n${html.slice(headingStart)}`, matched: true, headingCount };
     }
     if (mode === "after") {
-      return { html: `${html.slice(0, after)}\n${content}${html.slice(after)}`, matched: true, headingCount };
+      return { html: `${html.slice(0, contentStart)}\n${content}${html.slice(contentStart)}`, matched: true, headingCount };
     }
 
-    const nextMatch = html.slice(after).search(new RegExp(`<h[2-${level}]`));
-    const end = nextMatch === -1 ? html.length : after + nextMatch;
-    const existing = html.slice(after, end).trim();
+    const existing = html.slice(contentStart, end).trim();
     const inner = mode === "append" && existing ? `${existing}\n${content}` : content;
     return {
-      html: `${html.slice(0, after)}\n${inner}\n${html.slice(end)}`,
+      html: `${html.slice(0, contentStart)}\n${inner}\n${html.slice(end)}`,
       matched: true,
       headingCount,
+      ...(mode === "replace" && headingOutline(existing).length
+        ? { replacedSubsections: headingOutline(existing).map((h) => h.text) }
+        : {}),
     };
   }
   const level = sectionLevelFor(html);
+  // A miss on "remove" must leave the body ALONE. The append-new-section
+  // fallback is right for the write modes and would be absurd here — creating
+  // the very heading the caller asked to delete.
+  if (mode === "remove") {
+    return {
+      html,
+      matched: false,
+      headingCount: 0,
+      available: headingOutline(html).map((h) => h.text),
+    };
+  }
   return {
     html: `${html}\n<h${level}>${heading}</h${level}>\n${content}`,
     matched: false,
