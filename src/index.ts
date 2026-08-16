@@ -10,6 +10,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { join, dirname } from "path";
 import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
+import { registerAdvancedTools } from "./tools-advanced.js";
 import { applyToolAnnotations } from "./annotations.js";
 import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM } from "./config.js";
 import {
@@ -107,8 +108,8 @@ const brainRef = { config: brain ?? EMPTY_BRAINLLM };
 const port      = process.env.PORT ? parseInt(process.env.PORT, 10) : null;
 const authToken = process.env.MCP_AUTH_TOKEN;
 
-// BRAINLLM_MODE=core (default): the 38 brain-aware tools (28 universal verbs + 10 surface reads).
-// BRAINLLM_MODE=full: additionally registers the 33 raw ETAPI tools.
+// BRAINLLM_MODE=core (default): the 42 brain-aware tools (32 universal verbs + 10 surface reads).
+// BRAINLLM_MODE=full: additionally registers the 33 raw ETAPI tools, for 75.
 const mode: "core" | "full" = process.env.BRAINLLM_MODE === "full" ? "full" : "core";
 
 // Brand identity advertised in the MCP handshake (serverInfo.icons). Clients
@@ -145,13 +146,18 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "10.5.0",
+    version: "10.5.1",
     icons: brandingIcons(origin),
   });
-  registerTools(s, trilium, brainRef, mode);
+  // The two surfaces, composed here rather than nested inside registerTools —
+  // so what each mode actually contains is visible at the point the decision is
+  // made, not behind a flag halfway down another module.
+  registerTools(s, trilium, brainRef);
+  if (mode === "full") registerAdvancedTools(s, trilium, brainRef);
+
   // Group the surface into read-only vs write/destructive for the client's
   // permission UI. Without it every tool is "Other", and the only choice on
-  // offer is allow-all-71 or approve-every-call.
+  // offer is allow-all-75 or approve-every-call.
   const { unclassified } = applyToolAnnotations(s);
   if (unclassified.length) {
     console.error(`[brainllm] Unclassified tools, treated as writes: ${unclassified.join(", ")}`);
