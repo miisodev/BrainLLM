@@ -42,3 +42,14 @@ jobs:
       # integration runner and needs a live Trilium instance.
       - name: Unit tests
         run: bun test src/*.test.ts
+
+      # Release metadata, checked on every push rather than at tag time.
+      #
+      # server.json sat INVALID against its own declared schema for four
+      # releases — a 259-character description against a 100-character limit —
+      # because nothing validated it. The file was maintained and version-bumped
+      # the whole time. The registry would have rejected it at publish, which is
+      # the most expensive moment to discover it: the npm half of a release is
+      # immutable by then.
+      - name: Release metadata
+        run: bun run validate:release

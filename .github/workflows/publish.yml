@@ -81,17 +81,12 @@ jobs:
             fi
           done
 
-      # The registry proves npm ownership by reading this field off the
-      # published package, so a mismatch here is only discovered one release
-      # too late to fix in place — npm versions are immutable.
-      - name: mcpName matches the server name
-        run: |
-          MCP=$(node -p "require('./package.json').mcpName || ''")
-          NAME=$(node -p "require('./server.json').name")
-          if [ "$MCP" != "$NAME" ]; then
-            echo "::error::package.json mcpName '$MCP' != server.json name '$NAME'. The MCP Registry will reject this."
-            exit 1
-          fi
+      # Schema validity, the npm ownership proof (mcpName), version agreement
+      # across every manifest, and the namespace the publish will claim. Same
+      # gate CI runs on every push — repeated here because this is the run that
+      # ships, and the npm half of it is immutable once it does.
+      - name: Release metadata
+        run: bun run validate:release
 
       # npm CLI >= 11.5.1 and Node >= 22.14.0 are required for trusted
       # publishing; the runner's bundled npm is not guaranteed to be new enough,
