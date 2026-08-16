@@ -43,6 +43,8 @@ import {
   safeAppend,
   closeDangling,
   setSection,
+  getSection,
+  nearestContext,
   headingOutline,
   sectionLevelFor,
   structureReport,
@@ -1673,7 +1675,7 @@ find=; to add content next to a heading without touching its body, use mode="bef
       title: z.string().optional().describe("New title (normalized server-side)"),
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading to target, 1-based (default: the first). Read them with outline(noteId)."),
-      mode: z.enum(["append", "replace", "before", "after"]).optional().describe('append (default) | replace | before | after — "before"/"after" insert adjacent to the section= heading without touching its body'),
+      mode: z.enum(["append", "replace", "before", "after", "remove"]).optional().describe('append (default) | replace | before | after | remove — "before"/"after" insert adjacent to the section= heading without touching its body; "remove" deletes the section= heading and its body, and needs no body='),
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
       nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them)"),
       edits: z.array(z.object({
@@ -1692,7 +1694,7 @@ find=; to add content next to a heading without touching its body, use mode="bef
       const note = await trilium.getNote(noteId);
       const noteKind = labelOf(note, "noteType");
       const warnings: string[] = [];
-      let sectionResult: { matched: boolean; headingCount: number } | null = null;
+      let sectionResult: { matched: boolean; headingCount: number; replacedSubsections?: string[] } | null = null;
 
       /** Apply a title change — with the domain rename cascade: retitling a
        *  domain book updates its #domain slug AND every descendant's, so
@@ -1780,24 +1782,47 @@ find=; to add content next to a heading without touching its body, use mode="bef
          *  specific, distinguishable causes. Naming the right one is the
          *  difference between a one-call retry and burning several on
          *  whitespace variants. */
-        const missHint = (needle: string): string => {
+        const missHint = (needle: string, source: string, alreadyConsumed: boolean): string => {
+          if (alreadyConsumed)
+            return `Not found — but an EARLIER edit in this same edits= array already replaced this exact string. The array is applied in order against one body, so the second pass had nothing left to match. This is the expected result, not a failure.`;
           if (looksEntityEscaped(needle))
             return `Not found — the search string carries escaped markup (&lt;…&gt;) while note bodies store real tags. Pass the tag literally, e.g. "<h3>Typography</h3>".`;
           if (spansBlockBoundary(needle))
             return `Not found — this string spans an element boundary (a closing tag followed by an opening one). Anchor the find INSIDE a single element instead, or target the heading directly with section= (with mode="before"/"after" to insert around it).`;
-          return `Not found in the note body (exact or attribute-tolerant) — already replaced on a retry, or the text genuinely differs. Verify with inspect(noteId, content=true), or count occurrences cheaply with inspect(noteId, find="<shorter substring>").`;
+          return `Not found in the note body (exact or attribute-tolerant) — already replaced on a retry, or the text genuinely differs.`;
+        };
+
+        /** The nearest real text, attached to a miss. Answers "how does it
+         *  actually differ" in the same call that reported the miss. */
+        const missContext = (needle: string, source: string) => {
+          const near = nearestContext(source, needle);
+          return near
+            ? { matchedUpTo: near.fragment, storedNearby: near.context }
+            : {};
         };
 
         const current = await trilium.getNoteContent(noteId).catch(() => "");
         let working = current;
-        const results: Array<{ find: string; replaced: number; matchMode?: string; hint?: string }> = [];
+        const results: Array<{ find: string; replaced: number; matchMode?: string; hint?: string; matchedUpTo?: string; storedNearby?: string }> = [];
         let total = 0;
+        const consumed = new Set<string>();
         for (const e of plan) {
           const applied = applyEdit(working, e.find, e.body, e.nth);
           if (!applied) {
-            results.push({ find: e.find, replaced: 0, hint: missHint(e.find) });
+            // "Already consumed by an earlier edit in this call" and "the text
+            // genuinely differs" are different diagnoses with different fixes,
+            // and reporting the second for the first sent callers hunting a
+            // discrepancy that did not exist.
+            const alreadyConsumed = consumed.has(e.find);
+            results.push({
+              find: e.find,
+              replaced: 0,
+              hint: missHint(e.find, current, alreadyConsumed),
+              ...(alreadyConsumed ? {} : missContext(e.find, working)),
+            });
             continue;
           }
+          consumed.add(e.find);
           working = applied.html;
           total += applied.count;
           results.push({ find: e.find, replaced: applied.count, matchMode: applied.matchMode });
@@ -1806,7 +1831,13 @@ find=; to add content next to a heading without touching its body, use mode="bef
         if (total === 0) {
           return txt({
             ok: true, noteId, mode: edits ? "edits" : "find-replace", replaced: 0, date: d,
-            ...(edits ? { results } : { hint: results[0].hint }),
+            ...(edits
+              ? { results }
+              : {
+                  hint: results[0]!.hint,
+                  ...(results[0]!.matchedUpTo ? { matchedUpTo: results[0]!.matchedUpTo } : {}),
+                  ...(results[0]!.storedNearby ? { storedNearby: results[0]!.storedNearby } : {}),
+                }),
           });
         }
 
@@ -1836,6 +1867,42 @@ find=; to add content next to a heading without touching its body, use mode="bef
 
       if ((mode === "before" || mode === "after") && !section)
         return err("missing_param", `mode="${mode}" inserts relative to a heading and needs one.`, 'Pass section="<heading text>" alongside it, or use mode="append" for a whole-note addendum.');
+      if (mode === "remove" && !section)
+        return err("missing_param", 'mode="remove" deletes a section and needs one.', 'Pass section="<heading text>". To delete the whole note use forget(noteId).');
+
+      // Removal is the one section operation with no body, so it runs BEFORE
+      // the `if (body)` guard that every other section mode lives behind —
+      // which is precisely why deleting a section had no working path before.
+      if (mode === "remove" && section) {
+        const current = await trilium.getNoteContent(noteId).catch(() => "");
+        const result = setSection(current, section, "", "remove", occurrence ?? 1);
+        if (!result.matched) {
+          return txt({
+            ok: true, noteId, mode: `section:remove:${section}`, matched: false, date: d,
+            available: result.available,
+            hint: `No "${section}" heading at h2/h3/h4 — nothing was removed and the body is untouched. Check available= for the note's real heading texts.`,
+          });
+        }
+        await trilium.createRevision(noteId).catch(() => null);
+        const stamped = bumpLastUpdated(result.html, d);
+        await trilium.updateNoteContent(noteId, stamped.html);
+        const titledOnRemove = await applyTitle();
+        const iconOnRemove = await applyIcon(noteId, icon);
+        await trilium.updateLabelValue(noteId, "updated", d);
+        if (labelOf(note, "status") === "dormant") await trilium.updateLabelValue(noteId, "status", "active");
+        const relsOnRemove = relationSnippet(note);
+        return txt({
+          ok: true, noteId, mode: `section:remove:${section}`, matched: true,
+          headingCount: result.headingCount, date: d,
+          ...(result.replacedSubsections?.length
+            ? { removedSubsections: result.replacedSubsections, displacedHint: `The removed section contained ${result.replacedSubsections.length} nested heading(s) — they went with it. A revision was taken first.` }
+            : {}),
+          ...(titledOnRemove.retitled ? { retitled: titledOnRemove.retitled } : {}),
+          ...(iconOnRemove ? { icon: iconOnRemove } : {}),
+          ...(relsOnRemove ? { relations: relsOnRemove } : {}),
+          ...structuralFindings(noteKind, stamped.html),
+        });
+      }
 
       let finalContent: string | null = null;
       let sectionMiss: { appendedAtLevel?: number; available?: string[] } = {};
@@ -1868,7 +1935,11 @@ find=; to add content next to a heading without touching its body, use mode="bef
           const result = setSection(current, section, html, sectionMode, occurrence ?? 1);
           finalContent = bumpLastUpdated(result.html, d).html;
           await trilium.updateNoteContent(noteId, finalContent);
-          sectionResult = { matched: result.matched, headingCount: result.headingCount };
+          sectionResult = {
+            matched: result.matched,
+            headingCount: result.headingCount,
+            ...(result.replacedSubsections?.length ? { replacedSubsections: result.replacedSubsections } : {}),
+          };
           sectionMiss = {
             ...(result.appendedAtLevel ? { appendedAtLevel: result.appendedAtLevel } : {}),
             ...(result.available?.length ? { available: result.available } : {}),
@@ -1921,9 +1992,27 @@ find=; to add content next to a heading without touching its body, use mode="bef
       return txt({
         ok: true,
         noteId,
-        mode: body ? (section ? `section:${section}` : (mode ?? "append")) : "metadata-only",
+        // mode used to collapse every section operation to "section:<heading>",
+        // so an insert-after and a whole-section replace produced identical
+        // receipts — and a rename-only call reported "metadata-only", which
+        // reads as "nothing happened" even though the title HAD been changed.
+        mode: body
+          ? section
+            ? `section:${mode === "before" || mode === "after" ? `insert-${mode}` : mode === "append" ? "append-within" : "replace"}:${section}`
+            : (mode ?? "append")
+          : titled.retitled
+          ? "rename"
+          : iconSet
+          ? "icon"
+          : "no-op",
         date: d,
         ...(sectionResult ? { matched: sectionResult.matched, headingCount: sectionResult.headingCount } : {}),
+        ...(sectionResult?.replacedSubsections?.length
+          ? {
+              replacedSubsections: sectionResult.replacedSubsections,
+              displacedHint: `The replaced section contained ${sectionResult.replacedSubsections.length} nested heading(s) — they went with it. Re-add any that should have survived.`,
+            }
+          : {}),
         ...sectionMiss,
         ...(sectionHint ? { hint: sectionHint } : {}),
         ...(threadEntryResult ? { entryId: threadEntryResult.noteId, entryAction: threadEntryResult.action } : {}),
@@ -2405,7 +2494,11 @@ remember(revision=) matches on exactly) without reading the note.`,
           level: h.level,
           text: h.text,
           ...(h.occurrence > 1 ? { occurrence: h.occurrence } : {}),
+          ...(h.raw ? { raw: h.raw } : {}),
         })),
+        ...(headings.some((h) => h.raw)
+          ? { rawHint: 'Headings carrying inline markup also report raw — their STORED form. section= matches text (use it), find= matches stored HTML (use raw). Building a find= from text alone misses on exactly these headings.' }
+          : {}),
         sectionLevel: sectionLevelFor(content),
         ...(tables.length ? { tables } : {}),
         ...(report.duplicateHeadings.length ? { duplicateHeadings: report.duplicateHeadings } : {}),
@@ -2426,25 +2519,35 @@ surface reads and explore(): reach for it when you need the raw label set, the b
 or the attachment inventory — confirming a fix landed, debugging drift — rather than a
 kind-specific summary. Read-only, safe on any note including structural containers.
 
+Pass section="<heading>" alongside content=true to get one section's raw body instead of the
+whole thing — the same heading contract revise(section=) writes through.
+
 Pass find="<literal>" to count occurrences of a literal string in the body — total plus a
 per-addendum-block breakdown. The staleness-escalation counter: "how many prior entries
-mention this carried flag" becomes one call instead of a full read + manual counting.`,
+mention this carried flag" becomes one call instead of a full read + manual counting. On zero
+occurrences it returns the nearest fragment that IS present and the stored text around it, so a
+miss is diagnosed in the same call rather than in three more.`,
     {
       noteId: z.string().describe("Note to inspect"),
       content: z.boolean().optional().describe("Include the note's raw body content (default: false)"),
+      section: z.string().optional().describe("With content=true, return only this heading's section rather than the whole body"),
       find: z.string().optional().describe("Literal string to count in the body — returns total occurrences + per-addendum-block counts (flag-staleness tracking)"),
     },
-    async ({ noteId, content, find }) => {
+    async ({ noteId, content, section, find }) => {
       const [note, attachments, rawBody] = await Promise.all([
         trilium.getNote(noteId),
         trilium.getNoteAttachments(noteId).catch(() => []),
         content || find ? trilium.getNoteContent(noteId).catch(() => "") : Promise.resolve(undefined),
       ]);
-      const body = content ? rawBody : undefined;
+      // A sectioned raw read: the same heading contract as revise(section=), so
+      // "inspect the part I am about to edit" costs the section, not the note.
+      let sectionRead: ReturnType<typeof getSection> | null = null;
+      if (content && section && rawBody !== undefined) sectionRead = getSection(rawBody, section);
+      const body = content ? (sectionRead ? sectionRead.content : rawBody) : undefined;
 
       // Literal-occurrence count, total + per addendum block. Blocks are keyed
       // by their marker heading; content before the first marker is "(head)".
-      let findReport: { find: string; total: number; blocks: Array<{ block: string; count: number }> } | undefined;
+      let findReport: { find: string; total: number; blocks: Array<{ block: string; count: number }>; matchedUpTo?: string; storedNearby?: string; hint?: string } | undefined;
       if (find && rawBody !== undefined) {
         const countIn = (s: string) => s.split(find).length - 1;
         const markerRe = /<h2(?:\s[^>]*)?>\s*((?:Addendum|Withdrawn|Recovered|Reopened)\s*(?:—|–|-)[^<]*)<\/h2>/gi;
@@ -2469,7 +2572,15 @@ mention this carried flag" becomes one call instead of a full read + manual coun
           const total = countIn(rawBody);
           if (total > 0) blocks.push({ block: "(body)", count: total });
         }
-        findReport = { find, total: countIn(rawBody), blocks };
+        const total = countIn(rawBody);
+        const near = total === 0 ? nearestContext(rawBody, find) : null;
+        findReport = {
+          find,
+          total,
+          blocks,
+          ...(near ? { matchedUpTo: near.fragment, storedNearby: near.context } : {}),
+          ...(total === 0 && !near ? { hint: "Not present, and no fragment of it is either — the string is unrelated to this note's content." } : {}),
+        };
       }
       const labels = note.attributes
         .filter((a) => a.type === "label")
@@ -2493,7 +2604,97 @@ mention this carried flag" becomes one call instead of a full read + manual coun
         parentNoteIds: note.parentNoteIds,
         childNoteIds: note.childNoteIds,
         ...(findReport ? { findReport } : {}),
+        ...(sectionRead
+          ? sectionRead.matched
+            ? { section, sectionMatched: true, ...(sectionRead.subsections?.length ? { subsections: sectionRead.subsections } : {}) }
+            : { section, sectionMatched: false, available: sectionRead.available, hint: `No "${section}" heading — content is empty. Re-target from available=.` }
+          : {}),
         ...(body !== undefined ? { content: body } : {}),
+      });
+    }
+  );
+
+  server.tool(
+    "diff",
+    `What changed in a note — the revision snapshot against the body as it stands now.
+
+Every content write takes a revision first, and until now nothing could read one back: verifying
+a run of surgical edits on a large note meant re-reading the whole thing, or trusting the
+receipts. Trusting receipts is exactly how a section= replace that silently displaced four
+subsections went unnoticed.
+
+Called with only a noteId, this diffs the MOST RECENT revision against current content — "what
+did my last write actually do". Pass revisionId to compare against a specific earlier one; the
+revisions list comes back on every call, newest first, so the usual flow is one call to see what
+exists and a second to pick.
+
+Reports changed lines with a little context, plus added/removed counts. Both sides are stored
+HTML, so a formatting-only change is a real difference and shows as one.`,
+    {
+      noteId: z.string().describe("Note to diff"),
+      revisionId: z.string().optional().describe("Compare against this revision (default: the most recent one)"),
+      context: z.number().int().min(0).max(10).optional().describe("Unchanged lines to show around each change (default: 1)"),
+    },
+    async ({ noteId, revisionId, context }) => {
+      const revisions = await trilium.getNoteRevisions(noteId).catch(() => []);
+      if (!revisions.length)
+        return txt({ noteId, note: "No revisions — this note has not been written through a content-mutating tool yet, or its revisions have been pruned.", revisions: [] });
+
+      const target = revisionId ? revisions.find((r) => r.revisionId === revisionId) : revisions[0];
+      if (!target)
+        return err("not_found", `Revision ${revisionId} does not belong to note ${noteId}.`, `Available: ${revisions.slice(0, 10).map((r) => r.revisionId).join(", ")}`);
+
+      const [before, after] = await Promise.all([
+        trilium.getRevisionContent(target.revisionId).catch(() => ""),
+        trilium.getNoteContent(noteId).catch(() => ""),
+      ]);
+
+      const index = revisions.map((r) => ({
+        revisionId: r.revisionId,
+        dateCreated: r.dateCreated?.slice(0, 16),
+        size: r.contentLength,
+        ...(r.revisionId === target.revisionId ? { compared: true as const } : {}),
+      }));
+
+      if (before === after) {
+        return txt({
+          noteId, comparedTo: target.revisionId, identical: true, revisions: index,
+          note: "The snapshot and the current body are byte-identical — the write after this revision changed nothing, or the revision was taken after it.",
+        });
+      }
+
+      // Block-level line split: these bodies are one long line of HTML, so
+      // splitting on element boundaries is what makes a diff readable at all.
+      const lines = (s: string) => s.replace(/></g, ">\n<").split("\n");
+      const a = lines(before);
+      const bLines = lines(after);
+
+      // Common prefix and suffix, then report the middle. Adequate and honest
+      // for the edit shapes this tool exists to verify — surgical replacements
+      // in a known region — and it never claims a similarity it did not check.
+      let head = 0;
+      while (head < a.length && head < bLines.length && a[head] === bLines[head]) head++;
+      let tail = 0;
+      while (tail < a.length - head && tail < bLines.length - head && a[a.length - 1 - tail] === bLines[bLines.length - 1 - tail]) tail++;
+
+      const pad = context ?? 1;
+      const removed = a.slice(head, a.length - tail);
+      const added = bLines.slice(head, bLines.length - tail);
+      const cap = (arr: string[]) => (arr.length > 40 ? [...arr.slice(0, 40), `… ${arr.length - 40} more line(s)`] : arr);
+
+      return txt({
+        noteId,
+        comparedTo: target.revisionId,
+        revisionDate: target.dateCreated?.slice(0, 16),
+        identical: false,
+        sizeBefore: before.length,
+        sizeAfter: after.length,
+        contextBefore: cap(a.slice(Math.max(0, head - pad), head)),
+        removed: cap(removed),
+        added: cap(added),
+        contextAfter: cap(a.slice(a.length - tail, a.length - tail + pad)),
+        summary: `${removed.length} block(s) removed, ${added.length} added, ${after.length - before.length >= 0 ? "+" : ""}${after.length - before.length} characters.`,
+        revisions: index,
       });
     }
   );

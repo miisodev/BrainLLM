@@ -13,6 +13,9 @@ import {
   escapeQueryRegex,
   stripTagsWithMap,
   repairDoubleEscaping,
+  getSection,
+  nearestContext,
+  addendumIndex,
   queryTokens,
   looksLikeHtml,
   looksLikeEncodedHtml,
@@ -719,5 +722,155 @@ describe("repairDoubleEscaping", () => {
   test("one pass only — a note documenting the signature is not turned into markup", () => {
     // Two levels deep stays escaped after a single call, deliberately.
     expect(repairDoubleEscaping("&amp;amp;lt;")).toBe("&amp;lt;");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V10.3 Phase 2 — the read side.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DOC =
+  "<h2>Overview</h2><p>top matter</p>" +
+  "<h2>Plan</h2><p>lead</p><h3>Step one</h3><p>a</p><h3>Step two</h3><p>b</p>" +
+  "<h2>Notes</h2><p>tail</p>";
+
+describe("getSection — the read counterpart to setSection", () => {
+  test("returns one section's body, excluding its own heading", () => {
+    const r = getSection(DOC, "Overview");
+    expect(r.matched).toBe(true);
+    expect(r.content).toBe("<p>top matter</p>");
+    expect(r.content).not.toContain("<h2>Overview</h2>");
+  });
+
+  test("a parent section carries its nested headings, and says so", () => {
+    const r = getSection(DOC, "Plan");
+    expect(r.matched).toBe(true);
+    expect(r.content).toContain("Step one");
+    expect(r.content).toContain("Step two");
+    expect(r.content).not.toContain("tail");
+    expect(r.subsections).toEqual(["Step one", "Step two"]);
+  });
+
+  test("reads a nested heading directly, stopping at the next sibling", () => {
+    const r = getSection(DOC, "Step one");
+    expect(r.content).toBe("<p>a</p>");
+  });
+
+  test("a miss returns available headings, not a whole-note fallback", () => {
+    const r = getSection(DOC, "No Such Section");
+    expect(r.matched).toBe(false);
+    expect(r.content).toBe("");
+    expect(r.available).toContain("Plan");
+  });
+
+  test("read and write agree — every name getSection matches, setSection matches", () => {
+    // The contract that broke before: outline() printed names section= refused.
+    // Both now go through locateSection, so this invariant is structural.
+    const withMarkup = "<h3><code>recall(regex=)</code> — the defect</h3><p>x</p>";
+    for (const h of headingOutline(withMarkup)) {
+      expect(getSection(withMarkup, h.text).matched).toBe(true);
+      expect(setSection(withMarkup, h.text, "<p>y</p>", "replace").matched).toBe(true);
+    }
+  });
+
+  test("occurrence= picks among same-text headings", () => {
+    const dupes = "<h3>Same</h3><p>one</p><h3>Same</h3><p>two</p>";
+    expect(getSection(dupes, "Same").content).toBe("<p>one</p>");
+    expect(getSection(dupes, "Same", 2).content).toBe("<p>two</p>");
+    expect(getSection(dupes, "Same").headingCount).toBe(2);
+  });
+});
+
+describe("setSection reports what a replace displaced", () => {
+  test("replacing a parent names the nested headings that went with it", () => {
+    const r = setSection(DOC, "Plan", "<p>new</p>", "replace");
+    expect(r.matched).toBe(true);
+    expect(r.replacedSubsections).toEqual(["Step one", "Step two"]);
+    expect(r.html).not.toContain("Step one");
+  });
+
+  test("replacing a leaf displaces nothing", () => {
+    expect(setSection(DOC, "Overview", "<p>new</p>", "replace").replacedSubsections).toBeUndefined();
+  });
+});
+
+describe('setSection mode="remove"', () => {
+  test("deletes the heading and its body", () => {
+    const r = setSection(DOC, "Overview", "", "remove");
+    expect(r.matched).toBe(true);
+    expect(r.html).not.toContain("Overview");
+    expect(r.html).not.toContain("top matter");
+    expect(r.html).toContain("Plan");
+  });
+
+  test("takes nested subsections with it and names them", () => {
+    const r = setSection(DOC, "Plan", "", "remove");
+    expect(r.replacedSubsections).toEqual(["Step one", "Step two"]);
+    expect(r.html).toContain("Overview");
+    expect(r.html).toContain("Notes");
+    expect(r.html).not.toContain("Step two");
+  });
+
+  test("a miss leaves the body ALONE — it must not create what it was asked to delete", () => {
+    const r = setSection(DOC, "No Such Section", "", "remove");
+    expect(r.matched).toBe(false);
+    expect(r.html).toBe(DOC);
+    expect(r.html).not.toContain("No Such Section");
+  });
+});
+
+describe("headingOutline reports the stored form when it differs", () => {
+  test("raw appears only for headings carrying inline markup", () => {
+    const html = "<h3><code>recall(regex=)</code> — the defect</h3><h3>Plain</h3>";
+    const [marked, plain] = headingOutline(html);
+    expect(marked!.text).toBe("recall(regex=) — the defect");
+    expect(marked!.raw).toBe("<code>recall(regex=)</code> — the defect");
+    expect(plain!.raw).toBeUndefined();
+  });
+});
+
+describe("nearestContext", () => {
+  test("shows how the stored text actually differs", () => {
+    const stored = '<code spellcheck="false">maintain(deep=true)</code> weekly';
+    const near = nearestContext(stored, "<code>maintain(deep=true)</code>");
+    expect(near).not.toBeNull();
+    expect(near!.context).toContain("spellcheck");
+  });
+
+  test("finds the surviving fragment when the tail differs", () => {
+    const near = nearestContext("<p>the quick brown fox jumps</p>", "the quick brown badger");
+    expect(near!.fragment).toContain("the quick brown");
+    expect(near!.context).toContain("fox");
+  });
+
+  test("null when nothing of the needle is present, rather than a misleading anchor", () => {
+    expect(nearestContext("<p>alpha beta</p>", "zzzznotrealzzzz")).toBeNull();
+  });
+});
+
+describe("addendumIndex", () => {
+  test("indexes blocks by marker and identification line", () => {
+    const child =
+      "<p><em>threadEntry · 2026-08-16</em></p><hr>" +
+      "<h2>Addendum — 13:35</h2><h3>Claude Sonnet 5 · Claude.ai · Interactive</h3><p>First point.</p>" +
+      "<h2>Addendum — 13:40</h2><h3>Claude Opus 5 · Claude Code · Interactive</h3><p>Second point.</p>";
+    const blocks = addendumIndex(child);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]!.marker).toBe("Addendum — 13:35");
+    expect(blocks[0]!.identity).toBe("Claude Sonnet 5 · Claude.ai · Interactive");
+    expect(blocks[0]!.lead).toContain("First point");
+    expect(blocks[1]!.identity).toBe("Claude Opus 5 · Claude Code · Interactive");
+  });
+
+  test("the old top-of-body preview was identical across children — this is not", () => {
+    const header = "<p><em>threadEntry · 2026-08-16</em></p><hr>";
+    const one = addendumIndex(header + "<h2>Addendum — 09:00</h2><h3>A · X · Y</h3><p>alpha</p>");
+    const two = addendumIndex(header + "<h2>Addendum — 17:00</h2><h3>B · X · Y</h3><p>beta</p>");
+    expect(one[0]!.marker).not.toBe(two[0]!.marker);
+    expect(one[0]!.lead).not.toBe(two[0]!.lead);
+  });
+
+  test("empty for a note with no addendum blocks", () => {
+    expect(addendumIndex("<h2>Context</h2><p>just a book</p>")).toEqual([]);
   });
 });

@@ -13,15 +13,20 @@ export function registerInsightsTools(server: McpServer, trilium: TriliumClient,
 
   server.tool(
     "insights",
-    "Read the BrainLLM's change log for a day (default: today). Format: YYYY-MM-DD.",
-    { date: z.string().optional() },
-    async ({ date }) => {
+    `Read the BrainLLM's change log for a day (default: today). Format: YYYY-MM-DD.
+section="<heading>" reads one section instead of the whole log.`,
+    {
+      date: z.string().optional(),
+      section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole log"),
+      occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
+    },
+    async ({ date, section, occurrence }) => {
       const d = date ?? localToday();
       const found = await trilium
         .searchNotes(`#noteType=log #created='${d}'`, { ancestorNoteId: b().insights.logs, fastSearch: true, limit: 1 })
         .catch(() => ({ results: [] as Note[] }));
       if (!found.results[0]) return txt({ date: d, note: "No log for this day." });
-      return txt(await readFull(trilium, found.results[0].noteId));
+      return txt(await readFull(trilium, found.results[0].noteId, { section, occurrence }));
     }
   );
 

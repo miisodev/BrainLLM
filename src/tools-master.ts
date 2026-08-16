@@ -11,6 +11,7 @@ import { z } from "zod";
 import { TriliumClient, relationSnippet, type RelationEdge } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { toText } from "./normalize.js";
+import { readFull } from "./tools-surface.js";
 
 const txt = (obj: unknown) => ({
   content: [{ type: "text" as const, text: typeof obj === "string" ? obj : JSON.stringify(obj, null, 2) }],
@@ -23,14 +24,23 @@ export function registerMasterTools(server: McpServer, trilium: TriliumClient, b
 
   server.tool(
     "master",
-    "Read a Master singleton in full: biography, goals, or preferences. Returns its id, content, and relation snippet.",
-    { which: z.enum(AREAS) },
-    async ({ which }) => {
+    `Read a Master singleton: biography, goals, or preferences. Returns its id, content, and
+relation snippet.
+
+section="<heading>" reads ONE section instead of the whole note — the efficient path on
+preferences, whose schedule tables make it the largest of the three, when the session needs one
+day's blocks rather than the whole week. outline(id) lists the headings.`,
+    {
+      which: z.enum(AREAS),
+      section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
+      occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
+    },
+    async ({ which, section, occurrence }) => {
       const id = b().master[which];
       if (!id) throw new Error("BrainLLM not bootstrapped — run bootstrap.");
-      const [note, content] = await Promise.all([trilium.getNote(id), trilium.getNoteContent(id).catch(() => "")]);
-      const relations = relationSnippet(note);
-      return txt({ which, id, content, ...(relations ? { relations } : {}) });
+      const read = await readFull(trilium, id, { section, occurrence });
+      const { id: _id, title: _title, kind: _kind, ...rest } = read;
+      return txt({ which, id, ...rest });
     }
   );
 

@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { TriliumClient, type Note, relationSnippet, type RelationEdge } from "./trilium.js";
-import { toText } from "./normalize.js";
+import { toText, getSection, LARGE_NOTE_CHARS } from "./normalize.js";
 
 export const txt = (obj: unknown) => ({
   content: [{ type: "text" as const, text: typeof obj === "string" ? obj : JSON.stringify(obj, null, 2) }],
@@ -58,11 +58,70 @@ export async function skim(
   );
 }
 
-/** Read a note in full (id + title + kind + content + relation snippet). */
-export async function readFull(trilium: TriliumClient, id: string): Promise<{ id: string; title: string; kind?: string; content: string; relations?: RelationEdge[] }> {
+export interface FullRead {
+  id: string;
+  title: string;
+  kind?: string;
+  content: string;
+  relations?: RelationEdge[];
+  /** section reads only */
+  section?: string;
+  matched?: boolean;
+  headingCount?: number;
+  subsections?: string[];
+  available?: string[];
+  size?: number;
+  hint?: string;
+}
+
+/** Read a note in full, or ONE section of it.
+ *
+ *  The sectioned read is the counterpart to revise(section=), and it closes the
+ *  asymmetry that made big notes unreadable: every write tool could target a
+ *  heading and no read tool could, so seeing one section meant reading the whole
+ *  note. A Current State note grew 53k → 108k characters across five sessions
+ *  and at one point could not be returned at all — the notes carrying the most
+ *  were the ones the brain could least afford to open.
+ *
+ *  Matching goes through the same locateSection() contract that section= writes
+ *  use, so a heading name that reads also writes. */
+export async function readFull(
+  trilium: TriliumClient,
+  id: string,
+  opts: { section?: string; occurrence?: number } = {}
+): Promise<FullRead> {
   const [note, content] = await Promise.all([trilium.getNote(id), trilium.getNoteContent(id).catch(() => "")]);
   const relations = relationSnippet(note);
-  return { id, title: note.title, kind: labelOf(note, "noteType"), content, ...(relations ? { relations } : {}) };
+  const base = { id, title: note.title, kind: labelOf(note, "noteType"), ...(relations ? { relations } : {}) };
+
+  if (!opts.section) {
+    return {
+      ...base,
+      content,
+      ...(content.length >= LARGE_NOTE_CHARS
+        ? { size: content.length, hint: `${Math.round(content.length / 1000)}k characters. Read one section at a time with section="<heading>" — outline(${id}) lists them.` }
+        : {}),
+    };
+  }
+
+  const found = getSection(content, opts.section, opts.occurrence ?? 1);
+  if (!found.matched) {
+    return {
+      ...base, content: "", section: opts.section, matched: false, available: found.available,
+      hint: `No "${opts.section}" heading at h2/h3/h4. available= lists the note's real heading texts — re-target from there rather than falling back to a whole-note read.`,
+    };
+  }
+  return {
+    ...base,
+    content: found.content,
+    section: opts.section,
+    matched: true,
+    headingCount: found.headingCount,
+    ...(found.subsections?.length ? { subsections: found.subsections } : {}),
+    ...(found.headingCount && found.headingCount > 1 && !opts.occurrence
+      ? { hint: `${found.headingCount} headings share that text — this is the FIRST. Pass occurrence= (1-${found.headingCount}) to read another.` }
+      : {}),
+  };
 }
 
 /** A short text preview of a note by id. */
