@@ -13,6 +13,10 @@ import {
   escapeQueryRegex,
   stripTagsWithMap,
   repairDoubleEscaping,
+  classifyDoubleEscape,
+  hasAddendumMarker,
+  editDistance,
+  nearestHeading,
   getSection,
   nearestContext,
   addendumIndex,
@@ -951,5 +955,55 @@ describe("sectionProfile — is a section= edit safe on this note", () => {
 
   test("a flat note profiles as zero sections rather than throwing", () => {
     expect(sectionProfile("<p>no headings at all</p>").count).toBe(0);
+  });
+});
+
+describe("double-escape classification", () => {
+  test("carries = corruption outside code spans", () => {
+    expect(classifyDoubleEscape("<p>&amp;lt;h2&amp;gt;boom</p></p>")).toBe("carries");
+    expect(classifyDoubleEscape("<p>fine</p><p>&amp;nbsp; tail</p>")).toBe("carries");
+  });
+
+  test("documents = the signature only inside code spans", () => {
+    // The exact class the detector false-flagged five times: a note DESCRIBING
+    // the trap stores it in a code element deliberately.
+    expect(classifyDoubleEscape('<p>the trap stores <code>&amp;lt;h2&amp;gt;</code> as text</p>')).toBe("documents");
+    expect(classifyDoubleEscape("<pre>&amp;lt;h2&amp;gt;</pre>")).toBe("documents");
+    // Mixed: real corruption anywhere outside the span still carries.
+    expect(classifyDoubleEscape('<code>&amp;lt;</code><p>&amp;nbsp;</p>')).toBe("carries");
+  });
+
+  test("clean = no signature at all", () => {
+    expect(classifyDoubleEscape("<p>plain &lt; markup</p>")).toBe("clean");
+  });
+
+  test("repair unwinds corruption but preserves documented signatures", () => {
+    expect(repairDoubleEscaping("<p>&amp;lt;h2&amp;gt;</p>")).toBe("<p>&lt;h2&gt;</p>");
+    expect(repairDoubleEscaping("<p>x</p><code>&amp;lt;h2&amp;gt;</code>")).toBe("<p>x</p><code>&amp;lt;h2&amp;gt;</code>");
+  });
+});
+
+describe("addendum marker", () => {
+  test("structural markers match; prose mentions do not", () => {
+    expect(hasAddendumMarker("<h2>Addendum — 2026-08-23</h2><p>body</p>")).toBe(true);
+    expect(hasAddendumMarker("<h3>Addendum - 03:33</h3>")).toBe(true);
+    expect(hasAddendumMarker("<h4> Addendum — note </h4>")).toBe(true);
+    // The false-positive class: prose that names the tool.
+    expect(hasAddendumMarker("<p>Call addendum() — it finds and merges pending edits.</p>")).toBe(false);
+    expect(hasAddendumMarker("<p>the addendum protocol</p>")).toBe(false);
+  });
+});
+
+describe("editDistance / nearestHeading", () => {
+  test("case-insensitive distance", () => {
+    expect(editDistance("Overview", "overview")).toBe(0);
+    expect(editDistance("Current State", "Current  State")).toBe(1);
+    expect(editDistance("abc", "xyz")).toBe(3);
+  });
+
+  test("nearestHeading picks the closest and tolerates an empty list", () => {
+    expect(nearestHeading("Current Stae", ["Overview", "Current State", "Resolution"]))
+      .toEqual({ heading: "Current State", distance: 1 });
+    expect(nearestHeading("Anything", [])).toBeNull();
   });
 });

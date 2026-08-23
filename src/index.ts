@@ -12,10 +12,11 @@ import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
 import { registerAdvancedTools } from "./tools-advanced.js";
 import { applyToolAnnotations } from "./annotations.js";
+import { BunSseServerTransport } from "./sse.js";
 import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM } from "./config.js";
 import {
   oauthEnabled, baseUrl as publicBaseUrl, protectedResourceMetadata, authorizationServerMetadata,
-  handleAuthorize, handleToken, handleRegister, validateAccessToken, wwwAuthenticate,
+  handleAuthorize, handleToken, handleRegister, validateAccessToken, wwwAuthenticate, landingPage,
 } from "./oauth.js";
 
 const baseUrl = process.env.TRILIUM_BASE_URL;
@@ -146,7 +147,7 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "10.5.2",
+    version: "11.0.0",
     icons: brandingIcons(origin),
   });
   // The two surfaces, composed here rather than nested inside registerTools —
@@ -177,6 +178,10 @@ if (port) {
 
   const sessions = new Map<string, SessionEntry>();
 
+  // Legacy SSE sessions — same lifecycle as streamable-HTTP sessions, keyed by
+  // the transport's own session id (the one the client echoes on /messages).
+  const sseSessions = new Map<string, { transport: BunSseServerTransport; lastUsed: number }>();
+
   // CORS for browser-based MCP clients (Inspector web, web-standard fetch
   // transports). Exposing mcp-session-id is load-bearing: without it a browser
   // client can never read the session id off the initialize response, so every
@@ -194,12 +199,19 @@ if (port) {
   };
 
   // Evict sessions idle past 1 hour — clients that drop without sending DELETE
-  // would otherwise accumulate forever in the map.
+  // would otherwise accumulate forever in the map. An evicted SSE transport is
+  // closed rather than dropped, so its stream ends and its onclose runs.
   const SESSION_TTL_MS = 60 * 60 * 1000;
   setInterval(() => {
     const cutoff = Date.now() - SESSION_TTL_MS;
     for (const [id, entry] of sessions) {
       if (entry.lastUsed < cutoff) sessions.delete(id);
+    }
+    for (const [id, entry] of sseSessions) {
+      if (entry.lastUsed < cutoff) {
+        sseSessions.delete(id);
+        entry.transport.close().catch(() => {});
+      }
     }
   }, 15 * 60 * 1000).unref();
 
@@ -272,12 +284,16 @@ if (port) {
 
       if (oauthOn) {
         // RFC 9728 §3.1: clients try the path-suffixed variant first when the
-        // resource URL has a path component, so both are served.
+        // resource URL has a path component, so both are served. RFC 8414's
+        // path-insertion rule applies to the AS metadata the same way — some
+        // discovery implementations derive it from the resource path rather
+        // than the issuer, and refusing the variant reads as "no OAuth here".
         if (url.pathname === "/.well-known/oauth-protected-resource" ||
             url.pathname === "/.well-known/oauth-protected-resource/mcp") {
           return json(protectedResourceMetadata(base));
         }
         if (url.pathname === "/.well-known/oauth-authorization-server" ||
+            url.pathname === "/.well-known/oauth-authorization-server/mcp" ||
             url.pathname === "/.well-known/openid-configuration") {
           return json(authorizationServerMetadata(base));
         }
@@ -294,7 +310,15 @@ if (port) {
         }
       }
 
-      if (url.pathname !== "/mcp") {
+      // The root names the server instead of 404ing — a human or a probing
+      // client landing on the origin gets the endpoint and the auth contract.
+      if (url.pathname === "/") {
+        return withCors(new Response(landingPage(base, oauthOn, true), {
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+        }));
+      }
+
+      if (url.pathname !== "/mcp" && url.pathname !== "/sse" && url.pathname !== "/messages") {
         return withCors(new Response("Not Found", { status: 404 }));
       }
 
@@ -305,20 +329,55 @@ if (port) {
       // surfaces obtain, because their connector UI cannot send a header. The
       // 401 MUST carry WWW-Authenticate or Claude has no metadata to follow and
       // reports "Couldn't reach the MCP server" — a failure that looks like a
-      // network problem and is not one.
-      if (authToken || oauthOn) {
+      // network problem and is not one. The same gate fronts every transport:
+      // an older client protocol must never mean a weaker door.
+      const gate = (): Response | null => {
+        if (!authToken && !oauthOn) return null;
         const header = req.headers.get("Authorization") ?? "";
         const bearer = header.startsWith("Bearer ") ? header.slice(7) : "";
         const staticOk = !!authToken && bearer === authToken;
         const oauthOk = oauthOn && !!bearer && validateAccessToken(bearer, base);
-        if (!staticOk && !oauthOk) {
-          const headers: Record<string, string> = { "Content-Type": "application/json" };
-          if (oauthOn) headers["WWW-Authenticate"] = wwwAuthenticate(base, bearer ? "invalid_token" : undefined);
-          return withCors(new Response(
-            JSON.stringify({ error: "invalid_token", error_description: "Authentication required." }),
-            { status: 401, headers }
-          ));
+        if (staticOk || oauthOk) return null;
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (oauthOn) headers["WWW-Authenticate"] = wwwAuthenticate(base, bearer ? "invalid_token" : undefined);
+        return withCors(new Response(
+          JSON.stringify({ error: "invalid_token", error_description: "Authentication required." }),
+          { status: 401, headers }
+        ));
+      };
+
+      // ── Legacy SSE transport ────────────────────────────────────────────────
+      // GET /sse opens the stream; POST /messages ingests one JSON-RPC message.
+      // Same auth gate, same CORS, same idle eviction as /mcp.
+      if (url.pathname === "/sse") {
+        if (req.method !== "GET") {
+          return withCors(new Response("Method Not Allowed", { status: 405, headers: { "Allow": "GET" } }));
         }
+        const denied = gate();
+        if (denied) return denied;
+        const transport = new BunSseServerTransport("/messages");
+        sseSessions.set(transport.sessionId, { transport, lastUsed: Date.now() });
+        transport.onclose = () => sseSessions.delete(transport.sessionId);
+        await createServer(base).connect(transport);
+        return withCors(transport.streamResponse());
+      }
+
+      if (url.pathname === "/messages") {
+        if (req.method !== "POST") {
+          return withCors(new Response("Method Not Allowed", { status: 405, headers: { "Allow": "POST" } }));
+        }
+        const denied = gate();
+        if (denied) return denied;
+        const sid = url.searchParams.get("sessionId") ?? "";
+        const entry = sseSessions.get(sid);
+        if (!entry) {
+          return withCors(new Response(JSON.stringify({ error: "Session not found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          }));
+        }
+        entry.lastUsed = Date.now();
+        return withCors(await entry.transport.handlePost(req));
       }
 
       const sessionId = req.headers.get("mcp-session-id");

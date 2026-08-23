@@ -11,6 +11,7 @@ import {
   wwwAuthenticate,
   validateAccessToken,
   consentPage,
+  landingPage,
   handleRegister,
   handleAuthorize,
   validateRegistration,
@@ -46,6 +47,20 @@ describe("discovery metadata", () => {
     expect(h).toContain(`resource_metadata="${BASE}/.well-known/oauth-protected-resource/mcp"`);
     expect(h).toContain(`scope="${SCOPE}"`);
     expect(wwwAuthenticate(BASE, "invalid_token")).toContain('Bearer error="invalid_token"');
+  });
+
+  test("the landing page names the endpoints and makes no external requests", () => {
+    // Same policy as the consent screen: a third-party request from a page a
+    // stranger can load leaks that a brain lives at this origin.
+    const full = landingPage(BASE, true, true);
+    expect(full).toContain(`${BASE}/mcp`);
+    expect(full).toContain("/sse");
+    const external = full.match(/(?:src|href)\s*=\s*["']https?:\/\/[^"']+/gi) ?? [];
+    expect(external).toEqual([]);
+
+    const minimal = landingPage(BASE, false, false);
+    expect(minimal).toContain("MCP_AUTH_TOKEN");
+    expect(minimal).not.toContain("/sse");
   });
 });
 

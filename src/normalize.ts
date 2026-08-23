@@ -215,11 +215,86 @@ export function decodeEncodedHtml(body: string): string {
  *  legitimately DOCUMENTING the "&amp;lt;" signature into real markup, which is
  *  a worse outcome than leaving damage in place. A body needing two passes gets
  *  two explicit calls. */
+/** The doubly-escaped entity signature: an entity whose ampersand was itself
+ *  escaped, storing e.g. "&amp;lt;" where "&lt;" was meant. */
+const DOUBLE_ESCAPE = /&amp;((?:[a-zA-Z][a-zA-Z0-9]*|#\d+|#x[0-9a-fA-F]+);)/g;
+
+/** Code spans and pre blocks — where a note DOCUMENTING the double-escape trap
+ *  deliberately stores the signature as visible text. */
+const CODE_SPAN = /<(?:code|pre)[\s\S]*?<\/(?:code|pre)>/gi;
+
+/** Unwind one level of double-escaping — but only OUTSIDE code spans. A note
+ *  that documents the signature carries "&amp;lt;" in a code element on
+ *  purpose; repairing that would corrupt the description while fixing nothing,
+ *  and the detector's five-for-five false-positive streak was exactly this
+ *  class. Genuine corruption lands in normal markup (the escaping producer
+ *  never wrapped anything in code), so excluding spans costs no true positive. */
 export function repairDoubleEscaping(html: string): string {
-  return html.replace(
-    /&amp;((?:[a-zA-Z][a-zA-Z0-9]*|#\d+|#x[0-9a-fA-F]+);)/g,
-    (_, entity) => `&${entity}`
-  );
+  const parts: string[] = [];
+  let last = 0;
+  for (const m of html.matchAll(CODE_SPAN)) {
+    const start = m.index ?? 0;
+    parts.push(html.slice(last, start).replace(DOUBLE_ESCAPE, (_, entity) => `&${entity}`), m[0]);
+    last = start + m[0].length;
+  }
+  parts.push(html.slice(last).replace(DOUBLE_ESCAPE, (_, entity) => `&${entity}`));
+  return parts.join("");
+}
+
+/** Why a body matched the double-escape search. "carries" = corruption outside
+ *  code spans (repairable); "documents" = the only matches live inside code
+ *  spans, so the note is describing the trap, not suffering it; "clean" = no
+ *  matches at all. */
+export function classifyDoubleEscape(html: string): "carries" | "documents" | "clean" {
+  if (!DOUBLE_ESCAPE.test(html)) return "clean";
+  DOUBLE_ESCAPE.lastIndex = 0;
+  const outside = html.replace(CODE_SPAN, "");
+  DOUBLE_ESCAPE.lastIndex = 0;
+  return DOUBLE_ESCAPE.test(outside) ? "carries" : "documents";
+}
+
+/** The structural marker of a pending addendum block: an h2–h4 heading whose
+ *  text opens with "Addendum —". The bare word "Addendum" matches prose
+ *  mentions (the Protocols note describing addendum(), a skill note explaining
+ *  the merge rule), which is exactly the false-positive class that made
+ *  session()'s pending counter disagree with addendum()'s search — the search
+ *  required this marker while the counter matched the word. */
+export const ADDENDUM_MARKER = /<h[2-4][^>]*>\s*Addendum\s*(?:—|–|-|&mdash;|&ndash;)/i;
+
+export function hasAddendumMarker(html: string): boolean {
+  return ADDENDUM_MARKER.test(html);
+}
+
+/** Levenshtein distance, case-insensitive — the section= contract matches
+ *  headings case-insensitively, so a near-miss measure must too. */
+export function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1,
+        cur[j - 1] + 1,
+        prev[j - 1] + (a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? 0 : 1),
+      );
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
+/** The closest existing heading to a missed section= target, with its distance.
+ *  Returns null for an empty candidate list. */
+export function nearestHeading(requested: string, available: string[]): { heading: string; distance: number } | null {
+  let best: { heading: string; distance: number } | null = null;
+  for (const heading of available) {
+    const distance = editDistance(requested, heading);
+    if (!best || distance < best.distance) best = { heading, distance };
+  }
+  return best;
 }
 
 function inlineMd(escaped: string): string {

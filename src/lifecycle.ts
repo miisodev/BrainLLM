@@ -11,7 +11,7 @@
 import { type TriliumClient, type Note, ownedLabel, relationSnippet, type RelationEdge } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import type { AnyKind } from "./types.js";
-import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, sectionProfile, escapeQueryRegex, repairDoubleEscaping, LARGE_NOTE_CHARS } from "./normalize.js";
+import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, sectionProfile, escapeQueryRegex, repairDoubleEscaping, classifyDoubleEscape, LARGE_NOTE_CHARS } from "./normalize.js";
 import { RESOLUTION_ANCHOR, missingSections } from "./templates.js";
 import { localToday } from "./time.js";
 
@@ -741,15 +741,27 @@ async function hygienePasses(
     // filter entirely, so an ack'd finding re-fired on every subsequent run
     // while `suppressed` climbed for the passes that did honour it. That is
     // exactly the "warning that always fires" failure ack= exists to prevent,
-    // occurring inside the ack mechanic. It also matters more here than
-    // elsewhere: a note DOCUMENTING the double-escape signature necessarily
-    // contains it, so this detector has permanent true positives that must
-    // stay silenceable.
+    // occurring inside the ack mechanic.
     if (!eligible(n)) continue;
+    const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+    // Documentation is not corruption. The registry search cannot see inside
+    // code spans, but a note DESCRIBING the double-escape trap stores the
+    // signature in one on purpose — five consecutive flags across two days
+    // were all this class, and a warning that is always false trains its
+    // reader to skim the list. Classification strips code/pre spans and
+    // re-tests: only matches outside them are corruption. A documenting note
+    // stays silent unless repair was explicitly requested, so the caller
+    // learns why nothing changed instead of discovering it in a diff.
+    const verdict = classifyDoubleEscape(content);
+    if (verdict !== "carries") {
+      if (ctx.repair.has(n.noteId)) {
+        report.flagged.push(`entity-corrupted: ${n.title} [${n.noteId}] — repair requested but the only matches live inside code spans: the note DOCUMENTS the signature rather than carrying it, and was left untouched. maintain(ack=["${n.noteId}"]) to silence.`);
+      }
+      continue;
+    }
     if (ctx.repair.has(n.noteId)) {
-      const before = await trilium.getNoteContent(n.noteId).catch(() => "");
-      const after = repairDoubleEscaping(before);
-      if (after === before) {
+      const after = repairDoubleEscaping(content);
+      if (after === content) {
         report.flagged.push(`entity-corrupted: ${n.title} [${n.noteId}] — repair requested but the body did not change; the match is a note DOCUMENTING the signature rather than carrying it. maintain(ack=["${n.noteId}"]) to silence.`);
         continue;
       }
@@ -796,6 +808,28 @@ async function hygienePasses(
         `${verifiedOn ? `last verified ${verifiedOn}, interval ${interval}d` : "never verified since registration"}. ` +
         `Read its check with claim(claimId="${n.noteId}"), run it, and record the result.`
       );
+    }
+    // A claim's verification covers the source note AS IT WAS. claim() wires
+    // ~derivedFrom to the note the assertion was made in; when that note is
+    // revised after the last verification, the check no longer covers what
+    // the note now says. This is the reverse-dependency direction the register
+    // never had — nobody predicts at write time which assertions will age, so
+    // staleness has to arrive as "the fact's home moved" rather than as a
+    // prediction. A claim verified the same day or later than the source's
+    // last edit is still covered and stays quiet.
+    if (verifiedOn) {
+      const sources = n.attributes.filter((a) => a.type === "relation" && a.name === "derivedFrom");
+      for (const rel of sources) {
+        const src = await trilium.getNote(rel.value).catch(() => null);
+        if (!src) continue;
+        const srcDay = src.dateModified.slice(0, 10);
+        if (srcDay > verifiedOn) {
+          report.flagged.push(
+            `claim source-changed: "${n.title}" [${n.noteId}] — its ~derivedFrom source "${src.title}" [${src.noteId}] was revised on ${srcDay}, after the last verification on ${verifiedOn}. ` +
+            `The check no longer covers what the note now says — re-verify with claim(claimId="${n.noteId}", holds=…, evidence=…) or retire it.`
+          );
+        }
+      }
     }
   }
 
