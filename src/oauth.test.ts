@@ -12,6 +12,7 @@ import {
   validateAccessToken,
   consentPage,
   handleRegister,
+  handleAuthorize,
   validateRegistration,
   SCOPE,
 } from "./oauth.js";
@@ -265,6 +266,38 @@ describe("dynamic client registration", () => {
     expect(validateRegistration({
       redirect_uris: Array.from({ length: 6 }, (_, i) => `https://h${i}.example.com/cb`),
     })).toHaveProperty("error");
+  });
+
+  test("/authorize renders a consent screen for a registered client — it is not a URL", async () => {
+    // The reg_ id must never reach new URL() — that crash 500'd the whole
+    // consent flow the first time opencode clicked authenticate.
+    const res = await postRegister(OPENCODE_METADATA);
+    const { client_id } = await res.json() as { client_id: string };
+    const verifier = randomBytes(32).toString("base64url");
+    const url = new URL(`${BASE}/authorize`);
+    url.searchParams.set("client_id", client_id);
+    url.searchParams.set("redirect_uri", "http://127.0.0.1:19876/mcp/oauth/callback");
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
+    url.searchParams.set("code_challenge_method", "S256");
+
+    const page = await handleAuthorize(new Request(url.href), BASE);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("OpenCode");
+    expect(html).toContain("self-reported");
+  });
+
+  test("consent screen labels a registered client's name as self-reported", () => {
+    // The verified-host footer stays for CIMD clients; the self-reported one
+    // must not claim a DNS/TLS verification that did not happen.
+    const verified = consentPage({ client_id: "https://claude.ai/meta" }, "claude.ai");
+    expect(verified).toContain("DNS and TLS vouch for");
+    expect(verified).not.toContain("self-reported");
+
+    const registered = consentPage({ client_id: "reg_abc" }, "OpenCode", undefined, false);
+    expect(registered).toContain("self-reported");
+    expect(registered).not.toContain("DNS and TLS vouch for");
   });
 });
 
