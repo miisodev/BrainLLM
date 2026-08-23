@@ -141,12 +141,12 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
       <table>
         <tr><th>Mode</th><th>Trigger</th><th>Use for</th></tr>
         <tr><td>stdio</td><td><code>PORT</code> unset</td><td>Claude Desktop, Claude Code — the client spawns BrainLLM as a child process</td></tr>
-        <tr><td>HTTP connector</td><td><code>PORT</code> set</td><td>Docker, Railway, any container host. Serves <code>/mcp</code> and <code>/health</code></td></tr>
+        <tr><td>HTTP connector</td><td><code>PORT</code> set</td><td>Docker, Railway, any container host. Serves streamable HTTP at <code>/mcp</code>, legacy SSE at <code>/sse</code> (with <code>POST /messages</code>), and <code>/health</code> — both transports behind the same auth gate</td></tr>
       </table>
       <p>For container deploys, mount a volume on the BrainLLM service and set <code>BRAINLLM_CONFIG</code> to a file path inside it — otherwise auto-discovery re-runs on every cold start.</p>
 
-      <h2 id="oauth">claude.ai and OAuth</h2>
-      <p>Hosted Claude surfaces have no field for a bearer token — their connector UI offers OAuth or nothing. So BrainLLM is its own OAuth 2.1 authorization server, using Client ID Metadata Documents rather than dynamic registration.</p>
+      <h2 id="oauth">Remote clients and OAuth</h2>
+      <p>Hosted Claude surfaces have no field for a bearer token — their connector UI offers OAuth or nothing. So BrainLLM is its own OAuth 2.1 authorization server, serving <strong>both</strong> registration mechanisms: Client ID Metadata Documents (what Claude selects) and RFC 7591 dynamic registration at <code>/register</code> (what opencode and other MCP TS SDK clients require).</p>
       <p>Set <code>BRAINLLM_OWNER_PASSWORD</code> to turn it on. Leave it unset and the OAuth surface is disabled entirely — an authorization server that authorises whoever finds the URL is worse than none.</p>
 
       <h2 id="trouble">Troubleshooting</h2>

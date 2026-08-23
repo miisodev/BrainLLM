@@ -10,7 +10,7 @@ A persistent, graph-structured second brain for Claude and any MCP client — bu
 
 [**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
 
-[![Version](https://img.shields.io/badge/version-10.5.2-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-11.0.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -224,7 +224,7 @@ The complete operational reference is [`skills/brainllm/SKILL.md`](./skills/brai
 | **stdio** | Local — Claude Desktop / Claude Code spawns BrainLLM as a child process | `PORT` unset (default) |
 | **HTTP connector** | Remote — clients reach BrainLLM over the network | `PORT` set (Railway injects it) |
 
-The HTTP connector serves a streamable-HTTP MCP endpoint at `/mcp` (one session per `mcp-session-id`, DELETE terminates, CORS-enabled with `mcp-session-id` exposed for browser clients) plus `GET /health`. The server itself speaks plain HTTP — TLS is expected to terminate in front of it (Railway's edge does this automatically for you; on a bare VPS or your own Docker host, put it behind a reverse proxy such as Caddy, nginx, or a Cloudflare Tunnel). **Set `MCP_AUTH_TOKEN` on any deployment reachable outside a trusted network** — CORS defaults to `*`, so without a token any client that can reach the endpoint can call your Trilium brain. Idle sessions are evicted after 1 hour; request bodies are capped at 50 MB.
+The HTTP connector serves a streamable-HTTP MCP endpoint at `/mcp` (one session per `mcp-session-id`, DELETE terminates, CORS-enabled with `mcp-session-id` exposed for browser clients), a **legacy SSE endpoint** at `/sse` (with `POST /messages`) for clients that predate streamable HTTP — older Cursor builds, Continue, and Python-SDK clients — and `GET /health`. The server root serves a plain page naming the endpoints, so a human or probing client landing on the origin sees what lives there. The server itself speaks plain HTTP — TLS is expected to terminate in front of it (Railway's edge does this automatically for you; on a bare VPS or your own Docker host, put it behind a reverse proxy such as Caddy, nginx, or a Cloudflare Tunnel). **Set `MCP_AUTH_TOKEN` on any deployment reachable outside a trusted network** — CORS defaults to `*`, so without a token any client that can reach the endpoint can call your Trilium brain. Idle sessions are evicted after 1 hour; request bodies are capped at 50 MB. Both transports sit behind the same authentication gate.
 
 ### Docker / Railway
 
@@ -238,9 +238,12 @@ Both halves of that are load-bearing. The spec tells clients to **verify icon UR
 
 To use your own artwork, replace `public/BrainLLM.svg` and run `bun run icons` — it rasterises the vector at each size the server serves. Commit the results; the Docker image copies `public/` and has no image toolchain at runtime.
 
-### Connecting claude.ai (OAuth)
+### Connecting remote clients (OAuth)
 
-Claude Code and `mcp-remote` send `MCP_AUTH_TOKEN` as a header and need nothing further. **The hosted Claude surfaces — claude.ai, Claude mobile, Cowork — cannot.** Their custom-connector UI offers OAuth or nothing; there is no field for a bearer token. So BrainLLM ships its own OAuth 2.1 authorization server, using [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) — the registration-free mechanism MCP's `2026-07-28` revision adopted in place of Dynamic Client Registration.
+Claude Code and `mcp-remote` send `MCP_AUTH_TOKEN` as a header and need nothing further. **The hosted Claude surfaces — claude.ai, Claude mobile, Cowork — cannot.** Their custom-connector UI offers OAuth or nothing; there is no field for a bearer token. So BrainLLM ships its own OAuth 2.1 authorization server. It serves **both** registration mechanisms, so every OAuth-capable client works:
+
+- **Client ID Metadata Documents (CIMD)** — the registration-free mechanism MCP's `2026-07-28` revision adopted; this is what Claude selects.
+- **Dynamic Client Registration (RFC 7591)** — for clients that never grew CIMD support. opencode (MCP TS SDK ≤1.29) is the forcing case: without a `registration_endpoint` it refuses to authenticate at all.
 
 Set one variable to turn it on:
 
@@ -257,9 +260,10 @@ What that turns on:
 | Endpoint | Purpose |
 |---|---|
 | `/.well-known/oauth-protected-resource` (+ `/mcp` variant) | RFC 9728 — names the authorization server |
-| `/.well-known/oauth-authorization-server` | RFC 8414 — advertises CIMD support and PKCE S256 |
-| `/authorize` | Validates the client's metadata document, shows the consent screen |
+| `/.well-known/oauth-authorization-server` (+ `/mcp` variant) | RFC 8414 — advertises CIMD support, DCR, and PKCE S256 |
+| `/authorize` | Validates the client (CIMD document or registered id), shows the consent screen |
 | `/token` | PKCE-verified code exchange, with rotating refresh tokens |
+| `/register` | RFC 7591 dynamic client registration — how opencode and other DCR-only clients connect |
 
 Both credentials work simultaneously — a static token from Claude Code and an OAuth token from claude.ai, against the same brain. Access tokens are signed JWTs bound to your server's resource URI, so a token minted for a different MCP server is rejected; the signing secret and refresh tokens persist beside `brainllm.json`, which on a container deploy means **putting `BRAINLLM_CONFIG` on a volume** — otherwise every redeploy invalidates every token.
 
