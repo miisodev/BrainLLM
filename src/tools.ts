@@ -60,6 +60,8 @@ import {
   bumpLastUpdated,
   duplicateHeadings,
   leadingIdentification,
+  hasAddendumMarker,
+  nearestHeading,
 } from "./normalize.js";
 import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES, isOpenResolutionOnly, purposeContent } from "./templates.js";
 import {
@@ -571,12 +573,25 @@ rather than listing them unconditionally for every caller to work around.`,
       // this call before it returned; reporting them lets the remaining context
       // go to the diary and the log, which are the two things only the agent
       // can write.
+      // The counter and addendum()'s search must agree on what a pending
+      // addendum IS, or session() manufactures a step for the one field that
+      // exists to prevent empty steps — `pending.addendums: 6` against
+      // `addendum() found: 0` was confirmed three times before this was read
+      // side by side. Both now require the structural marker (an h2–h4
+      // "Addendum —" heading), not the bare word, which prose mentions of the
+      // tool matched freely.
       const pendingAddendums = await trilium
         .searchNotes("#noteType note.content *=* 'Addendum'", { ancestorNoteId: cfg.root, fastSearch: false, limit: 40 })
-        .then((r) => r.results.filter((n) => {
-          const kind = labelOf(n, "noteType");
-          return kind && !["session", "diary", "log", "threadEntry", "thread"].includes(kind);
-        }).length)
+        .then(async (r) => {
+          const candidates = r.results.filter((n) => {
+            const kind = labelOf(n, "noteType");
+            return kind && !["session", "diary", "log", "threadEntry", "thread"].includes(kind);
+          });
+          const contents = await Promise.all(
+            candidates.map((n) => trilium.getNoteContent(n.noteId).catch(() => ""))
+          );
+          return contents.filter(hasAddendumMarker).length;
+        })
         .catch(() => null);
 
       const singletonStubs = [
@@ -1755,6 +1770,7 @@ find=; to add content next to a heading without touching its body, use mode="bef
       title: z.string().optional().describe("New title (normalized server-side)"),
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading to target, 1-based (default: the first). Read them with outline(noteId)."),
+      strict: z.boolean().optional().describe("section=: refuse instead of writing when no heading matches. The default writes the content as a NEW section on a miss — right for a genuinely new heading, wrong for a typo. With strict=true a miss returns available= and a didYouMean suggestion, and the note is untouched."),
       mode: z.enum(["append", "replace", "before", "after", "remove"]).optional().describe('append (default) | replace | before | after | remove — "before"/"after" insert adjacent to the section= heading without touching its body; "remove" deletes the section= heading and its body, and needs no body='),
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
       nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them)"),
@@ -1767,7 +1783,7 @@ find=; to add content next to a heading without touching its body, use mode="bef
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
-    async ({ noteId, body, title, section, occurrence, mode, find, nth, edits, identity, icon, date }) => {
+    async ({ noteId, body, title, section, occurrence, mode, find, nth, edits, identity, icon, date, strict }) => {
       if (isContainer(b(), noteId))
         return err("protected_note", `Note ${noteId} is a container — its content cannot be edited directly.`, "Use remember() to write to singletons, or specify a content note id.");
       const d = date ?? today();
@@ -1985,7 +2001,7 @@ find=; to add content next to a heading without touching its body, use mode="bef
       }
 
       let finalContent: string | null = null;
-      let sectionMiss: { appendedAtLevel?: number; available?: string[] } = {};
+      let sectionMiss: { appendedAtLevel?: number; available?: string[]; didYouMean?: string } = {};
       let threadEntryResult: { noteId: string; action: "created" | "appended" | "already_written" } | null = null;
       if (body) {
         const sanitized = renderBody(body);
@@ -2009,10 +2025,29 @@ find=; to add content next to a heading without touching its body, use mode="bef
 
         const current = await trilium.getNoteContent(noteId).catch(() => "");
         if (section) {
-          await trilium.createRevision(noteId).catch(() => null);
           const sectionMode =
             mode === "append" || mode === "before" || mode === "after" ? mode : "replace";
           const result = setSection(current, section, html, sectionMode, occurrence ?? 1);
+          // Near-miss detection: a miss within edit distance of a real heading
+          // is a typo wearing a new-section receipt. Surface the nearest name
+          // either way; under strict=, refuse the write entirely — appending a
+          // typo'd heading is exactly the failure strict exists to prevent, and
+          // the note must stay untouched when it fires. The revision snapshot
+          // waits until after this check for the same reason.
+          const near = !result.matched && result.available?.length
+            ? nearestHeading(section, result.available)
+            : null;
+          const suggestion = near && near.distance <= Math.max(2, Math.floor(section.length / 5))
+            ? near
+            : null;
+          if (strict && !result.matched) {
+            return err(
+              "section_not_found",
+              `strict=true: no heading matches "${section}" and nothing was written.`,
+              `Available headings: ${result.available?.length ? result.available.join(" · ") : "(none)"}${suggestion ? ` — did you mean "${suggestion.heading}"?` : ""} Re-target with the exact text, or drop strict= to allow the new-section append.`
+            );
+          }
+          await trilium.createRevision(noteId).catch(() => null);
           finalContent = bumpLastUpdated(result.html, d).html;
           await trilium.updateNoteContent(noteId, finalContent);
           sectionResult = {
@@ -2023,6 +2058,7 @@ find=; to add content next to a heading without touching its body, use mode="bef
           sectionMiss = {
             ...(result.appendedAtLevel ? { appendedAtLevel: result.appendedAtLevel } : {}),
             ...(result.available?.length ? { available: result.available } : {}),
+            ...(suggestion ? { didYouMean: suggestion.heading } : {}),
           };
         } else if (mode === "replace") {
           await trilium.createRevision(noteId).catch(() => null);
@@ -2063,7 +2099,7 @@ find=; to add content next to a heading without touching its body, use mode="bef
       const sectionHint = !sectionResult
         ? undefined
         : !sectionResult.matched
-        ? `No existing "${section}" heading found at h2/h3/h4 — wrote a NEW h${sectionMiss.appendedAtLevel ?? 2} section instead of replacing anything. Check available= for the note's real heading texts, then re-target.`
+        ? `No existing "${section}" heading found at h2/h3/h4 — wrote a NEW h${sectionMiss.appendedAtLevel ?? 2} section instead of replacing anything.${sectionMiss.didYouMean ? ` Nearest existing heading: "${sectionMiss.didYouMean}" — a typo is the likeliest cause.` : ""} Check available= for the note's real heading texts, then re-target.`
         : sectionResult.headingCount > 1 && !occurrence
         ? `${sectionResult.headingCount} headings match "${section}" — the FIRST was ${verb}. Pass occurrence= (1-${sectionResult.headingCount}) to reach a different one; outline(noteId) lists them.`
         : sectionResult.headingCount > 1
@@ -3066,15 +3102,15 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
       // starting with "Addendum —"), not the bare word — the full-text search
       // above matches prose mentions too (e.g. the Protocols singleton
       // describing the addendum() tool), which produced recurring false
-      // positives. Only notes carrying the actual marker are surfaced.
-      const ADDENDUM_MARKER = /<h[2-4][^>]*>\s*Addendum\s*(?:—|–|-|&mdash;|&ndash;)/i;
-
+      // positives. Only notes carrying the actual marker are surfaced. The
+      // marker lives in normalize.ts, shared with session()'s pending counter —
+      // the two answers must never again disagree on what counts.
       const notes = await Promise.all(
         unique.map(async (n) => {
           const kind = labelOf(n, "noteType");
           if (!kind) return null;
           const content = await trilium.getNoteContent(n.noteId).catch(() => "");
-          if (!ADDENDUM_MARKER.test(content)) return null; // prose mention, not a pending block
+          if (!hasAddendumMarker(content)) return null; // prose mention, not a pending block
           const relations = relationSnippet(n);
           return {
             id: n.noteId,

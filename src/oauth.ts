@@ -559,6 +559,26 @@ const shell = (title: string, body: string): string => `<!doctype html>
 <style>${PAGE_CSS}</style></head>
 <body>${body}</body></html>`;
 
+/** The page a human (or a probing client) gets at the server root. A bare 404
+ *  on / reads as "nothing is here"; this names what is here, the endpoint to
+ *  point a client at, and what authentication expects — with the consent
+ *  screen's no-external-request policy, for the same reasons. */
+export function landingPage(base: string, oauthOn: boolean, sseOn: boolean): string {
+  return shell(
+    "BrainLLM — a persistent memory server",
+    `<div class="card">
+  <div class="brand">${BRAND_MARK}<span class="brand-name">BrainLLM</span></div>
+  <h1>A brain is listening</h1>
+  <p>This is a <strong>BrainLLM</strong> MCP memory server — a persistent, graph-structured second brain served over the Model Context Protocol.</p>
+  <p>Point an MCP client at <span class="host">${esc(base)}/mcp</span>${sseOn ? ` — or, for clients that only speak the legacy SSE transport, <span class="host">${esc(base)}/sse</span>` : ""}.</p>
+  <p>${oauthOn
+    ? `Authentication: OAuth 2.1 with owner consent, or a static bearer token (<span class="host">MCP_AUTH_TOKEN</span>). Both work against the same brain.`
+    : `Authentication: a static bearer token (<span class="host">MCP_AUTH_TOKEN</span>).`}</p>
+  <p class="foot">Health: <span class="host">/health</span> · Everything else is MCP.</p>
+</div>`
+  );
+}
+
 export function consentPage(params: Record<string, string>, clientHost: string, error?: string, verifiedHost = true): string {
   const hidden = Object.entries(params)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
