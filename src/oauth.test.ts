@@ -11,6 +11,8 @@ import {
   wwwAuthenticate,
   validateAccessToken,
   consentPage,
+  handleRegister,
+  validateRegistration,
   SCOPE,
 } from "./oauth.js";
 
@@ -192,6 +194,77 @@ describe("redirect_uri matching", () => {
     expect(redirectUriAllowed("https://claude.ai/api/mcp/auth_callback", declared)).toBe(true);
     expect(redirectUriAllowed("https://claude.ai/api/mcp/auth_callback?x=1", declared)).toBe(false);
     expect(redirectUriAllowed("https://claude.ai.evil.com/api/mcp/auth_callback", declared)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dynamic Client Registration (RFC 7591). opencode / MCP TS SDK ≤1.29 is the
+// forcing client: no CIMD support, refuses to proceed without this endpoint.
+// The request shape below is what its provider actually sends.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("dynamic client registration", () => {
+  test("authorization server metadata advertises the registration endpoint", () => {
+    const asm = authorizationServerMetadata(BASE);
+    expect(asm.registration_endpoint).toBe(`${BASE}/register`);
+  });
+
+  async function postRegister(body: unknown): Promise<Response> {
+    return handleRegister(new Request(`${BASE}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+  }
+
+  const OPENCODE_METADATA = {
+    redirect_uris: ["http://127.0.0.1:19876/mcp/oauth/callback"],
+    client_name: "OpenCode",
+    client_uri: "https://opencode.ai",
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  };
+
+  test("registers a public client and echoes the SDK's metadata shape", async () => {
+    const res = await postRegister(OPENCODE_METADATA);
+    expect(res.status).toBe(201);
+    const doc = await res.json() as Record<string, unknown>;
+    expect(String(doc.client_id)).toMatch(/^reg_[0-9a-f]{24}$/);
+    // OAuthClientInformationFull — the SDK Zod-parses exactly these fields.
+    expect(doc.redirect_uris).toEqual(OPENCODE_METADATA.redirect_uris);
+    expect(doc.token_endpoint_auth_method).toBe("none");
+    expect(doc.grant_types).toContain("refresh_token");
+    expect(doc.response_types).toEqual(["code"]);
+    expect(doc.scope).toBe(SCOPE);
+  });
+
+  test("a registered client_id resolves locally, without a CIMD fetch", async () => {
+    const res = await postRegister(OPENCODE_METADATA);
+    const { client_id } = await res.json() as { client_id: string };
+    const resolved = await resolveClient(client_id);
+    if (!("client" in resolved)) throw new Error(resolved.error ?? "unresolved");
+    // Port-agnostic loopback match — opencode may bind a different callback port.
+    expect(redirectUriAllowed("http://127.0.0.1:29876/mcp/oauth/callback", resolved.client.redirect_uris)).toBe(true);
+    expect(redirectUriAllowed("http://127.0.0.1:19876/evil", resolved.client.redirect_uris)).toBe(false);
+  });
+
+  test("rejects a GET, a malformed body, and hostile redirect lists", async () => {
+    expect((await handleRegister(new Request(`${BASE}/register`, { method: "GET" }))).status).toBe(405);
+
+    const badJson = new Request(`${BASE}/register`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{nope",
+    });
+    expect((await handleRegister(badJson)).status).toBe(400);
+
+    expect((await postRegister({ redirect_uris: [] })).status).toBe(400);
+    expect(validateRegistration({ redirect_uris: ["not a url"] })).toHaveProperty("error");
+    // Plain http is fine on loopback, nowhere else.
+    expect(validateRegistration({ redirect_uris: ["http://127.0.0.1/cb"] })).toHaveProperty("redirectUris");
+    expect(validateRegistration({ redirect_uris: ["http://evil.example.com/cb"] })).toHaveProperty("error");
+    expect(validateRegistration({
+      redirect_uris: Array.from({ length: 6 }, (_, i) => `https://h${i}.example.com/cb`),
+    })).toHaveProperty("error");
   });
 });
 

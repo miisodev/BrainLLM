@@ -6,16 +6,29 @@
 // signs up for a third-party service before their brain works, which defeats
 // the point of a self-hosted memory.
 //
-// The mechanism is Client ID Metadata Documents (CIMD): the client_id IS an
-// HTTPS URL that dereferences to the client's own OAuth registration metadata.
-// No client database, no POST /register. MCP's 2026-07-28 revision deprecates
-// Dynamic Client Registration in favour of exactly this, and Claude only
-// selects CIMD when the authorization-server metadata advertises BOTH
-// `client_id_metadata_document_supported: true` AND `"none"` in
-// `token_endpoint_auth_methods_supported` — the second because Claude's CIMD
-// client authenticates as a public client, so the token endpoint must accept
-// PKCE-only requests with no client secret. Miss either and Claude silently
-// falls back to hunting for a registration_endpoint and the connection fails.
+// Two client mechanisms are served, deliberately:
+//
+// 1. Client ID Metadata Documents (CIMD): the client_id IS an HTTPS URL that
+//    dereferences to the client's own OAuth registration metadata. No client
+//    database. MCP's 2026-07-28 revision deprecates Dynamic Client Registration
+//    in favour of exactly this, and Claude only selects CIMD when the
+//    authorization-server metadata advertises BOTH
+//    `client_id_metadata_document_supported: true` AND `"none"` in
+//    `token_endpoint_auth_methods_supported` — the second because Claude's CIMD
+//    client authenticates as a public client, so the token endpoint must accept
+//    PKCE-only requests with no client secret. Miss either and Claude silently
+//    falls back to hunting for a registration_endpoint and the connection fails.
+//
+// 2. RFC 7591 Dynamic Client Registration at /register — for clients that never
+//    grew CIMD support. opencode (MCP TS SDK ≤1.29) is the forcing case: its
+//    auth flow reads registration_endpoint, POSTs its client metadata, and on a
+//    missing endpoint reports "does not support dynamic client registration"
+//    and refuses pre-flight. A registered client is stored server-side as a
+//    first-class record; /authorize resolves it by id BEFORE attempting a CIMD
+//    fetch, since an opaque reg_ id is not dereferenceable. Open registration is
+//    safe here for the same reason it is anywhere: registration grants nothing —
+//    the owner password on the consent screen is still what authorizes access,
+//    and redirect_uris are validated with the same rules CIMD applies.
 //
 // Everything here sits ABOVE the MCP transport: it gates the HTTP request
 // before the JSON-RPC body reaches the SDK, because the refusal has to be a
@@ -106,10 +119,26 @@ interface RefreshRecord {
   expiresAt: number;
 }
 
+/** A client registered through /register (RFC 7591). The redirect_uris are the
+ *  whole security story — /authorize checks the incoming redirect_uri against
+ *  exactly this list, so they carry the same weight as a CIMD document's. */
+export interface RegisteredClient {
+  redirectUris: string[];
+  clientName?: string;
+  issuedAt: number;
+}
+
+/** Registration is unauthenticated by design, so the store needs a ceiling —
+ *  an anonymous loop could otherwise grow the file without bound. Oldest
+ *  registration is evicted first; re-registering is free, so eviction costs a
+ *  client one round-trip, never its authorization. */
+const MAX_REGISTERED_CLIENTS = 200;
+
 interface OAuthStore {
   secret: string;
   codes: Record<string, AuthCode>;
   refresh: Record<string, RefreshRecord>;
+  clients?: Record<string, RegisteredClient>;
 }
 
 function storePath(): string {
@@ -125,12 +154,12 @@ function loadStore(): OAuthStore {
     try {
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<OAuthStore>;
       if (typeof parsed.secret === "string" && parsed.secret) {
-        cache = { secret: parsed.secret, codes: parsed.codes ?? {}, refresh: parsed.refresh ?? {} };
+        cache = { secret: parsed.secret, codes: parsed.codes ?? {}, refresh: parsed.refresh ?? {}, clients: parsed.clients ?? {} };
         return cache;
       }
     } catch { /* fall through to a fresh store */ }
   }
-  cache = { secret: randomBytes(32).toString("hex"), codes: {}, refresh: {} };
+  cache = { secret: randomBytes(32).toString("hex"), codes: {}, refresh: {}, clients: {} };
   saveStore();
   return cache;
 }
@@ -142,6 +171,12 @@ function saveStore(): void {
   const now = Date.now();
   for (const [k, v] of Object.entries(cache.codes)) if (v.expiresAt < now) delete cache.codes[k];
   for (const [k, v] of Object.entries(cache.refresh)) if (v.expiresAt < now) delete cache.refresh[k];
+  // Enforce the registration ceiling — evict oldest first.
+  const regs = Object.entries(cache.clients ?? {});
+  if (regs.length > MAX_REGISTERED_CLIENTS) {
+    regs.sort(([, a], [, b]) => a.issuedAt - b.issuedAt);
+    for (const [k] of regs.slice(0, regs.length - MAX_REGISTERED_CLIENTS)) delete cache.clients![k];
+  }
   try {
     writeFileSync(storePath(), JSON.stringify(cache), { mode: 0o600 });
   } catch { /* non-fatal: tokens still work until restart */ }
@@ -205,6 +240,10 @@ export function authorizationServerMetadata(base: string) {
     scopes_supported: [SCOPE],
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
+    // Registration endpoint for clients without CIMD support (opencode, MCP TS
+    // SDK ≤1.29). Its presence does not disturb Claude's CIMD selection — Claude
+    // prefers CIMD when the two properties above are set, regardless.
+    registration_endpoint: `${base}/register`,
     // Both of the next two are load-bearing for CIMD selection — see the file
     // header. Removing either sends Claude looking for a registration_endpoint.
     token_endpoint_auth_methods_supported: ["none"],
@@ -296,6 +335,13 @@ export function validateClientDocument(
 }
 
 export async function resolveClient(clientId: string): Promise<{ client: ClientMetadata } | { error: string }> {
+  // A /register-issued id resolves locally and is not a URL — check the
+  // registry before the CIMD fetch, which would reject it as non-HTTPS.
+  const registered = loadStore().clients?.[clientId];
+  if (registered) {
+    return { client: { client_id: clientId, redirect_uris: registered.redirectUris } };
+  }
+
   let url: URL;
   try { url = new URL(clientId); } catch { return { error: "client_id must be an absolute HTTPS URL" }; }
   if (url.protocol !== "https:") return { error: "client_id must use https" };
@@ -316,6 +362,92 @@ export async function resolveClient(clientId: string): Promise<{ client: ClientM
 
 /** Exposed for tests — the loopback port-agnostic redirect match. */
 export { redirectUriAllowed };
+
+// ── /register (RFC 7591) ──────────────────────────────────────────────────────
+
+const MAX_REDIRECT_URIS = 5;
+
+/** The pure half of registration validation. The rules mirror CIMD's: loopback
+ *  http is allowed (native clients bind an ephemeral port at runtime), anything
+ *  else must be https. There is no same-origin check here because there is no
+ *  self-hosted document to be same-origin WITH — the consent screen's owner
+ *  password carries that weight instead. */
+export function validateRegistration(body: unknown): { redirectUris: string[]; clientName?: string } | { error: string } {
+  if (!body || typeof body !== "object") return { error: "registration request is not a JSON object" };
+  const b = body as Record<string, unknown>;
+
+  const rawUris = b.redirect_uris;
+  if (!Array.isArray(rawUris) || rawUris.length === 0) {
+    return { error: "redirect_uris must be a non-empty array" };
+  }
+  if (rawUris.length > MAX_REDIRECT_URIS) {
+    return { error: `redirect_uris may list at most ${MAX_REDIRECT_URIS} entries` };
+  }
+  for (const entry of rawUris) {
+    let r: URL;
+    try { r = new URL(String(entry)); } catch { return { error: `invalid redirect_uri: ${String(entry)}` }; }
+    if (isLoopback(r)) continue;
+    if (r.protocol !== "https:") return { error: "non-loopback redirect_uris must use https" };
+  }
+
+  const clientName = typeof b.client_name === "string" ? b.client_name : undefined;
+  return { redirectUris: rawUris.map((u) => String(u)), ...(clientName ? { clientName } : {}) };
+}
+
+export async function handleRegister(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "invalid_request", error_description: "POST required." }), {
+      status: 405,
+      headers: { "Content-Type": "application/json", "Allow": "POST", "Cache-Control": "no-store" },
+    });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return new Response(JSON.stringify({ error: "invalid_client_metadata", error_description: "Body must be JSON." }), {
+      status: 400,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+
+  const validated = validateRegistration(body);
+  if ("error" in validated) {
+    return new Response(JSON.stringify({ error: "invalid_redirect_uri", error_description: validated.error }), {
+      status: 400,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+
+  // Public clients only — this server has no client-secret store and the token
+  // endpoint authenticates nobody but the PKCE proof.
+  const clientId = `reg_${randomBytes(12).toString("hex")}`;
+  const store = loadStore();
+  store.clients = store.clients ?? {};
+  store.clients[clientId] = {
+    redirectUris: validated.redirectUris,
+    ...(validated.clientName ? { clientName: validated.clientName } : {}),
+    issuedAt: Date.now(),
+  };
+  saveStore();
+
+  // OAuthClientInformationFull — the MCP TS SDK Zod-parses exactly this shape
+  // and refuses anything without client_id + redirect_uris.
+  return new Response(JSON.stringify({
+    client_id: clientId,
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    client_name: validated.clientName,
+    redirect_uris: validated.redirectUris,
+    token_endpoint_auth_method: "none",
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    scope: SCOPE,
+  }), {
+    status: 201,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
 
 // ── Consent screen ────────────────────────────────────────────────────────────
 
