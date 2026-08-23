@@ -339,7 +339,13 @@ export async function resolveClient(clientId: string): Promise<{ client: ClientM
   // registry before the CIMD fetch, which would reject it as non-HTTPS.
   const registered = loadStore().clients?.[clientId];
   if (registered) {
-    return { client: { client_id: clientId, redirect_uris: registered.redirectUris } };
+    return {
+      client: {
+        client_id: clientId,
+        client_name: registered.clientName,
+        redirect_uris: registered.redirectUris,
+      },
+    };
   }
 
   let url: URL;
@@ -553,10 +559,18 @@ const shell = (title: string, body: string): string => `<!doctype html>
 <style>${PAGE_CSS}</style></head>
 <body>${body}</body></html>`;
 
-export function consentPage(params: Record<string, string>, clientHost: string, error?: string): string {
+export function consentPage(params: Record<string, string>, clientHost: string, error?: string, verifiedHost = true): string {
   const hidden = Object.entries(params)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
     .join("");
+  // A CIMD client is identified by its URL host, which DNS and TLS vouch for.
+  // A /register client has no URL — only a name it chose itself — so the footer
+  // must say so rather than imply a verification that did not happen. The owner
+  // password is the authorization either way; this line only says what the
+  // label above can be trusted for.
+  const foot = verifiedHost
+    ? "Only the host above is shown, and it is the one DNS and TLS vouch for."
+    : "The name above is self-reported by the application — your password is what authorizes access.";
   return shell(
     "Authorize access to your brain",
     `<form class="card" method="POST" action="/authorize">
@@ -572,7 +586,7 @@ export function consentPage(params: Record<string, string>, clientHost: string, 
     <button class="deny" type="submit" name="decision" value="deny">Deny</button>
     <button class="approve" type="submit" name="decision" value="approve">Authorize</button>
   </div>
-  <p class="foot">Only the host above is shown, and it is the one DNS and TLS vouch for.</p>
+  <p class="foot">${foot}</p>
 </form>`
   );
 }
@@ -643,7 +657,18 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
     return fail("invalid_target", `This server only issues tokens for ${resourceUri(base)}.`);
   }
 
-  const clientHost = new URL(clientId).host;
+  // CIMD clients identify as a URL — its host is what the consent screen
+  // shows, because DNS and TLS vouch for it. A /register client_id is an
+  // opaque reg_ string, so parsing it as a URL throws; fall back to the
+  // client's self-declared name and let the page label it as such.
+  let clientHost: string;
+  let verifiedHost = true;
+  try {
+    clientHost = new URL(clientId).host;
+  } catch {
+    verifiedHost = false;
+    clientHost = resolved.client.client_name ?? "a dynamically registered client";
+  }
   const carried: Record<string, string> = {
     client_id: clientId, redirect_uri: redirectUri, response_type: responseType,
     code_challenge: codeChallenge, code_challenge_method: challengeMethod, scope,
@@ -652,7 +677,7 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
 
   // GET → show the form. POST → the user answered it.
   if (!form) {
-    return new Response(consentPage(carried, clientHost), {
+    return new Response(consentPage(carried, clientHost, undefined, verifiedHost), {
       headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
     });
   }
@@ -661,7 +686,7 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
     return fail("access_denied", "The owner denied the request.");
   }
   if (!ownerPasswordMatches(get("password"))) {
-    return new Response(consentPage(carried, clientHost, "Incorrect password."), {
+    return new Response(consentPage(carried, clientHost, "Incorrect password.", verifiedHost), {
       status: 401,
       headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
     });
