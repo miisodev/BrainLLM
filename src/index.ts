@@ -15,7 +15,7 @@ import { applyToolAnnotations } from "./annotations.js";
 import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM } from "./config.js";
 import {
   oauthEnabled, baseUrl as publicBaseUrl, protectedResourceMetadata, authorizationServerMetadata,
-  handleAuthorize, handleToken, validateAccessToken, wwwAuthenticate,
+  handleAuthorize, handleToken, handleRegister, validateAccessToken, wwwAuthenticate,
 } from "./oauth.js";
 
 const baseUrl = process.env.TRILIUM_BASE_URL;
@@ -286,6 +286,11 @@ if (port) {
         }
         if (url.pathname === "/token") {
           return withCors(await handleToken(req, base));
+        }
+        // RFC 7591 dynamic registration — clients without CIMD support
+        // (opencode, MCP TS SDK ≤1.29) refuse to proceed without it.
+        if (url.pathname === "/register") {
+          return withCors(await handleRegister(req));
         }
       }
 
