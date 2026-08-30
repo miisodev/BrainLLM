@@ -69,14 +69,32 @@ export const KIND_AREA: Record<Kind, Area> = {
 // Singletons — exactly one maintained note exists; writes upsert into it instead
 // of creating a child. (The per-domain `sources` note is a singleton *within*
 // each domain and is handled specially by the router.)
-// NOTE: this is a plain list, not an exhaustive Record, so the compiler cannot
-// tell you when a new kind is missing from it — KIND_AREA above failed to build
-// the moment "selfcorrection" was added, and this quietly did not. A kind absent
-// here is not rejected; it is treated as non-singleton, so writes create children
-// instead of upserting into one note. Add every new singleton here by hand.
-export const SingletonKinds: readonly Kind[] = [
+// Adding a kind here is not optional bookkeeping: a kind absent from this list
+// is not rejected, it is treated as non-singleton, so writes create children
+// instead of upserting into the one maintained note.
+//
+// `as const satisfies` is deliberate. It keeps the Kind check while preserving
+// the literal union below, and that union is what lets Record<SingletonKind, …>
+// make downstream consumers exhaustive — so a new singleton fails to COMPILE
+// anywhere it was forgotten, rather than being silently skipped at runtime.
+// session() was skipped exactly that way in V12.
+export const SingletonKinds = [
   "biography", "goals", "preferences", "responsibilities", "protocols", "selfcorrection",
-];
+] as const satisfies readonly Kind[];
+
+/** The singleton kinds as a literal union — use it for any map that must cover
+ *  every singleton, so the compiler reports an omission instead of a reader. */
+export type SingletonKind = (typeof SingletonKinds)[number];
+
+/** Narrow an arbitrary Kind to a SingletonKind.
+ *
+ *  Needed because SingletonKinds is now a literal tuple rather than Kind[]:
+ *  `SingletonKinds.includes(k)` no longer type-checks for an arbitrary k, and
+ *  that is the tuple doing its job. Widening once here keeps the exhaustive
+ *  Record guarantee at every consumer while leaving membership tests honest. */
+export function isSingletonKind(k: Kind): k is SingletonKind {
+  return (SingletonKinds as readonly Kind[]).includes(k);
+}
 
 // Dated entries — titled by the day they belong to (one per day).
 export const DatedKinds: readonly Kind[] = ["diary", "session", "log", "threadEntry"];
