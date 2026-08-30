@@ -10,7 +10,7 @@ A persistent, graph-structured second brain for Claude and any MCP client — bu
 
 [**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
 
-[![Version](https://img.shields.io/badge/version-11.0.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-12.0.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -60,7 +60,7 @@ At bootstrap, BrainLLM builds a five-area tree in Trilium. Every note the tools 
 ```
 BrainLLM  (#brainLlmRoot)
 ├── 👤 Master       Biography · Goals · Preferences               (the user — maintained singletons)
-├── 🤖 LLM          Responsibilities · Protocols · Diary/         (the assistant's self-model + daily diary)
+├── 🤖 LLM          Responsibilities · Protocols · Self-correction · Diary/  (the assistant's self-model + daily diary)
 ├── 🗂️ Memory       Sessions/ · Threads/                          (daily session logs + multi-session work)
 ├── 📚 Knowledge    Master/ · Domains/<domain>/{ Sources, info }  (learned facts beyond/contra training)
 └── 💡 Insights     Logs/ · Graph                                 (the brain's record of itself)
@@ -68,7 +68,7 @@ BrainLLM  (#brainLlmRoot)
 
 | Note class | Kinds | Behavior |
 |---|---|---|
-| **Singletons** | biography, goals, preferences, responsibilities, protocols (+ each domain's Sources note) | Exactly one maintained note; edited in place; hold *current-state truth* |
+| **Singletons** | biography, goals, preferences, responsibilities, protocols, selfcorrection (+ each domain's Sources note) | Exactly one maintained note; edited in place; hold *current-state truth* |
 | **Dated records** | diary, session, log | One per calendar day; every write lands as a timestamped addendum block — chronology is the point |
 | **Collections** | thread, user, information, domain | Titled notes, deduplicated by normalized title within their scope |
 

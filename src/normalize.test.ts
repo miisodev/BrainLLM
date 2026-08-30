@@ -377,7 +377,7 @@ describe("setSection", () => {
     expect(r.html).not.toContain("<p>second</p>");
   });
 
-  test("before/after insert around the heading without touching the section body", () => {
+  test("before/after insert around the whole section, not around the heading", () => {
     const before = setSection(doc, "Self-correction", "<h3>Inserted</h3>", "before");
     expect(before.matched).toBe(true);
     expect(before.html).toContain("<h3>Inserted</h3>\n<h3>Self-correction</h3>");
@@ -385,9 +385,37 @@ describe("setSection", () => {
 
     const after = setSection(doc, "Operating", "<p>note</p>", "after");
     expect(after.matched).toBe(true);
-    expect(after.html).toContain("<h3>Operating</h3>\n<p>note</p>");
     // The section's own content survives — this is an insert, not a replace.
     expect(after.html).toContain("<p>old 1</p>");
+    // ...and the inserted block lands AFTER that content, not between the
+    // heading and it. The previous assertion here was `<h3>Operating</h3>\n<p>note</p>`,
+    // which encoded the implementation instead of the contract.
+    expect(after.html.indexOf("<p>note</p>")).toBeGreaterThan(after.html.indexOf("<p>old 1</p>"));
+    expect(after.html).not.toContain("<h3>Operating</h3>\n<p>note</p>");
+  });
+
+  test("inserting a heading with mode=after does not empty the target section", () => {
+    // The exact shape that emptied fourteen sections: a new heading inserted
+    // "after" a section landed directly beneath that section's own heading, so
+    // the target read as empty and its body appeared under the newcomer.
+    const src = "<h3>Target</h3>\n<p>body of target</p>\n<h3>Next</h3>\n<p>next body</p>";
+    const r = setSection(src, "Target", "<h3>New</h3>\n<p>new body</p>", "after");
+    expect(r.matched).toBe(true);
+    // Target keeps its body directly under its own heading.
+    expect(r.html).toContain("<h3>Target</h3>\n<p>body of target</p>");
+    // No heading is immediately followed by another heading.
+    expect(r.html).not.toMatch(/<\/h3>\s*<h3/);
+    // The new section sits between Target and Next.
+    expect(r.html.indexOf("<h3>New</h3>")).toBeGreaterThan(r.html.indexOf("<p>body of target</p>"));
+    expect(r.html.indexOf("<h3>New</h3>")).toBeLessThan(r.html.indexOf("<h3>Next</h3>"));
+  });
+
+  test("mode=after on the last section appends at the end of the note", () => {
+    const src = "<h3>First</h3>\n<p>a</p>\n<h3>Last</h3>\n<p>b</p>";
+    const r = setSection(src, "Last", "<p>tail</p>", "after");
+    expect(r.matched).toBe(true);
+    expect(r.html).toContain("<p>b</p>");
+    expect(r.html.indexOf("<p>tail</p>")).toBeGreaterThan(r.html.indexOf("<p>b</p>"));
   });
 
   test("append mode preserves existing content under the section instead of discarding it", () => {

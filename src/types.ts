@@ -31,6 +31,12 @@ export const Kinds = [
   // LLM — the assistant's self-model
   "responsibilities", // single maintained note
   "protocols",        // single maintained note
+  "selfcorrection",   // single maintained note — the assistant's own corrections,
+                      // split out of protocols in V12. It is the one LLM singleton
+                      // deliberately NOT served in full by start(): it is the
+                      // largest and the least load-bearing at a session's first
+                      // message, so it cost ~4k tokens on every orientation to
+                      // answer a question nobody had asked yet.
   "diary",            // dated entry under LLM/diary
   // Memory — operational record
   "session",          // dated entry under Memory/sessions
@@ -54,7 +60,7 @@ export type AnyKind = Kind;
 // Which area each kind belongs to — drives placement and the namespaced tools.
 export const KIND_AREA: Record<Kind, Area> = {
   biography: "master", goals: "master", preferences: "master",
-  responsibilities: "llm", protocols: "llm", diary: "llm",
+  responsibilities: "llm", protocols: "llm", selfcorrection: "llm", diary: "llm",
   session: "memory", thread: "memory", threadEntry: "memory",
   user: "knowledge", domain: "knowledge", information: "knowledge", sources: "knowledge",
   log: "insights", claim: "insights",
@@ -63,8 +69,13 @@ export const KIND_AREA: Record<Kind, Area> = {
 // Singletons — exactly one maintained note exists; writes upsert into it instead
 // of creating a child. (The per-domain `sources` note is a singleton *within*
 // each domain and is handled specially by the router.)
+// NOTE: this is a plain list, not an exhaustive Record, so the compiler cannot
+// tell you when a new kind is missing from it — KIND_AREA above failed to build
+// the moment "selfcorrection" was added, and this quietly did not. A kind absent
+// here is not rejected; it is treated as non-singleton, so writes create children
+// instead of upserting into one note. Add every new singleton here by hand.
 export const SingletonKinds: readonly Kind[] = [
-  "biography", "goals", "preferences", "responsibilities", "protocols",
+  "biography", "goals", "preferences", "responsibilities", "protocols", "selfcorrection",
 ];
 
 // Dated entries — titled by the day they belong to (one per day).

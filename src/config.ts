@@ -23,7 +23,7 @@ export interface BrainLLMConfig {
   version?: number;
   root: string;
   master:    { root: string; biography: string; goals: string; preferences: string };
-  llm:       { root: string; responsibilities: string; protocols: string; diary: string };
+  llm:       { root: string; responsibilities: string; protocols: string; selfcorrection: string; diary: string };
   // metaThread: vestigial — the former standing self-analysis thread's slot
   // (self-analysis lives in the diary). Kept in the schema so legacy config
   // files load unchanged; always "".
@@ -34,10 +34,10 @@ export interface BrainLLMConfig {
 }
 
 export const EMPTY_BRAINLLM: BrainLLMConfig = {
-  version: 9,
+  version: 10,
   root: "",
   master:    { root: "", biography: "", goals: "", preferences: "" },
-  llm:       { root: "", responsibilities: "", protocols: "", diary: "" },
+  llm:       { root: "", responsibilities: "", protocols: "", selfcorrection: "", diary: "" },
   memory:    { root: "", sessions: "", threads: "", metaThread: "" },
   knowledge: { root: "", master: "", domains: "" },
   insights:  { root: "", logs: "" },
@@ -90,11 +90,22 @@ export function loadConfig(): BrainLLMConfig | null {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8"));
-    // Version 9, 8, or legacy 5 (re-saved as 9 on the next write).
+    // Version 10, 9, 8, or legacy 5 (re-saved as 10 on the next write).
     // Older shapes fall through to discovery.
-    if (typeof parsed?.root === "string" && (parsed?.version === 9 || parsed?.version === 8 || parsed?.version === 5)) {
+    //
+    // The CURRENT version must be listed here. saveConfig writes 10, so omitting
+    // it makes every cold start reject the file it just wrote, fall through to a
+    // full rediscovery, save 10 again, and reject it again on the next boot — a
+    // permanent rediscovery loop that looks like a slow start rather than a bug.
+    // Bumping the write without bumping the accept list is the whole failure.
+    if (typeof parsed?.root === "string" && [10, 9, 8, 5].includes(parsed?.version)) {
       return {
         ...parsed,
+        // Defaults FIRST so a key absent from an older file gets one, and the
+        // parsed value wins wherever it exists. selfcorrection arrived in v10;
+        // a v9 file has no such id, and "" is the signal that the note has not
+        // been created yet — bootstrap() fills it and is idempotent.
+        llm: { selfcorrection: "", ...(parsed.llm ?? {}) },
         memory: { metaThread: "", ...(parsed.memory ?? {}) },
         policy: { ...DEFAULT_POLICY, ...(parsed.policy ?? {}) },
       } as BrainLLMConfig;
@@ -109,7 +120,7 @@ export function loadConfig(): BrainLLMConfig | null {
 
 export function saveConfig(config: BrainLLMConfig): string {
   const path = configFilePath();
-  writeFileSync(path, JSON.stringify({ ...config, version: 9 }, null, 2) + "\n", "utf-8");
+  writeFileSync(path, JSON.stringify({ ...config, version: 10 }, null, 2) + "\n", "utf-8");
   return path;
 }
 
@@ -151,7 +162,7 @@ export async function discoverBrainLLM(trilium: TriliumClient): Promise<BrainLLM
           config.master = { root: id, biography: g("Biography"), goals: g("Goals"), preferences: g("Preferences") };
           break;
         case "LLM":
-          config.llm = { root: id, responsibilities: g("Responsibilities"), protocols: g("Protocols"), diary: g("Diary") };
+          config.llm = { root: id, responsibilities: g("Responsibilities"), protocols: g("Protocols"), selfcorrection: g("Self-correction"), diary: g("Diary") };
           break;
         case "Memory":
           config.memory = { root: id, sessions: g("Sessions"), threads: g("Threads"), metaThread: "" };

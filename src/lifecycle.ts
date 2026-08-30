@@ -23,7 +23,7 @@ export function structuralIds(cfg: BrainLLMConfig): string[] {
   return [
     cfg.root,
     cfg.master.root, cfg.master.biography, cfg.master.goals, cfg.master.preferences,
-    cfg.llm.root, cfg.llm.responsibilities, cfg.llm.protocols, cfg.llm.diary,
+    cfg.llm.root, cfg.llm.responsibilities, cfg.llm.protocols, cfg.llm.selfcorrection, cfg.llm.diary,
     cfg.memory.root, cfg.memory.sessions, cfg.memory.threads,
     cfg.knowledge.root, cfg.knowledge.master, cfg.knowledge.domains,
     cfg.insights.root, cfg.insights.logs,
@@ -41,7 +41,7 @@ export function isStructural(cfg: BrainLLMConfig, noteId: string): boolean {
 export function isContainer(cfg: BrainLLMConfig, noteId: string): boolean {
   const singletons = [
     cfg.master.biography, cfg.master.goals, cfg.master.preferences,
-    cfg.llm.responsibilities, cfg.llm.protocols,
+    cfg.llm.responsibilities, cfg.llm.protocols, cfg.llm.selfcorrection,
   ];
   return isStructural(cfg, noteId) && !singletons.includes(noteId);
 }
@@ -633,6 +633,21 @@ export async function sweep(
               if (reported.has(pairKey)) continue;
               reported.add(pairKey);
 
+              // This check never consulted the acknowledgement state, which made
+              // its own closing hint a lie: it told the reader to run
+              // maintain(ack=[…]) "to silence this once you have confirmed it",
+              // the ack was accepted and recorded, and the identical flag came
+              // back on the next sweep. Every other pass here calls
+              // acknowledged(); this one was simply missed.
+              //
+              // Either note silences the pair, because a finding ABOUT a note is
+              // a finding the ack covers — and short-circuiting keeps the
+              // suppressed counter at one per finding rather than one per note.
+              //
+              // A hint that names an ineffective remedy is worse than no hint:
+              // it spends the reader's trust in every other hint the tool gives.
+              if (acknowledged(a) || acknowledged(bn)) continue;
+
               const [ha, hb] = await Promise.all([headingsOf(a), headingsOf(bn)]);
               const overlap = ha.filter((h) => hb.some((x) => x.toLowerCase() === h.toLowerCase()));
               const show = (h: string[]) => (h.length ? h.slice(0, 8).join(" · ") + (h.length > 8 ? " · …" : "") : "(no headings)");
@@ -1002,6 +1017,7 @@ export async function buildDigest(
     Promise.all([
       readSlot("responsibilities", cfg.llm.responsibilities),
       readSlot("protocols", cfg.llm.protocols),
+      readSlot("selfcorrection", cfg.llm.selfcorrection),
     ]),
   ]);
   digest.master.push(...masterSlots.filter((s): s is DigestSlot => !!s));
