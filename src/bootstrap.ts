@@ -103,9 +103,10 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
 
   // ── LLM ─────────────────────────────────────────────────────────────────────
   const llmRoot = await book(rootId, "LLM", CONTAINER_PURPOSES.llm, "bx bx-bot");
-  const [responsibilities, protocols, diary] = await Promise.all([
+  const [responsibilities, protocols, selfcorrection, diary] = await Promise.all([
     leaf(llmRoot, "Responsibilities", "responsibilities", "A single maintained note of the assistant's responsibilities to the master/user, derived from their goals and preferences."),
     leaf(llmRoot, "Protocols", "protocols", "A single maintained note of the assistant's operating and self-correctness protocols — how it maximises its value to the master/user by efficiently meeting its responsibilities."),
+    leaf(llmRoot, "Self-correction", "selfcorrection", "A single maintained note of the assistant's own corrections — the mistakes it has made, what generalises from each, and the rule that prevents a repeat. Split out of Protocols in V12 so orientation stops paying for it on every session start."),
     book(llmRoot, "Diary", CONTAINER_PURPOSES.llmDiary, "bx bx-book-heart"),
   ]);
 
@@ -128,10 +129,10 @@ export async function createBrainLLMStructure(trilium: TriliumClient): Promise<B
   const logs = await book(insightsRoot, "Logs", CONTAINER_PURPOSES.insightsLogs, "bx bx-history");
 
   return {
-    version: 9,
+    version: 10,
     root: rootId,
     master:    { root: masterRoot, biography, goals, preferences },
-    llm:       { root: llmRoot, responsibilities, protocols, diary },
+    llm:       { root: llmRoot, responsibilities, protocols, selfcorrection, diary },
     memory:    { root: memoryRoot, sessions, threads, metaThread: "" },
     knowledge: { root: knowledgeRoot, master: knowledgeMaster, domains },
     insights:  { root: insightsRoot, logs },

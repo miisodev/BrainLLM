@@ -4,3 +4,4 @@ dist/
 brainllm.json
 .claude/
 skills/*.zip
+*.oauth.json

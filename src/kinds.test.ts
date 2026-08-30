@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Kinds, KIND_AREA, Areas, type Kind } from "./types.js";
+import { Kinds, KIND_AREA, Areas, SingletonKinds, DatedKinds, type Kind } from "./types.js";
 import { REQUIRED_SECTIONS, missingSections, structureRuleFor, contentFor } from "./templates.js";
 import { locationLabel } from "./router.js";
 
@@ -30,6 +30,24 @@ describe("every Kind is fully wired", () => {
       const html = contentFor(kind, { date: "2026-08-16", body: "" });
       expect(typeof html).toBe("string");
       expect(html.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("every undated Master/LLM kind is registered as a singleton", () => {
+    // SingletonKinds is a plain list, not a total Record, so TypeScript cannot
+    // flag a kind missing from it — and a missing kind is not rejected, it is
+    // silently treated as non-singleton, which makes writes create children
+    // instead of upserting into the one maintained note.
+    //
+    // "selfcorrection" was added to Kinds, KIND_AREA, the router, the config,
+    // bootstrap and the templates, and the compiler was satisfied while this
+    // list was still wrong. The invariant is structural: Master and LLM hold
+    // exactly one maintained note per kind, except the dated ones.
+    for (const kind of Kinds) {
+      const area = KIND_AREA[kind];
+      if (area !== "master" && area !== "llm") continue;
+      if (DatedKinds.includes(kind)) continue;
+      expect(SingletonKinds).toContain(kind);
     }
   });
 

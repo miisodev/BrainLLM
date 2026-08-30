@@ -1763,7 +1763,10 @@ applies several surgeries in one call, in order, against one read and one write.
 
 Granularity warning: section + mode=replace swaps the ENTIRE section body — everything under
 that heading, not one paragraph within it. To change a single paragraph inside a section, use
-find=; to add content next to a heading without touching its body, use mode="before"/"after".`,
+find=; to add a sibling block around a whole section without touching its body, use
+mode="before"/"after". Both are section-relative: "after" lands past the end of that section's
+body, so inserting a heading with it creates a NEW section rather than nesting one under the
+target — which is what it used to do, emptying the target while reporting matched: true.`,
     {
       noteId: z.string().describe("Note to update"),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML. With find=, the raw replacement string (no conversion)."),
@@ -1771,7 +1774,7 @@ find=; to add content next to a heading without touching its body, use mode="bef
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading to target, 1-based (default: the first). Read them with outline(noteId)."),
       strict: z.boolean().optional().describe("section=: refuse instead of writing when no heading matches. The default writes the content as a NEW section on a miss — right for a genuinely new heading, wrong for a typo. With strict=true a miss returns available= and a didYouMean suggestion, and the note is untouched."),
-      mode: z.enum(["append", "replace", "before", "after", "remove"]).optional().describe('append (default) | replace | before | after | remove — "before"/"after" insert adjacent to the section= heading without touching its body; "remove" deletes the section= heading and its body, and needs no body='),
+      mode: z.enum(["append", "replace", "before", "after", "remove"]).optional().describe('append (default) | replace | before | after | remove — "before"/"after" insert a sibling block around the WHOLE section= section (before its heading, or after the last of its body) without touching that body, so inserting a heading with "after" creates a new section rather than nesting one under the target; "remove" deletes the section= heading and its body, and needs no body='),
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
       nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them)"),
       edits: z.array(z.object({
@@ -3582,7 +3585,12 @@ exception.`,
     `Surface the entire BrainLLM content tree — every typed note across all five content areas
 (Master, LLM, Memory, Knowledge, Insights), grouped by area and sub-container, with
 id/title/kind/status/dates. Use to audit what the brain contains or locate a specific note.
-Structural containers are excluded; only content notes appear.`,
+Structural containers are excluded; only content notes appear.
+
+Insights returns { logs, claims }. Claims were missing entirely before V12 — they live in a
+container resolved by title rather than named in the config, and this read was scoped one level
+too deep to reach them, so the register was invisible to the tool that calls itself the full
+inventory.`,
     {
       includeArchived: z.boolean().optional().describe("Include archived/resolved notes (default: false)"),
     },
@@ -3641,11 +3649,21 @@ Structural containers are excluded; only content notes appear.`,
         fetchFrom(cfg.memory.threads),
         fetchFrom(cfg.knowledge.master),
         fetchFrom(cfg.knowledge.domains),
-        fetchFrom(cfg.insights.logs),
+        // Insights is fetched at its ROOT, not at .logs.
+        //
+        // Claims live in a container resolved on demand by title (see
+        // resolveClaimsContainer) and are absent from the config schema, so a
+        // fetch scoped to .logs could never reach them: brain() reported itself
+        // as "the full inventory" while the entire claim register was invisible
+        // to it. An inventory with a structural blind spot is worse than a
+        // partial one that says so, because the count looks complete.
+        fetchFrom(cfg.insights.root),
       ]);
 
       const diaryIds = new Set(llmDiary.map((n) => n.noteId));
       const llmSingletons = llmAll.filter((n) => !diaryIds.has(n.noteId));
+      const insightLogs = insights.filter((n) => labelOf(n, "noteType") === "log");
+      const insightClaims = insights.filter((n) => labelOf(n, "noteType") === "claim");
 
       const areas = {
         Master: masterAll.map(row),
@@ -3661,7 +3679,10 @@ Structural containers are excluded; only content notes appear.`,
           master: kMaster.map(row),
           domains: kDomains.map(row),
         },
-        Insights: insights.map(row),
+        Insights: {
+          logs: insightLogs.map(row),
+          claims: insightClaims.map(row),
+        },
       };
 
       const total = masterAll.length + llmSingletons.length + llmDiary.length +
@@ -3822,9 +3843,10 @@ Pass area= to zoom into one surface and get its full detail.`,
 
   server.tool(
     "bootstrap",
-    `Initialize the BrainLLM structure in Trilium (idempotent — safe to re-run; refreshes config
-if the structure already exists). Creates the five areas — Master (Biography/Goals/Preferences),
-LLM (Responsibilities/Protocols/Diary), Memory (Sessions/Threads), Knowledge (Master/Domains),
+    `Initialize the BrainLLM structure in Trilium (idempotent — safe to re-run; refreshes config,
+heals singletons a newer version introduced, and re-engraves container purposes if the structure
+already exists). Creates the five areas — Master (Biography/Goals/Preferences),
+LLM (Responsibilities/Protocols/Self-correction/Diary), Memory (Sessions/Threads), Knowledge (Master/Domains),
 Insights (Logs) — each engraved with its purpose, and writes brainllm.json. Active
 immediately, no restart needed.`,
     {},
@@ -3852,6 +3874,54 @@ immediately, no restart needed.`,
           // Only genuinely different text is written, and every change is
           // reported: this overwrites a note the user can see, so it must never
           // be a silent side effect of a call made for another reason.
+          // Heal singletons that a newer version introduced.
+          //
+          // This branch used to only re-engrave purposes, so a brain created
+          // before a new singleton existed never got one: bootstrap reported
+          // "already_initialized" and changed nothing, while the docstring
+          // promised it refreshes an existing structure. An upgrade path that
+          // exists in the fresh-install code and nowhere else is not an upgrade
+          // path — every brain already in use is precisely the set it misses.
+          //
+          // Find-or-create by title, then persist the id. Both halves matter:
+          // creating blind would duplicate the note on a brain where a human
+          // already made it, and finding without persisting would re-search on
+          // every boot while the config stayed empty.
+          const healed: string[] = [];
+          const ensureSingleton = async (
+            slot: "selfcorrection",
+            title: string,
+            kind: AnyKind,
+            purpose: string
+          ): Promise<void> => {
+            if (brainRef.config.llm[slot]) return;
+            const hit = await trilium
+              .searchNotes(`note.title = '${title}'`, { ancestorNoteId: brainRef.config.llm.root, fastSearch: true, limit: 1 })
+              .catch(() => ({ results: [] as Note[] }));
+            let id = hit.results[0]?.noteId;
+            if (!id) {
+              const made = await trilium.createNote(
+                brainRef.config.llm.root,
+                title,
+                purposeContent(purpose) + "\n" + contentFor(kind, { date: localToday(), body: "" }),
+                "text"
+              );
+              id = made.note.noteId;
+              await trilium.addLabel(id, "noteType", kind).catch(() => null);
+              healed.push(`created ${title}`);
+            } else {
+              healed.push(`adopted existing ${title}`);
+            }
+            brainRef.config.llm[slot] = id;
+          };
+          await ensureSingleton(
+            "selfcorrection",
+            "Self-correction",
+            "selfcorrection",
+            "A single maintained note of the assistant's own corrections — the mistakes it has made, what generalises from each, and the rule that prevents a repeat. Split out of Protocols in V12 so orientation stops paying for it on every session start."
+          );
+          if (healed.length) saveConfig(brainRef.config);
+
           const refreshed: string[] = [];
           for (const [id, purpose] of containerPurposes(brainRef.config)) {
             if (!id) continue;
@@ -3868,6 +3938,9 @@ immediately, no restart needed.`,
             message: `BrainLLM structure exists. Config refreshed at: ${saved}`,
             ...(refreshed.length
               ? { purposesRefreshed: refreshed, note: "These containers described themselves with text that no longer matched the canonical purpose, and have been re-engraved. Container notes are unreachable through revise(), so bootstrap is the only path that can correct them." }
+              : {}),
+            ...(healed.length
+              ? { singletonsHealed: healed, healNote: "A singleton introduced by a newer version was missing from this brain and has been created (or an existing note by that title adopted), with its id persisted to the config." }
               : {}),
             root: { id: existing.noteId, title: existing.title },
             children,

@@ -1064,9 +1064,12 @@ export function getSection(html: string, heading: string, occurrence = 1): GetSe
  *  section under every category, exactly what the consistency rule asks for —
  *  unreachable except by rewriting the whole section.
  *
- *  `mode` "before"/"after" insert content adjacent to the heading without
- *  touching the section body, replacing the idiom of matching the next heading
- *  with find= and re-emitting it (a mistyped re-emission silently ate it).
+ *  `mode` "before"/"after" insert content adjacent to the SECTION — before its
+ *  heading, or after the last of its body — without touching that body,
+ *  replacing the idiom of matching the next heading with find= and re-emitting
+ *  it (a mistyped re-emission silently ate it). Both are section-relative: an
+ *  "after" that landed between the heading and its body emptied the section it
+ *  was aimed at, and said `matched: true` while doing it.
  *
  *  On a miss the new section is written at the note's own section level and the
  *  existing headings come back in `available`. Closes dangling open tags before
@@ -1114,11 +1117,26 @@ export function setSection(
         ...(headingOutline(removed).length ? { replacedSubsections: headingOutline(removed).map((h) => h.text) } : {}),
       };
     }
+    // "before" and "after" are SECTION-relative, and both must be, because the
+    // caller thinks in sections rather than in headings.
+    //
+    // "after" used to insert at contentStart — between the heading and its own
+    // body — while "before" inserted at headingStart, which is before the whole
+    // section. That asymmetry is not a naming quibble: insert a new heading at
+    // contentStart and the target heading is immediately followed by another
+    // heading, so the section reads as EMPTY and its body is pushed below the
+    // block that was meant to come after it. Fourteen sections across this brain
+    // were emptied that way, every one reported `matched: true`, and the damage
+    // is invisible in the receipt because the write genuinely did match.
+    //
+    // Worse, a test pinned it: it asserted `<h3>Operating</h3>\n<p>note</p>`,
+    // encoding the implementation rather than the contract, so the defect
+    // shipped with a green guard in front of it.
     if (mode === "before") {
       return { html: `${html.slice(0, headingStart)}${content}\n${html.slice(headingStart)}`, matched: true, headingCount };
     }
     if (mode === "after") {
-      return { html: `${html.slice(0, contentStart)}\n${content}${html.slice(contentStart)}`, matched: true, headingCount };
+      return { html: `${html.slice(0, end).replace(/\s*$/, "")}\n${content}\n${html.slice(end)}`, matched: true, headingCount };
     }
 
     const existing = html.slice(contentStart, end).trim();

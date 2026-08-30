@@ -57,7 +57,7 @@ export interface TemplateOpts {
 // Singleton kinds whose enforced structure (a section skeleton) is seeded at
 // bootstrap and maintained in place.
 export const STRUCTURED_SINGLETONS = new Set<AnyKind>([
-  "biography", "goals", "preferences", "responsibilities", "protocols",
+  "biography", "goals", "preferences", "responsibilities", "protocols", "selfcorrection",
 ]);
 
 const hasHeading = (html: string, text: string) =>
@@ -121,7 +121,11 @@ export function contentFor(kind: AnyKind, o: TemplateOpts): string {
     case "responsibilities":
       return ["<h2>Core</h2>", o.body || "<p></p>", "<h2>Current priorities</h2>\n<p></p>"].join("\n");
     case "protocols":
-      return ["<h2>Operating</h2>", o.body || "<p></p>", "<h2>Self-correction</h2>\n<p></p>"].join("\n");
+      // Self-correction moved to its own singleton in V12; a fresh brain must
+      // not create the heading here or the content splits across both notes.
+      return ["<h2>Operating</h2>", o.body || "<p></p>"].join("\n");
+    case "selfcorrection":
+      return ["<h2>Corrections</h2>", o.body || "<p></p>"].join("\n");
     case "domain":
       return domainContent(o.domain ?? "");
     case "sources":

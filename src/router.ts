@@ -54,6 +54,7 @@ export function kindHome(cfg: BrainLLMConfig, kind: AnyKind): string {
     case "preferences":      return cfg.master.preferences;
     case "responsibilities": return cfg.llm.responsibilities;
     case "protocols":        return cfg.llm.protocols;
+    case "selfcorrection":   return cfg.llm.selfcorrection;
     case "diary":            return cfg.llm.diary;
     case "session":          return cfg.memory.sessions;
     case "thread":           return cfg.memory.threads;
@@ -197,6 +198,7 @@ export function locationLabel(kind: AnyKind, domainTitle?: string): string {
     case "preferences":      return "Master → Preferences";
     case "responsibilities": return "LLM → Responsibilities";
     case "protocols":        return "LLM → Protocols";
+    case "selfcorrection":   return "LLM → Self-correction";
     case "diary":            return "LLM → Diary";
     case "session":          return "Memory → Sessions";
     case "thread":           return "Memory → Threads";
