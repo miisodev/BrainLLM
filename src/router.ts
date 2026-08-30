@@ -13,8 +13,7 @@ import {
   SingletonKinds,
   KIND_AREA,
   type AnyKind,
-  type Status,
-} from "./types.js";
+  type Status, isSingletonKind } from "./types.js";
 import { slugify, titleCaseSlug } from "./normalize.js";
 import { contentFor, domainContent } from "./templates.js";
 import { localToday } from "./time.js";
@@ -39,7 +38,7 @@ export interface LabelPlan {
 /** True if the kind owns exactly one maintained note (writes upsert into it
  *  rather than creating a child). */
 export function isSingleton(kind: AnyKind): boolean {
-  return SingletonKinds.includes(kind);
+  return isSingletonKind(kind);
 }
 
 // ── Static placement ──────────────────────────────────────────────────────────

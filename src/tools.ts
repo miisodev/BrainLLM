@@ -25,6 +25,7 @@ import {
   Statuses,
   KIND_AREA,
   type AnyKind,
+  type SingletonKind,
 } from "./types.js";
 import {
   normalizeTitle,
@@ -536,12 +537,21 @@ rather than listing them unconditionally for every caller to work around.`,
         return { id, lastModified: note.dateModified.slice(0, 10), content, ...(relations ? { relations } : {}) };
       };
 
-      const [biography, goals, preferences, responsibilities, protocols] = await Promise.all([
+      // Every SingletonKind belongs here. selfcorrection was added to the kind
+      // vocabulary, the router, the config, bootstrap, the templates, llm(),
+      // llm_recall() and the start digest in V12 — and missed HERE, so the one
+      // singleton that records what went wrong was the one the closing audit
+      // could not see. A guard test now asserts this list covers SingletonKinds;
+      // adding a singleton without adding it here fails that test.
+      const [biography, goals, preferences, responsibilities, protocols, selfcorrection] = await Promise.all([
         fetchSingleton(cfg.master.biography),
         fetchSingleton(cfg.master.goals),
         fetchSingleton(cfg.master.preferences),
         fetchSingleton(cfg.llm.responsibilities),
         fetchSingleton(cfg.llm.protocols),
+        // Guarded: a brain bootstrapped before V12 has no id here until
+        // bootstrap() heals it, and pre-close must never fail on that.
+        cfg.llm.selfcorrection ? fetchSingleton(cfg.llm.selfcorrection) : Promise.resolve(null),
       ]);
 
       // Today's diary entry. Light mode returns a stub: the id (which is all
@@ -594,11 +604,16 @@ rather than listing them unconditionally for every caller to work around.`,
         })
         .catch(() => null);
 
-      const singletonStubs = [
-        ["biography", biography], ["goals", goals], ["preferences", preferences],
-        ["responsibilities", responsibilities], ["protocols", protocols],
-      ] as const;
-      const touchedToday = singletonStubs.filter(([, s]) => s.lastModified === d).map(([name]) => name);
+      // A Record keyed by SingletonKind, not a list — and that is the whole
+      // point. Record<SingletonKind, …> is exhaustive, so a kind added to the
+      // vocabulary and forgotten here fails to COMPILE. The list this replaced
+      // did not, which is how selfcorrection reached production wired into
+      // eight places and missing from the one that runs at close.
+      const singletonStubs: Record<SingletonKind, { lastModified: string } | null> = {
+        biography, goals, preferences, responsibilities, protocols, selfcorrection,
+      };
+      const touchedToday = (Object.keys(singletonStubs) as SingletonKind[])
+        .filter((k) => singletonStubs[k]?.lastModified === d);
 
       const pending = {
         addendums: pendingAddendums === null ? "unknown" : pendingAddendums,
@@ -613,7 +628,7 @@ rather than listing them unconditionally for every caller to work around.`,
         ...(scoped ? { scope: "agent" } : {}),
         ...(!full ? { mode: "light", note: "Singleton content and the diary body are omitted (default) — fetch via master()/llm() only where lastModified indicates a revision is needed; start() already served all singletons in full, and diary() needs only the id." } : {}),
         master: { biography, goals, preferences },
-        llm: { responsibilities, protocols },
+        llm: { responsibilities, protocols, ...(selfcorrection ? { selfcorrection } : {}) },
         diary: diaryEntry,
         maintenance: hygiene
           ? { scanned: hygiene.scanned, fixed: hygiene.fixed.length, transitions: hygiene.transitions, flagged: hygiene.flagged, ...(hygiene.suppressed ? { suppressed: hygiene.suppressed } : {}) }
@@ -628,16 +643,16 @@ rather than listing them unconditionally for every caller to work around.`,
         audit: scoped
           ? undefined
           : {
-              consistency: "Read all five singletons and check for ambiguity, internal contradiction, or claims that disagree across them. Fix what you find with revise() BEFORE close(), so the log records a brain that already agrees with itself.",
+              consistency: "Read every singleton and check for ambiguity, internal contradiction, or claims that disagree across them. Fix what you find with revise() BEFORE close(), so the log records a brain that already agrees with itself.",
               alignment: "Then check correlation, not just agreement: do responsibilities and protocols actually serve what biography, goals and preferences describe? A protocol can be perfectly consistent and still be serving a goal that has moved.",
-              readThem: `master("biography"|"goals"|"preferences") and llm("responsibilities"|"protocols") — or one section at a time with section=. Written today: ${touchedToday.length ? touchedToday.join(", ") : "none"}.`,
+              readThem: `master("biography"|"goals"|"preferences") and llm("responsibilities"|"protocols"|"selfcorrection") — or one section at a time with section=. Written today: ${touchedToday.length ? touchedToday.join(", ") : "none"}.`,
             },
         next: [
           ...(scoped
             ? ["Scoped run — the user's master singletons and your LLM singletons are OUT of scope and deliberately not listed here."]
             : [
                 "Update master singletons (biography / goals / preferences) via revise() with session observations about the user.",
-                "Update LLM singletons (responsibilities / protocols) via revise() with session observations about yourself.",
+                "Update LLM singletons (responsibilities / protocols / selfcorrection) via revise() with session observations about yourself — selfcorrection takes what you got WRONG and what generalises from it, not what you did.",
               ]),
           ...(scoped
             ? []

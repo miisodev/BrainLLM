@@ -47,7 +47,7 @@ describe("every Kind is fully wired", () => {
       const area = KIND_AREA[kind];
       if (area !== "master" && area !== "llm") continue;
       if (DatedKinds.includes(kind)) continue;
-      expect(SingletonKinds).toContain(kind);
+      expect(SingletonKinds as readonly Kind[]).toContain(kind);
     }
   });
 
