@@ -5,3 +5,8 @@ brainllm.json
 .claude/
 skills/*.zip
 *.oauth.json
+
+# Agent instruction files live on disk, not in the repo
+CLAUDE.md
+AGENTS.md
+GEMINI.md
