@@ -5,8 +5,17 @@
 // content created, updated, or deleted that day — sourced from Trilium's own
 // note dates and change history, so there is no parallel bookkeeping. Idempotent:
 // regenerating a day's log replaces its content, so it can run on every
-// close, on a periodic server tick, and on startup catch-up without
-// duplicating.
+// close without duplicating.
+//
+// Deletions get a catch-up, because they are the one class that arrives after
+// the day's log is already written. close() regenerates only the day it runs
+// on; a note soft-deleted later that day — or during a gap with no closes —
+// used to be reported nowhere, and once Trilium's eraser removed it (7-day
+// default retention) the deletion left no trace at all. That is exactly how
+// two [2026-07-31] notes vanished without any tool reporting it. catchUpDeletions()
+// re-runs the logs of the days whose deletion the change feed still shows,
+// which closes the gap for every deletion that happens within the feed's
+// retention window.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { type TriliumClient, type Note, ownedLabel } from "./trilium.js";
@@ -88,4 +97,54 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
   await trilium.addLabel(logNoteId, "noteType", "log");
   await trilium.addLabel(logNoteId, "created", date);
   return { date, noteId: logNoteId, ...counts, action: "created" };
+}
+
+// Matches Trilium's own default trash retention (eraseEntitiesAfterTimeInSeconds
+// = 604800s). A deletion is catch-up-able only while the soft-deleted row still
+// exists — past this window the feed no longer shows it.
+export const DELETION_CATCHUP_DAYS = 7;
+
+export interface DeletionCatchUpReport {
+  windowDays: number;
+  /** Deletion events the feed showed inside the window (today excluded). */
+  deletionsFound: number;
+  /** Days whose logs were actually regenerated — empty means nothing to do. */
+  regenerated: string[];
+}
+
+/** Re-generate the logs of past days that had deletions. Regeneration only
+ *  runs for days that actually show a deletion event, so a quiet week costs
+ *  one change-feed read and nothing else. Today is excluded: close() itself
+ *  regenerates today's log after this returns, and that regeneration sees
+ *  today's deletions through the same feed. */
+export async function catchUpDeletions(trilium: TriliumClient, cfg: BrainLLMConfig, today: string): Promise<DeletionCatchUpReport> {
+  const empty = { windowDays: DELETION_CATCHUP_DAYS, deletionsFound: 0, regenerated: [] as string[] };
+  if (!cfg.root || !cfg.insights.logs) return empty;
+
+  const history = await trilium.getNoteHistory(cfg.root).catch(() => []);
+  if (!history.length) return empty;
+
+  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - (DELETION_CATCHUP_DAYS - 1) * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+  const byDay = new Map<string, Array<{ title: string; noteId: string }>>();
+  let total = 0;
+  for (const h of history) {
+    if (!h.current_isDeleted) continue;
+    const day = h.date.slice(0, 10);
+    if (day === today || day < cutoff) continue; // today handled by close()'s own regeneration
+    const list = byDay.get(day) ?? [];
+    list.push({ title: h.current_title || h.title, noteId: h.noteId });
+    byDay.set(day, list);
+    total++;
+  }
+  if (!byDay.size) return empty;
+
+  const regenerated: string[] = [];
+  for (const day of [...byDay.keys()].sort()) {
+    const report = await generateDailyLog(trilium, cfg, day).catch(() => null);
+    if (report) regenerated.push(day);
+  }
+  return { windowDays: DELETION_CATCHUP_DAYS, deletionsFound: total, regenerated };
 }

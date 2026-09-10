@@ -714,7 +714,6 @@ export function sanitizeHtml(html: string): SanitizeResult {
 /** The single entry point for model-supplied body content: markdown/plain text
  *  is converted, real HTML passes through, entity-encoded markup is decoded —
  *  then the result is sanitized, with every transformation reported.
- *
  *  Entity decoding is reported explicitly because it used to be the one silent
  *  mutation in the write path: heading demotion, stripped attributes and closed
  *  tags all surfaced in `warnings`, while the escaping decision did not, so a
@@ -731,6 +730,22 @@ export function renderBody(body: string): SanitizeResult {
       ...result.warnings,
     ],
   };
+}
+
+/** The sanitizer warnings that mean the body's tag STRUCTURE had to be
+ *  repaired rather than normalized — an unclosed block the caller left open
+ *  and <br> runs promoted to paragraph separators (which once turned a table
+ *  cell into an unmatched closing tag). These are the two that changed what
+ *  the stored markup means; the rest of the warning set (h1 demotion, div→p,
+ *  style stripping) changes formatting only and stays non-fatal. Two sessions
+ *  independently read "Closed unclosed block tag(s)" as reassurance and the
+ *  damaged note shipped — under strict= this list becomes a refusal instead. */
+export function repairedStructure(warnings: string[]): string[] {
+  return warnings.filter(
+    (w) =>
+      w.startsWith("Closed unclosed block tag") ||
+      w.startsWith("<br> normalized to paragraph separators")
+  );
 }
 
 /** Append one or more HTML block sections to existing note content.
@@ -1078,7 +1093,7 @@ export function setSection(
   html: string,
   heading: string,
   content: string,
-  mode: "replace" | "append" | "before" | "after" | "remove",
+  mode: "replace" | "append" | "before" | "after" | "prepend" | "remove",
   occurrence = 1
 ): SetSectionResult {
   html = closeDangling(html);
@@ -1137,6 +1152,14 @@ export function setSection(
     }
     if (mode === "after") {
       return { html: `${html.slice(0, end).replace(/\s*$/, "")}\n${content}\n${html.slice(end)}`, matched: true, headingCount };
+    }
+    // "prepend" inserts at the top of the section's body, below its heading —
+    // the mirror of "append". Without it, the routine way to put a block at
+    // the top of a long section was find= on the heading plus its first
+    // sentence and re-emitting both, which is exactly the re-emission idiom
+    // the before/after modes exist to retire.
+    if (mode === "prepend") {
+      return { html: `${html.slice(0, contentStart)}\n${content}\n${html.slice(contentStart)}`, matched: true, headingCount };
     }
 
     const existing = html.slice(contentStart, end).trim();

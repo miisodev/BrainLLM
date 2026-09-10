@@ -10,6 +10,8 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { join, dirname } from "path";
 import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
+import { serializeWrites } from "./serialize.js";
+import { coerceToolArgs } from "./coerce.js";
 import { registerAdvancedTools } from "./tools-advanced.js";
 import { applyToolAnnotations } from "./annotations.js";
 import { BunSseServerTransport } from "./sse.js";
@@ -147,7 +149,7 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "12.1.0",
+    version: "12.2.0",
     icons: brandingIcons(origin),
   });
   // The two surfaces, composed here rather than nested inside registerTools —
@@ -156,12 +158,29 @@ function createServer(origin: string | null = null): McpServer {
   registerTools(s, trilium, brainRef);
   if (mode === "full") registerAdvancedTools(s, trilium, brainRef);
 
+  // Coerce string-encoded booleans/numbers/arrays before the SDK's strict Zod
+  // parse sees them — some clients serialize params as strings, and the
+  // observed failure put strict= out of reach on exactly the writes that need it.
+  const coerced = coerceToolArgs(s);
+  if (coerced.fields) {
+    console.error(`[brainllm] Param coercion: ${coerced.fields} field(s) across ${coerced.tools.length} tool(s)`);
+  }
+
   // Group the surface into read-only vs write/destructive for the client's
   // permission UI. Without it every tool is "Other", and the only choice on
   // offer is allow-all-75 or approve-every-call.
   const { unclassified } = applyToolAnnotations(s);
   if (unclassified.length) {
     console.error(`[brainllm] Unclassified tools, treated as writes: ${unclassified.join(", ")}`);
+  }
+  // Serialize write-classified handlers behind a process-wide FIFO lock. Each
+  // HTTP session builds its own server instance, but the lock chain is
+  // module-level — so two agents (an interactive session and an automated run,
+  // say) writing through one hosted process queue instead of racing, and a
+  // read-modify-write can no longer silently discard the other's write.
+  const serialized = serializeWrites(s);
+  if (serialized.serialized) {
+    console.error(`[brainllm] Write serialization: ${serialized.serialized} write handler(s) queued, ${serialized.readsUntouched} read(s) untouched`);
   }
   return s;
 }

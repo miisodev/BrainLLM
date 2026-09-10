@@ -320,6 +320,32 @@ export async function sweep(
     (report.coverage ??= []).push(`stale-review: ${staleFlagged} of ${staleTotal} shown (cap 15)`);
   }
 
+  // ── Deep: deletion visibility ──────────────────────────────────────────────
+  // A note soft-deleted under the brain root shows in Trilium's change feed
+  // until the eraser removes the row — 7 days at Trilium's default retention.
+  // After that the deletion leaves no trace at all, which is exactly how two
+  // [2026-07-31] notes vanished with no tool reporting it: the log for that
+  // day had already been generated, nothing ever regenerated it, and erasure
+  // then destroyed both the notes and the feed's own record of the deletion.
+  // Deep surfaces what the window still holds. Unscoped runs only — a deleted
+  // note's labels are soft-deleted with it, so there is no domain to
+  // attribute a scoped run's findings to.
+  if (deep && !domainSlug) {
+    const feed = await trilium.getNoteHistory(cfg.root).catch(() => [] as Awaited<ReturnType<TriliumClient["getNoteHistory"]>>);
+    const deletionsWindow = isoDaysAgo(7);
+    const recent = feed.filter((h) => h.current_isDeleted && h.date.slice(0, 10) >= deletionsWindow);
+    report.scanned += recent.length;
+    for (const [i, h] of recent.entries()) {
+      if (i >= 10) break;
+      report.flagged.push(
+        `deletion: "${h.current_title || h.title}" [${h.noteId}] on ${h.date.slice(0, 10)} — undelete it (undelete_note) if unintended, or leave it; Trilium's eraser removes this trace once its retention window passes`
+      );
+    }
+    if (recent.length > 10) {
+      (report.coverage ??= []).push(`deletions: 10 of ${recent.length} shown (cap 10)`);
+    }
+  }
+
   // ── Deep: orphan + sink report ──────────────────────────────────────────────
   // orphan = no outbound AND not pointed to by anything (truly isolated).
   // sink   = no outbound BUT has inbound (consumed but never connected forward).
@@ -479,6 +505,26 @@ export async function sweep(
     const content = await trilium.getNoteContent(n.noteId).catch(() => "");
     if (!content) continue;
     report.scanned++;
+
+    // Size trajectory, not only a threshold. The ceiling warning stops being
+    // heard once a note is permanently past it; growth between deep runs is
+    // what actually degrades a maintained note, and a rate stays actionable
+    // ("grew 30% this week") where "past 40,000" does not. The baseline lives
+    // in brainllm.json (cfg.sizes), NOT in a note label — writing a label
+    // bumps dateModified on every linted note, which is precisely the trap
+    // that would quietly disable the stale-review pass.
+    const chars = content.length;
+    const prev = cfg.sizes?.[n.noteId];
+    if (prev && prev.chars > 0 && chars >= prev.chars * 1.3 && chars >= 20_000) {
+      report.flagged.push(
+        `size trajectory: ${n.title} [${n.noteId}] — grew ${Math.round((chars / prev.chars - 1) * 100)}% since ${prev.date} ` +
+        `(${Math.round(prev.chars / 1000)}k → ${Math.round(chars / 1000)}k characters). Corrections are compounding faster than the note can absorb; trim or split deliberately now, per the Note Trimming protocol, rather than under pressure later.`
+      );
+    }
+    if (!dryRun) {
+      (cfg.sizes ??= {})[n.noteId] = { chars, date: localToday() };
+    }
+
     const structure = structureReport(content);
     if (structure.duplicateHeadings.length) {
       report.flagged.push(`duplicate heading: ${n.title} [${n.noteId}] — '${structure.duplicateHeadings.join("', '")}' repeated in one note; merge with revise(section=…, mode=replace) or target one with occurrence=`);

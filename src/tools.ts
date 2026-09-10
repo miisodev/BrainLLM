@@ -39,6 +39,7 @@ import {
   stripTagsWithMap,
   queryTokens,
   escapeHtml,
+  decodeEntities,
   sanitizeHtml,
   renderBody,
   safeAppend,
@@ -63,6 +64,7 @@ import {
   leadingIdentification,
   hasAddendumMarker,
   nearestHeading,
+  repairedStructure,
 } from "./normalize.js";
 import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES, isOpenResolutionOnly, purposeContent } from "./templates.js";
 import {
@@ -77,7 +79,7 @@ import {
 } from "./router.js";
 import { sweep, buildDigest, applyResolution, isStructural, isContainer, type SweepReport } from "./lifecycle.js";
 import { createBrainLLMStructure, containerPurposes } from "./bootstrap.js";
-import { generateDailyLog } from "./journal.js";
+import { generateDailyLog, catchUpDeletions } from "./journal.js";
 import { localToday, localNowTime } from "./time.js";
 import { registerMasterTools } from "./tools-master.js";
 import { registerLlmTools } from "./tools-llm.js";
@@ -858,6 +860,14 @@ Unlike force, it is not a bypass of anything that had work to do.`,
 
       const iconSet = await applyIcon(noteId, icon);
 
+      // Deletion catch-up BEFORE today's own log: a note deleted earlier in
+      // the window (or during a no-close gap) gets its day's log regenerated,
+      // and today's regeneration — right below — sees today's deletions
+      // through the same change feed. Without this a deletion landing after
+      // the day's close was reported nowhere, which is how notes could vanish
+      // without any tool noticing.
+      const caughtUp = await catchUpDeletions(trilium, cfg, d).catch(() => null);
+
       const logReport = await generateDailyLog(trilium, cfg, d).catch(() => null);
 
       // Wire session ↔ log with ~references relations — genuinely idempotent:
@@ -885,6 +895,9 @@ Unlike force, it is not a bypass of anything that had work to do.`,
         date: d,
         backup: backedUp ? `brainllm-${d}.db` : "skipped",
         log: logReport ? `${logReport.action} (${logReport.created}c/${logReport.updated}u/${logReport.deleted}d)` : "skipped",
+        ...(caughtUp && caughtUp.deletionsFound
+          ? { deletionCatchUp: `${caughtUp.deletionsFound} deletion(s) caught up — logs regenerated for: ${caughtUp.regenerated.join(", ")}` }
+          : {}),
         ...(iconSet ? { icon: iconSet } : {}),
         ...(continued ? { continuing: true } : {}),
         ...(missing.length || !orderOk
@@ -1032,6 +1045,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       topics: z.array(z.string()).optional().describe("Topic tags — slugged server-side"),
       supersedes: z.string().optional().describe("noteId this replaces — old note is archived and wired supersedes"),
       mustCreate: z.boolean().optional().describe("Refuse instead of adopting an existing note when the title already exists — turns a silent overwrite on a generic title (Current State, Sources, Technology Stack) into a catchable error"),
+      strict: z.boolean().optional().describe("Refuse the write when the body needs structural repair (unclosed tags, <br> runs) instead of accepting the repaired form"),
       connect: z.array(z.object({
         relation: z.enum(RelationTypes),
         toNoteId: z.string(),
@@ -1039,7 +1053,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name ("brain"); normalized server-side'),
       date: z.string().optional().describe("ISO date override (default: today)"),
     },
-    async ({ kind, title, body, goal, identity, domain, revision, topics, supersedes, mustCreate, connect: connectRels, icon, date }) => {
+    async ({ kind, title, body, goal, identity, domain, revision, topics, supersedes, mustCreate, strict, connect: connectRels, icon, date }) => {
       /** mustCreate turns adoption into a refusal.
        *
        *  Dedup-by-title is what makes remember() idempotent, and it is also a
@@ -1059,6 +1073,20 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       const opts: RememberOpts = { domain, topics, date };
       const d = date ?? today();
       const { html, warnings: sanitizeWarnings } = renderBody(body ?? "");
+
+      // strict= mirrors revise(): a body whose tag structure the sanitizer had
+      // to repair is a refusal, not a receipt field the caller reads as
+      // reassurance. Nothing has been written at this point.
+      if (strict) {
+        const repairs = repairedStructure(sanitizeWarnings);
+        if (repairs.length) {
+          return err(
+            "body_repaired",
+            `strict=true: the body needed structural repair and nothing was written — ${repairs.join("; ")}.`,
+            "Fix the markup (close the open tags, use paragraphs instead of <br> runs) and re-send, or drop strict= to accept the repaired form."
+          );
+        }
+      }
 
       // Threads carry exactly one Resolution — the bottom section, owned by
       // resolve(). A body smuggling its own is refused before any write.
@@ -1789,7 +1817,7 @@ target — which is what it used to do, emptying the target while reporting matc
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading to target, 1-based (default: the first). Read them with outline(noteId)."),
       strict: z.boolean().optional().describe("section=: refuse instead of writing when no heading matches. The default writes the content as a NEW section on a miss — right for a genuinely new heading, wrong for a typo. With strict=true a miss returns available= and a didYouMean suggestion, and the note is untouched."),
-      mode: z.enum(["append", "replace", "before", "after", "remove"]).optional().describe('append (default) | replace | before | after | remove — "before"/"after" insert a sibling block around the WHOLE section= section (before its heading, or after the last of its body) without touching that body, so inserting a heading with "after" creates a new section rather than nesting one under the target; "remove" deletes the section= heading and its body, and needs no body='),
+      mode: z.enum(["append", "replace", "before", "after", "prepend", "remove"]).optional().describe('append (default) | replace | before | after | prepend | remove — "before"/"after" insert a sibling block around the WHOLE section= section (before its heading, or after the last of its body) without touching that body, so inserting a heading with "after" creates a new section rather than nesting one under the target; "prepend" inserts at the top of the section body, below its heading; "remove" deletes the section= heading and its body, and needs no body='),
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
       nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them)"),
       edits: z.array(z.object({
@@ -1979,7 +2007,7 @@ target — which is what it used to do, emptying the target while reporting matc
         });
       }
 
-      if ((mode === "before" || mode === "after") && !section)
+      if ((mode === "before" || mode === "after" || mode === "prepend") && !section)
         return err("missing_param", `mode="${mode}" inserts relative to a heading and needs one.`, 'Pass section="<heading text>" alongside it, or use mode="append" for a whole-note addendum.');
       if (mode === "remove" && !section)
         return err("missing_param", 'mode="remove" deletes a section and needs one.', 'Pass section="<heading text>". To delete the whole note use forget(noteId).');
@@ -2026,6 +2054,23 @@ target — which is what it used to do, emptying the target while reporting matc
         const html = sanitized.html;
         warnings.push(...sanitized.warnings);
 
+        // strict= covers more than section misses: when the sanitizer had to
+        // repair the body's tag structure, a receipt reporting the repair
+        // landed twice as "reassurance" while the damaged note shipped. Under
+        // strict= the repair is the failure — refuse before the revision
+        // snapshot, so the note is untouched and the caller sees the damage
+        // they authored rather than a note that now contains it.
+        if (strict) {
+          const repairs = repairedStructure(sanitized.warnings);
+          if (repairs.length) {
+            return err(
+              "body_repaired",
+              `strict=true: the body needed structural repair and nothing was written — ${repairs.join("; ")}.`,
+              "Fix the markup (close the open tags, use paragraphs instead of <br> runs inside table cells) and re-send, or drop strict= to accept the repaired form."
+            );
+          }
+        }
+
         // Threads carry exactly one Resolution, owned by resolve() — refuse an
         // appended body that smuggles its own.
         if (
@@ -2044,7 +2089,7 @@ target — which is what it used to do, emptying the target while reporting matc
         const current = await trilium.getNoteContent(noteId).catch(() => "");
         if (section) {
           const sectionMode =
-            mode === "append" || mode === "before" || mode === "after" ? mode : "replace";
+            mode === "append" || mode === "before" || mode === "after" || mode === "prepend" ? mode : "replace";
           const result = setSection(current, section, html, sectionMode, occurrence ?? 1);
           // Near-miss detection: a miss within edit distance of a real heading
           // is a typo wearing a new-section receipt. Surface the nearest name
@@ -2113,7 +2158,7 @@ target — which is what it used to do, emptying the target while reporting matc
 
       const relations = relationSnippet(note);
       const targeted = occurrence && occurrence > 1 ? ` occurrence ${occurrence} of` : "";
-      const verb = mode === "append" ? "appended to" : mode === "before" || mode === "after" ? `inserted ${mode}` : "replaced";
+      const verb = mode === "append" ? "appended to" : mode === "prepend" ? "prepended to" : mode === "before" || mode === "after" ? `inserted ${mode}` : "replaced";
       const sectionHint = !sectionResult
         ? undefined
         : !sectionResult.matched
@@ -2132,7 +2177,7 @@ target — which is what it used to do, emptying the target while reporting matc
         // reads as "nothing happened" even though the title HAD been changed.
         mode: body
           ? section
-            ? `section:${mode === "before" || mode === "after" ? `insert-${mode}` : mode === "append" ? "append-within" : "replace"}:${section}`
+            ? `section:${mode === "before" || mode === "after" ? `insert-${mode}` : mode === "append" ? "append-within" : mode === "prepend" ? "prepend" : "replace"}:${section}`
             : (mode ?? "append")
           : titled.retitled
           ? "rename"
@@ -2604,7 +2649,10 @@ a specific one when several share a text.
 Also returns the note's size, the key column of any table it holds, and any structural drift
 already present (duplicate headings, unbalanced tags) — the cheap "is this note still sound"
 check after a run of surgical edits, and the way to see a Sources note's Revision keys (which
-remember(revision=) matches on exactly) without reading the note.`,
+remember(revision=) matches on exactly) without reading the note.
+
+On notes 15k+ the headings also carry a first-block preview of their section — the orientation
+read for oversized notes, where outline() alone assumes you already know which section you want.`,
     {
       noteId: z.string().describe("Note to outline"),
     },
@@ -2616,6 +2664,26 @@ remember(revision=) matches on exactly) without reading the note.`,
       const tables = headings
         .map((h) => ({ section: h.text, keys: tableRows(content, h.text).map((c) => c[0]).filter(Boolean) }))
         .filter((t) => t.keys.length);
+      // First-block preview per section, on notes large enough for "which
+      // section do I actually want" to be a real question. One walk, stop-tag
+      // = the next heading of any level, matching how headingOutline treats
+      // the tree as flat. An extract, never the body — the section still has
+      // to be read for its full content.
+      const previews: Array<{ section: string; preview: string }> = [];
+      if (content.length >= 15_000) {
+        const chunkRe = /<h[2-4](?:\s[^>]*)?>([\s\S]*?)<\/h[2-4]>([\s\S]*?)(?=<h[2-4][\s>]|$)/gi;
+        let cm: RegExpExecArray | null;
+        while ((cm = chunkRe.exec(content)) !== null) {
+          const text = decodeEntities(cm[1]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+          if (!text) continue;
+          const block = cm[2]!.match(/<(?:p|li)[^>]*>([\s\S]*?)<\/(?:p|li)>/i);
+          const preview = decodeEntities((block ? block[1]! : cm[2]!).replace(/<[^>]+>/g, " "))
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 140) || "(empty)";
+          previews.push({ section: text, preview });
+        }
+      }
       const sizeWarning = report.size >= LARGE_NOTE_CHARS
         ? `${Math.round(report.size / 1000)}k characters — approaching the tool output ceiling. Prefer section=/find= edits and targeted reads over whole-note reads.`
         : undefined;
@@ -2635,6 +2703,7 @@ remember(revision=) matches on exactly) without reading the note.`,
           : {}),
         sectionLevel: sectionLevelFor(content),
         ...(tables.length ? { tables } : {}),
+        ...(previews.length ? { previews } : {}),
         ...(report.duplicateHeadings.length ? { duplicateHeadings: report.duplicateHeadings } : {}),
         ...(report.unbalancedTags.length ? { unbalancedTags: report.unbalancedTags } : {}),
         ...(sizeWarning ? { sizeWarning } : {}),
@@ -2681,9 +2750,32 @@ miss is diagnosed in the same call rather than in three more.`,
 
       // Literal-occurrence count, total + per addendum block. Blocks are keyed
       // by their marker heading; content before the first marker is "(head)".
-      let findReport: { find: string; total: number; blocks: Array<{ block: string; count: number }>; matchedUpTo?: string; storedNearby?: string; hint?: string } | undefined;
+      let findReport: { find: string; total: number; blocks: Array<{ block: string; count: number }>; sections?: Array<{ section: string; count: number }>; matchedUpTo?: string; storedNearby?: string; hint?: string } | undefined;
       if (find && rawBody !== undefined) {
         const countIn = (s: string) => s.split(find).length - 1;
+        // Which heading each occurrence sits under — the locator that turns
+        // "hunt one literal across a 31k note" into a single read. Attributed
+        // on the same body the count uses, so the two never disagree. A match
+        // before the first heading is "(head)".
+        const headings: Array<{ text: string; index: number }> = [];
+        const headingRe = /<h[2-4](?:\s[^>]*)?>([\s\S]*?)<\/h[2-4]>/gi;
+        let hm: RegExpExecArray | null;
+        while ((hm = headingRe.exec(rawBody)) !== null) {
+          const text = decodeEntities(hm[1]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+          if (text) headings.push({ text, index: hm.index });
+        }
+        const bySection = new Map<string, number>();
+        let scan = rawBody.indexOf(find);
+        while (scan !== -1) {
+          let sectionName = "(head)";
+          for (const h of headings) {
+            if (h.index < scan) sectionName = h.text;
+            else break;
+          }
+          bySection.set(sectionName, (bySection.get(sectionName) ?? 0) + 1);
+          scan = rawBody.indexOf(find, scan + Math.max(1, find.length));
+        }
+        const sections = [...bySection.entries()].map(([section, count]) => ({ section, count }));
         const markerRe = /<h2(?:\s[^>]*)?>\s*((?:Addendum|Withdrawn|Recovered|Reopened)\s*(?:—|–|-)[^<]*)<\/h2>/gi;
         const blocks: Array<{ block: string; count: number }> = [];
         let last: { name: string; index: number } | null = null;
@@ -2712,6 +2804,7 @@ miss is diagnosed in the same call rather than in three more.`,
           find,
           total,
           blocks,
+          ...(sections.length ? { sections } : {}),
           ...(near ? { matchedUpTo: near.fragment, storedNearby: near.context } : {}),
           ...(total === 0 && !near ? { hint: "Not present, and no fragment of it is either — the string is unrelated to this note's content." } : {}),
         };
@@ -3196,6 +3289,12 @@ coverage names any pass that hit a cap, so a short list is never mistaken for a 
         ...(ack?.length ? { ack } : {}),
         ...(repair?.length ? { repair } : {}),
       });
+      // The size-trajectory baselines live in brainllm.json, written by the
+      // deep lint pass onto the live config object. Without this save the
+      // baselines reset on restart and every run reads as first-sighting.
+      if (deep && !dryRun && b().sizes && Object.keys(b().sizes!).length) {
+        saveConfig(b());
+      }
       return txt(report);
     }
   );
