@@ -31,6 +31,13 @@ export interface BrainLLMConfig {
   knowledge: { root: string; master: string; domains: string };
   insights:  { root: string; logs: string };
   policy: LifecyclePolicy;
+  /** Size-trajectory baselines from maintain(deep)'s structural-lint pass —
+   *  per note, the size at the last deep run that read it. Used to flag
+   *  growth (a rate, which stays actionable) rather than only a static
+   *  ceiling a permanently-oversized note stops hearing. Optional: absent
+   *  until the first deep run writes it, and loadConfig's spread passes it
+   *  through older files unchanged. */
+  sizes?: Record<string, { chars: number; date: string }>;
 }
 
 export const EMPTY_BRAINLLM: BrainLLMConfig = {

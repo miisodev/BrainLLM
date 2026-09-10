@@ -10,7 +10,7 @@ A persistent, graph-structured second brain for Claude and any MCP client — bu
 
 [**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
 
-[![Version](https://img.shields.io/badge/version-12.1.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-12.2.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -50,6 +50,7 @@ Placement, naming, labels, deduplication, relation bookkeeping, lifecycle aging,
 - **A visible graph** — `graph()` renders the whole relation graph (or any note's neighborhood) as a Mermaid flowchart, maintained as a native Trilium note.
 - **One-call day orientation** — `day()` serves the previous session, its change log, everything touched since, and the month's deliverables in a single call.
 - **Resilient plumbing** — every backend call is timeout-bounded with retry on idempotent reads; all writes are idempotent or duplicate-guarded, so crashes and retries never double-write; content surgery survives the editor's own HTML rewriting; renaming a domain cascades to everything inside it; the maintenance sweep heals drift it finds.
+- **Multi-agent by default** — all write-classified tools serialize behind a process-wide FIFO lock, so two agents (an interactive session and an automated run, say) writing through one hosted instance queue in arrival order instead of racing; reads stay fully parallel. Deletion catch-up in the daily log keeps a note deleted after its day's close from vanishing without a trace.
 
 ---
 
