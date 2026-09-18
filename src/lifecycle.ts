@@ -80,7 +80,7 @@ export interface SweepReport {
    *  unscoped deep run that produced findings. */
   laneHint?: string;
   dryRun: boolean;
-  policy: { dormantAfterDays: number; archiveDormantAfterDays: number; staleAfterDays: number };
+  policy: { dormantAfterDays: number; archiveDormantAfterDays: number; staleAfterDays: number; deletionCatchupDays: number };
 }
 
 function isoDaysAgo(days: number): string {
@@ -134,6 +134,7 @@ export async function sweep(
       dormantAfterDays: policy.dormantAfterDays,
       archiveDormantAfterDays: policy.archiveDormantAfterDays,
       staleAfterDays: policy.staleAfterDays,
+      deletionCatchupDays: policy.deletionCatchupDays ?? 7,
     },
   };
   if (!cfg.root) return report;
@@ -322,17 +323,18 @@ export async function sweep(
 
   // ── Deep: deletion visibility ──────────────────────────────────────────────
   // A note soft-deleted under the brain root shows in Trilium's change feed
-  // until the eraser removes the row — 7 days at Trilium's default retention.
-  // After that the deletion leaves no trace at all, which is exactly how two
-  // [2026-07-31] notes vanished with no tool reporting it: the log for that
-  // day had already been generated, nothing ever regenerated it, and erasure
-  // then destroyed both the notes and the feed's own record of the deletion.
-  // Deep surfaces what the window still holds. Unscoped runs only — a deleted
-  // note's labels are soft-deleted with it, so there is no domain to
+  // until the eraser removes the row — 7 days at Trilium's default retention,
+  // and cfg.policy.deletionCatchupDays (default 7) must match whatever the
+  // eraser is set to. After that the deletion leaves no trace at all, which is
+  // exactly how two [2026-07-31] notes vanished with no tool reporting it: the
+  // log for that day had already been generated, nothing ever regenerated it,
+  // and erasure then destroyed both the notes and the feed's own record of the
+  // deletion. Deep surfaces what the window still holds. Unscoped runs only — a
+  // deleted note's labels are soft-deleted with it, so there is no domain to
   // attribute a scoped run's findings to.
   if (deep && !domainSlug) {
     const feed = await trilium.getNoteHistory(cfg.root).catch(() => [] as Awaited<ReturnType<TriliumClient["getNoteHistory"]>>);
-    const deletionsWindow = isoDaysAgo(7);
+    const deletionsWindow = isoDaysAgo(policy.deletionCatchupDays ?? 7);
     const recent = feed.filter((h) => h.current_isDeleted && h.date.slice(0, 10) >= deletionsWindow);
     report.scanned += recent.length;
     for (const [i, h] of recent.entries()) {

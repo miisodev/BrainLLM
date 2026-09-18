@@ -44,6 +44,7 @@ Written by the server — you never set `#noteType`, `#status`, `#created`, `#up
 | `#topic` | slugged, repeatable | Subject tags (`ai-tooling`, `infra`) — capitalization normalized server-side |
 | `#domain` | slugged | Knowledge domain — book auto-created on first use |
 | `#archived` | (flag) | Excludes the note from default `recall()`; content preserved in place |
+| `#mandate` | (flag) | Information notes only — marks a **standing brief** (instructions a future session must follow) as distinct from current-state fact. Set via `remember(…, mandate=true)` or `label(id, "mandate")`; surfaced in `domain()` and `knowledge_recall`. See `references/domains.md` |
 | `#reviewed` | content blob id | Set by `maintain(ack=[…])` — this note's current content was reviewed and its maintenance findings accepted. Suppresses them until the body actually changes, then all of them return |
 | `#brainLlmRoot` | (flag) | Marks the brain root — used by auto-discovery |
 | `#iconClass` | `bx …` | Display icon — set via `icon=` on `remember`/`revise`/`diary`/`close` (class or bare name, normalized) |

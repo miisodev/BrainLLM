@@ -86,7 +86,7 @@ describe("the core/raw boundary", () => {
     // that is the reminder to update the places that state the count.
     const core = namesOf(register("core")).length;
     const raw = namesOf(register("full")).length - core;
-    expect({ core, raw, total: core + raw }).toEqual({ core: 42, raw: 33, total: 75 });
+    expect({ core, raw, total: core + raw }).toEqual({ core: 44, raw: 33, total: 77 });
   });
 });
 
@@ -101,5 +101,16 @@ describe("the tools added in 10.3–10.4 are classified correctly", () => {
     expect(TOOL_ANNOTATIONS.claim?.destructiveHint).toBe(false);
     // Deliberately NOT idempotent: each verification appends a dated line.
     expect(TOOL_ANNOTATIONS.claim?.idempotentHint).toBeUndefined();
+  });
+});
+
+describe("the tools added in V12.3 are classified correctly", () => {
+  test("read is a read — N bodies, one round trip, writes nothing", () => {
+    expect(TOOL_ANNOTATIONS.read?.readOnlyHint).toBe(true);
+  });
+
+  test("split is a write — it moves sections out of a note and creates a new one", () => {
+    expect(TOOL_ANNOTATIONS.split?.readOnlyHint).toBe(false);
+    expect(TOOL_ANNOTATIONS.split?.destructiveHint).toBe(false);
   });
 });

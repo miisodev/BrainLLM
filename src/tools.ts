@@ -65,6 +65,7 @@ import {
   hasAddendumMarker,
   nearestHeading,
   repairedStructure,
+  extractSections,
 } from "./normalize.js";
 import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES, isOpenResolutionOnly, purposeContent } from "./templates.js";
 import {
@@ -375,7 +376,7 @@ sessions need one section, not five documents.`,
       const [hygiene, digest] = await Promise.all([
         sweep(trilium, cfg, { deep: false, dryRun: false }).catch((e): SweepReport => ({
           scanned: 0, fixed: [], transitions: [], deleted: [], flagged: [`sweep failed: ${e}`], dryRun: false,
-          policy: { dormantAfterDays: cfg.policy.dormantAfterDays, archiveDormantAfterDays: cfg.policy.archiveDormantAfterDays, staleAfterDays: cfg.policy.staleAfterDays },
+          policy: { dormantAfterDays: cfg.policy.dormantAfterDays, archiveDormantAfterDays: cfg.policy.archiveDormantAfterDays, staleAfterDays: cfg.policy.staleAfterDays, deletionCatchupDays: cfg.policy.deletionCatchupDays ?? 7 },
         })),
         buildDigest(trilium, cfg, { depth: depth ?? "digest" }),
       ]);
@@ -1044,6 +1045,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       })).optional().describe("kind=sources only: upsert Revision-table rows by source name — re-verifying a source replaces its existing row's Marker/Date in place instead of appending a new one"),
       topics: z.array(z.string()).optional().describe("Topic tags — slugged server-side"),
       supersedes: z.string().optional().describe("noteId this replaces — old note is archived and wired supersedes"),
+      mandate: z.boolean().optional().describe("kind=information only: mark this note as a standing mandate/brief (instructions a future session must follow) rather than a current-state fact. Adds a #mandate flag, surfaced in domain() and knowledge_recall — a scoped autonomous session finds 'the thing I must obey' without reading every note's prose to tell it apart."),
       mustCreate: z.boolean().optional().describe("Refuse instead of adopting an existing note when the title already exists — turns a silent overwrite on a generic title (Current State, Sources, Technology Stack) into a catchable error"),
       strict: z.boolean().optional().describe("Refuse the write when the body needs structural repair (unclosed tags, <br> runs) instead of accepting the repaired form"),
       connect: z.array(z.object({
@@ -1053,7 +1055,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name ("brain"); normalized server-side'),
       date: z.string().optional().describe("ISO date override (default: today)"),
     },
-    async ({ kind, title, body, goal, identity, domain, revision, topics, supersedes, mustCreate, strict, connect: connectRels, icon, date }) => {
+    async ({ kind, title, body, goal, identity, domain, revision, topics, supersedes, mandate, mustCreate, strict, connect: connectRels, icon, date }) => {
       /** mustCreate turns adoption into a refusal.
        *
        *  Dedup-by-title is what makes remember() idempotent, and it is also a
@@ -1070,7 +1072,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           `A ${kind} note titled "${existingTitle}" already exists ${where} [${existingId}] — mustCreate=true refuses to adopt it.`,
           `Read it first with ${kind === "thread" ? "memory" : "knowledge"}(${existingId}). To add to it deliberately, re-run without mustCreate, or use revise(${existingId}, …). To keep both, pick a title that distinguishes them.`
         );
-      const opts: RememberOpts = { domain, topics, date };
+      const opts: RememberOpts = { domain, topics, date, ...(mandate ? { mandate: true } : {}) };
       const d = date ?? today();
       const { html, warnings: sanitizeWarnings } = renderBody(body ?? "");
 
@@ -1755,6 +1757,7 @@ Use recall() for keyword or full-text search instead.`,
           modified: n.dateModified.slice(0, 10),
           idleDays: idle,
           ...(stale ? { stale: true as const } : {}),
+          ...(hasLabel(n, "mandate") ? { mandate: true as const } : {}),
           ...(hasLabel(n, "archived") ? { archived: true as const } : {}),
           ...(relations ? { relations } : {}),
         });
@@ -1776,6 +1779,38 @@ Use recall() for keyword or full-text search instead.`,
           ? { note: `No content found for "${slug}". Create a Knowledge domain with remember(kind="information", domain="${name}") or tag notes with topics=["${slug}"].` }
           : {}),
       });
+    }
+  );
+
+  server.tool(
+    "read",
+    `Batched multi-note read: several note bodies in ONE round trip. Give ids=[...] and get back
+{count, notes:[{id, title, kind, content, relations?}]}. The orientation step is structurally a
+fan-out — nineteen notes, several very large — and N separate surface calls is N chances to
+time out mid-read, which is the one thing that wastes budget rather than spending it. This tool
+collapses the fan-out into one call.
+
+Pure read: returns bodies verbatim, no placeholders, no dedup, no kind restrictions. Note the
+cap: up to 10 ids per call. For one id prefer the kinded read (knowledge()/memory()/llm()) which
+returns the same shape through the same helper; for a huge note the sectioned read is still the
+efficient path — read() returns whole bodies.`,
+    {
+      ids: z.array(z.string()).min(1).max(10).describe("Note ids to read — one body per id, one round trip (cap 10)"),
+    },
+    async ({ ids }) => {
+      const notes = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const note = await trilium.getNote(id);
+            const content = await trilium.getNoteContent(id).catch(() => "");
+            const relations = relationSnippet(note);
+            return { id, title: note.title, kind: ownedLabel(note, "noteType") ?? undefined, content, ...(relations ? { relations } : {}) };
+          } catch {
+            return { id, missing: true as const };
+          }
+        })
+      );
+      return txt({ count: notes.length, notes });
     }
   );
 
@@ -2256,6 +2291,93 @@ status, and archive it in place (it stays where it is, excluded from default rec
   );
 
   server.tool(
+    "split",
+    `Split a note on its section seams: move whole sections (heading + body) out of one note into a
+new note, leaving a pointer back. The trim affordance — the write half of the oversized-note
+problem, which maintain() detects but nothing acts on. A note past the read ceiling with twenty
+sections becomes two readable notes instead of one unusable one, and the source stays navigable
+because a pointer marks where the content went.
+
+Pass sections=[heading1, heading2, ...] (heading TEXT, the same contract section= uses) and
+into="<new title>". Each named section is lifted out whole — nested sub-sections go with their
+parent. Repeated headings are consumed first-match-per-request: passing the same heading twice
+takes the next occurrence each time. The new note is created under the same parent, typed the
+same as the source, and carries the source's #domain/#topic labels; the source is left with a
+"Split into <title>" pointer and a ~references relation to the new note. Sections that do not
+exist are reported in missed= and left in place.
+
+Returns the new note id, the sections moved, and the source's remaining size. A revision is
+taken of the source before it is written. Refused on containers and singletons — this is for
+content notes.`,
+    {
+      noteId: z.string().describe("Note to split — the source whose sections are moving out"),
+      sections: z.array(z.string()).min(1).max(20).describe("Section headings (text) to move out — nested sub-sections go with their parent"),
+      into: z.string().describe("Title of the new note that receives the moved sections"),
+      date: z.string().optional().describe("ISO date (default: today)"),
+    },
+    async ({ noteId, sections, into, date }) => {
+      if (isStructural(b(), noteId))
+        return err("protected_note", `Note ${noteId} is a structural note (container or singleton) and cannot be split.`, "split() is for content notes — pass a content note id, not a container.");
+      const d = date ?? today();
+      const note = await trilium.getNote(noteId);
+      const kind = labelOf(note, "noteType") ?? "information";
+      const current = await trilium.getNoteContent(noteId).catch(() => "");
+
+      const result = extractSections(current, sections);
+      if (!result.matched.length)
+        return err(
+          "no_sections_matched",
+          `None of the requested sections exist in this note.`,
+          `Available headings: ${headingOutline(current).map((h) => `"${h.text}"`).join(", ") || "(none)"}. Pass the exact heading text from outline(noteId).`
+        );
+
+      const { title: cleanTitle } = normalizeTitle(into);
+      if (!cleanTitle)
+        return err("missing_param", "into= produced no usable title.", 'Give the new note a real title, e.g. into="Code Priority Queue — resolved items".');
+
+      // Create the receiving note under the same parent, carrying the source's
+      // type and labels so it is born wired and discoverable.
+      const parentId = note.parentNoteIds[0];
+      if (!parentId)
+        return err("no_parent", "The source note has no parent — cannot place the split target.", "A content note should have exactly one parent.");
+      const created = await trilium.createNote(parentId, cleanTitle, result.extracted, "text");
+      const nid = created.note.noteId;
+      for (const l of labelPlan(kind as AnyKind, { domain: labelOf(note, "domain"), topics: (note.attributes.filter((a) => a.type === "label" && a.name === "topic").map((a) => a.value ?? "").filter(Boolean)) }, d)) {
+        if (l.name === "noteType" || l.name === "created") await trilium.addLabel(nid, l.name, l.value, l.inheritable ?? false);
+      }
+      if (labelOf(note, "domain")) await trilium.addLabel(nid, "domain", labelOf(note, "domain")!).catch(() => null);
+      for (const t of note.attributes.filter((a) => a.type === "label" && a.name === "topic")) {
+        if (t.value) await trilium.addLabel(nid, "topic", t.value).catch(() => null);
+      }
+
+      // Pointer left in the source where the first section used to be — a
+      // navigable breadcrumb rather than a silent removal.
+      const pointer = `<p><em>Split ${d} — moved ${result.matched.length} section(s) into <strong>${escapeHtml(cleanTitle)}</strong> [${nid}].</em></p>`;
+      await trilium.createRevision(noteId).catch(() => null);
+      await trilium.updateNoteContent(noteId, `${pointer}\n${result.html}`);
+      await trilium.updateLabelValue(noteId, "updated", d);
+
+      await trilium.addRelation(noteId, "references", nid).catch(() => null);
+
+      const remaining = await trilium.getNoteContent(noteId).catch(() => "");
+      const remainingNote = await trilium.getNote(noteId).catch(() => null);
+      return txt({
+        ok: true,
+        action: "split",
+        noteId,
+        newNoteId: nid,
+        newNoteTitle: cleanTitle,
+        moved: result.matched,
+        ...(result.missed.length ? { missed: result.missed } : {}),
+        remainingSize: remaining.length,
+        pointer: `Split ${d} — moved ${result.matched.length} section(s) into ${cleanTitle} [${nid}]`,
+        ...(remainingNote ? { relations: relationSnippet(remainingNote) } : {}),
+        note: `Moved ${result.matched.length} section(s) into "${cleanTitle}" [${nid}]; the source now points at it. If this was the wrong seam, the source has a revision from before the split.`,
+      });
+    }
+  );
+
+  server.tool(
     "withdraw",
     `Withdraw an archived or resolved thread from the archive: removes the #archived flag,
 resets status to active, clears the closed date, and appends a dated "Withdrawn" addendum.
@@ -2504,14 +2626,66 @@ reads a striptags'd copy of the content, so it drops notes this tool should exam
 contradiction sweep a falsely clean result is worse than a slow one. Pass fast=true to use it
 anyway when scope is wide and speed matters more than completeness.`,
     {
-      pattern: z.string().describe("Regex over note bodies. One capture group = the value that should agree across notes."),
+      pattern: z.string().optional().describe("Regex over note bodies. One capture group = the value that should agree across notes. Omit when using subject= (prose mode)."),
+      subject: z.string().optional().describe("Prose-subject mode: give a fact in prose ('the two scheduled agents'), get back the notes asserting about that subject, however phrased — no regex guessing. Tokenized into significant content words; mutually exclusive with pattern. Use domain= to scope the search."),
+      staleAfterDays: z.number().optional().describe("With pattern: flag figures asserted in EXACTLY one note whose sole note was last touched more than N days ago — the single-copy values that rot silently, because consistency() can only tell a single copy agrees with itself. Reported in staleSingles."),
       domain: z.string().optional().describe("Restrict to one knowledge domain"),
       kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds"),
       includeArchived: z.boolean().optional().describe("Include archived notes (default false)"),
       limit: z.number().optional().describe("Max notes to examine (default 60)"),
       fast: z.boolean().optional().describe("Pre-filter candidates with Trilium's %= operator — faster, but its striptags'd corpus silently drops notes (default: false, scan every in-scope note)"),
     },
-    async ({ pattern, domain, kinds, includeArchived, limit, fast }) => {
+    async ({ pattern, subject, staleAfterDays, domain, kinds, includeArchived, limit, fast }) => {
+      if (!pattern && !subject)
+        return err("missing_param", "consistency() needs either a regex pattern or a prose subject.", 'Pass pattern="(\\\\d+) users" to compare a captured value, or subject="<a fact in prose>" to find every note asserting about that subject however phrased.');
+
+      // ── Prose-subject mode: "which notes assert something about X, however phrased".
+      // The reason consistency() felt useless for re-measuring a fact was the regex
+      // guesswork — a pattern anchored on the wrong word order returns nothing while
+      // a note plainly states the fact. subject= replaces the guess with significant
+      // tokens extracted from the prose, and a note counts as asserting about the
+      // subject when it contains a majority of them.
+      if (subject && !pattern) {
+        const max = limit ?? 60;
+        const tokens = queryTokens(subject, 8);
+        if (!tokens.length)
+          return err("no_tokens", "The subject produced no significant content words.", 'A subject of all stop-words ("what was it") cannot find anything — name the thing you re-measured.');
+        const clauses = ["#noteType"];
+        if (domain) clauses.push(`#domain='${slugify(domain)}'`);
+        const notes = await trilium
+          .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: max, includeArchivedNotes: includeArchived ?? false })
+          .then((r) => r.results)
+          .catch(() => [] as Note[]);
+        const scoped = notes.filter((n) => {
+          const kind = ownedLabel(n, "noteType");
+          if (!kind) return false;
+          return !kinds?.length || (kinds as string[]).includes(kind);
+        });
+        const threshold = Math.max(1, Math.ceil(tokens.length / 2));
+        const hits: Array<{ id: string; title: string; kind: string; matchedTokens: string[]; snippet: string }> = [];
+        for (const n of scoped) {
+          const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+          if (!content) continue;
+          const text = stripTagsWithMap(content).text.toLowerCase();
+          const matchedTokens = tokens.filter((t) => text.includes(t));
+          if (matchedTokens.length < threshold) continue;
+          hits.push({ id: n.noteId, title: n.title, kind: ownedLabel(n, "noteType") ?? "", matchedTokens, snippet: toText(content, 200) });
+        }
+        return txt({
+          mode: "subject",
+          subject,
+          tokens,
+          threshold: `${threshold} of ${tokens.length} token(s)`,
+          notesExamined: scoped.length,
+          notes: hits,
+          total: hits.length,
+          ...(domain ? { domain: slugify(domain) } : {}),
+          note: hits.length
+            ? `${hits.length} note(s) assert something about "${subject}". Open each to read the claim — or narrow with domain= / kinds=.`
+            : `No note in scope matched ${threshold}+ of the subject's tokens. That is evidence about the phrasing, not the brain — this mode is deliberately phrase-agnostic, so if you expected a hit, the fact may not be recorded here at all.`,
+        });
+      }
+      if (!pattern) return err("missing_param", "No regex pattern given for consistency.", 'Pass pattern="(\\\\d+) users" — or subject="<a fact in prose>" for the prose-subject mode.');
       let re: RegExp;
       try {
         re = new RegExp(pattern, "gi");
@@ -2542,8 +2716,8 @@ anyway when scope is wide and speed matters more than completeness.`,
       // Group by the captured value. A note asserting the value more than once
       // contributes each distinct capture, because a note that contradicts
       // ITSELF is the same defect at smaller scale.
-      const byValue = new Map<string, Array<{ id: string; title: string; kind: string }>>();
-      const noCapture: Array<{ id: string; title: string; kind: string }> = [];
+      const byValue = new Map<string, Array<{ id: string; title: string; kind: string; idleDays: number }>>();
+      const noCapture: Array<{ id: string; title: string; kind: string; idleDays: number }> = [];
       let hasCaptureGroup = false;
 
       /** Run the pattern over one corpus, returning every captured value and
@@ -2570,10 +2744,12 @@ anyway when scope is wide and speed matters more than completeness.`,
       };
 
       let tagSpanning = 0;
+      const idleSince = (iso: string) =>
+        Math.max(0, Math.floor((Date.now() - new Date(iso.replace(" ", "T")).getTime()) / 86_400_000));
       for (const n of scoped) {
         const content = await trilium.getNoteContent(n.noteId).catch(() => "");
         if (!content) continue;
-        const stub = { id: n.noteId, title: n.title, kind: ownedLabel(n, "noteType") ?? "" };
+        const stub = { id: n.noteId, title: n.title, kind: ownedLabel(n, "noteType") ?? "", idleDays: idleSince(n.dateModified) };
 
         // Two corpora, unioned: the raw stored body (so a pattern anchored on
         // tags or entities still works) and a tag-stripped projection (so a
@@ -2614,6 +2790,17 @@ anyway when scope is wide and speed matters more than completeness.`,
         .map(([value, notes]) => ({ value, count: notes.length, notes }))
         .sort((a, b) => b.count - a.count);
 
+      // Stale-single-copy report: figures asserted in EXACTLY one note, whose
+      // sole note was last touched more than staleAfterDays ago. The inverse of
+      // the agreement check — consistency() can only tell a single copy that it
+      // agrees with itself, so a one-copy figure rots silently until someone
+      // re-measures it. Only reported when the caller opts in with staleAfterDays=.
+      const staleSingles = staleAfterDays
+        ? groups
+            .filter((g) => g.count === 1 && g.notes[0]!.idleDays >= staleAfterDays)
+            .map((g) => ({ value: g.value, note: { id: g.notes[0]!.id, title: g.notes[0]!.title, kind: g.notes[0]!.kind }, idleDays: g.notes[0]!.idleDays }))
+        : [];
+
       const agrees = groups.length <= 1;
       return txt({
         mode: "consistency",
@@ -2625,6 +2812,10 @@ anyway when scope is wide and speed matters more than completeness.`,
         distinctValues: groups.length,
         agreement: groups.length === 0 ? "no-data" : agrees ? "unanimous" : "DISAGREEMENT",
         groups,
+        ...(staleAfterDays ? { staleAfterDays } : {}),
+        ...(staleSingles.length
+          ? { staleSingles, staleSinglesNote: `${staleSingles.length} figure(s) appear in exactly one note, untouched ${staleAfterDays}d+ — a single copy cannot disagree with itself, so re-measure these against the world rather than against other notes.` }
+          : {}),
         ...(noCapture.length ? { matchedWithoutValue: noCapture } : {}),
         note: agrees
           ? groups.length === 0

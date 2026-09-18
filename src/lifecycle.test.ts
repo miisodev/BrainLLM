@@ -4,6 +4,7 @@ import { labelPlan } from "./router.js";
 import { RESOLUTION_ANCHOR, isOpenResolutionOnly, missingSections } from "./templates.js";
 import { ownedLabel, type Note, type Attribute } from "./trilium.js";
 import { EMPTY_BRAINLLM } from "./config.js";
+import { DEFAULT_POLICY } from "./types.js";
 
 describe("applyResolution", () => {
   test("replaces the anchor tail", () => {
@@ -47,10 +48,20 @@ describe("labelPlan (V10)", () => {
     const flat = labelPlan("information", { domain: "Distributed Systems" }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
     expect(flat).toContain("domain=distributed-systems");
   });
-  test("topics are slugged and deduped", () => {
+test("topics are slugged and deduped", () => {
     const flat = labelPlan("user", { topics: ["AI Tooling", "ai-tooling", "Infra"] }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
     expect(flat.filter((f) => f === "topic=ai-tooling")).toHaveLength(1);
     expect(flat).toContain("topic=infra");
+  });
+  test("mandate flag lands on an information note when opts.mandate is truthy", () => {
+    const mandated = labelPlan("information", { domain: "Tech", mandate: true }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
+    expect(mandated).toContain("mandate=");
+  });
+  test("mandate is omitted without opts.mandate, and on non-information kinds", () => {
+    const plain = labelPlan("information", { domain: "Tech" }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
+    expect(plain.some((f) => f.startsWith("mandate="))).toBe(false);
+    const user = labelPlan("user", { mandate: true }, "2026-06-10").map((l) => `${l.name}=${l.value}`);
+    expect(user.some((f) => f.startsWith("mandate="))).toBe(false);
   });
 });
 
@@ -129,6 +140,26 @@ describe("vestigial metaThread id grants no structural protection", () => {
 
   test("is not a container", () => {
     expect(isContainer(cfg, "META_THREAD_001")).toBe(false);
+  });
+});
+
+
+describe("deletionCatchupDays — configurable policy, default 7", () => {
+  test("the default policy carries a 7-day deletion catch-up window", () => {
+    expect(DEFAULT_POLICY.deletionCatchupDays).toBe(7);
+  });
+
+  test("the empty config inherits it (EMPTY_BRAINLLM spreads DEFAULT_POLICY)", () => {
+    expect(EMPTY_BRAINLLM.policy.deletionCatchupDays).toBe(7);
+  });
+
+  test("an explicit policy override survives the loadConfig merge (defaults first, parsed wins)", () => {
+    // loadConfig does `policy: { ...DEFAULT_POLICY, ...(parsed.policy ?? {}) }` —
+    // simulate that merge here so raising the window (e.g. to match a 30-day
+    // Trilium eraser retention) is representable and wins over the default.
+    const merged = { ...DEFAULT_POLICY, ...({ deletionCatchupDays: 30 } as Partial<typeof DEFAULT_POLICY>) };
+    expect(merged.deletionCatchupDays).toBe(30);
+    expect(merged.dormantAfterDays).toBe(21); // sibling defaults preserved
   });
 });
 
