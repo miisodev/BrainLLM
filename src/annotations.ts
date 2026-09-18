@@ -45,6 +45,7 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   brain: READ,
   recall: READ,
   domain: READ,
+  read: READ,             // batched multi-note read — N bodies, one round trip
   outline: READ,
   inspect: READ,
   template: READ,
@@ -79,6 +80,7 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   remember: WRITE,
   diary: APPEND,
   revise: WRITE,
+  split: WRITE,           // moves sections out of a note into a new one
   close: APPEND,
   connect: WRITE,
   label: WRITE,

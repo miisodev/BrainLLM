@@ -40,6 +40,7 @@ import {
   upsertTableRow,
   tableRows,
   hasPlaceholderRow,
+  extractSections,
 } from "./normalize.js";
 
 describe("tolerantFindRegex", () => {
@@ -860,6 +861,68 @@ describe("headingOutline reports the stored form when it differs", () => {
     expect(marked!.text).toBe("recall(regex=) — the defect");
     expect(marked!.raw).toBe("<code>recall(regex=)</code> — the defect");
     expect(plain!.raw).toBeUndefined();
+  });
+});
+
+describe("extractSections — the split() primitive", () => {
+  const DOC =
+    "<h2>Overview</h2><p>top matter</p>" +
+    "<h2>Plan</h2><h3>Step one</h3><p>do the thing</p><h3>Step two</h3><p>and more</p>" +
+    "<h2>Notes</h2><p>tail</p>";
+
+  test("moves whole sections out and returns the remainder", () => {
+    const r = extractSections(DOC, ["Plan"]);
+    expect(r.matched).toEqual(["Plan"]);
+    expect(r.extracted).toContain("<h2>Plan</h2>");
+    expect(r.extracted).toContain("Step one");
+    expect(r.extracted).toContain("Step two");
+    // Nested subsections go with their parent.
+    expect(r.extracted).toContain("do the thing");
+    expect(r.html).toContain("Overview");
+    expect(r.html).toContain("top matter");
+    expect(r.html).toContain("Notes");
+    expect(r.html).not.toContain("Plan");
+    expect(r.html).not.toContain("Step one");
+  });
+
+  test("moves several sections, preserving document order", () => {
+    const r = extractSections(DOC, ["Notes", "Overview"]);
+    expect(r.matched).toEqual(["Notes", "Overview"]);
+    expect(r.extracted.indexOf("<h2>Overview</h2>")).toBeLessThan(r.extracted.indexOf("<h2>Notes</h2>"));
+    expect(r.html).toContain("Plan");
+    expect(r.html).not.toContain("Overview");
+    expect(r.html).not.toContain("tail");
+  });
+
+  test("repeated headings are consumed first-match-per-request", () => {
+    const dup = DOC + "<h2>Plan</h2><p>second plan</p>";
+    const r = extractSections(dup, ["Plan", "Plan"]);
+    expect(r.matched).toEqual(["Plan", "Plan"]);
+    expect(r.extracted.match(/<h2>Plan<\/h2>/g)).toHaveLength(2);
+    expect(r.html).not.toContain("Plan");
+  });
+
+  test("missing sections are reported and left in place", () => {
+    const r = extractSections(DOC, ["Plan", "No Such Section"]);
+    expect(r.matched).toEqual(["Plan"]);
+    expect(r.missed).toEqual(["No Such Section"]);
+    expect(r.html).toContain("Notes");
+    expect(r.html).not.toContain("Plan");
+  });
+
+  test("matching is on heading text — inline markup in the heading still matches", () => {
+    const html = "<h3><code>recall(regex=)</code> — the defect</h3><p>body</p><h3>Other</h3><p>x</p>";
+    const r = extractSections(html, ["recall(regex=) — the defect"]);
+    expect(r.matched).toEqual(["recall(regex=) — the defect"]);
+    expect(r.extracted).toContain("body");
+    expect(r.html).toContain("Other");
+  });
+
+  test("no requested section → no change", () => {
+    const r = extractSections(DOC, ["Nope"]);
+    expect(r.matched).toEqual([]);
+    expect(r.missed).toEqual(["Nope"]);
+    expect(r.html).toBe(DOC);
   });
 });
 

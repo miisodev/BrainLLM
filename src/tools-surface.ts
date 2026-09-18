@@ -24,6 +24,8 @@ export interface Stub {
   updated: string;
   preview: string;
   relations?: RelationEdge[];
+  /** Standing brief — carries the #mandate flag. */
+  mandate?: true;
 }
 
 /** Skim a surface subtree → compact stubs with previews, newest first. */
@@ -53,6 +55,8 @@ export async function skim(
       return {
         id: n.noteId, title: n.title, kind: labelOf(n, "noteType"), status: labelOf(n, "status") ?? undefined,
         updated: n.dateModified.slice(0, 10), preview: toText(content, 160), ...(relations ? { relations } : {}),
+        // Inline attribute check — labelOf reads .value and a flag's value is empty.
+        ...(n.attributes.some((a) => a.type === "label" && a.name === "mandate") ? { mandate: true } : {}),
       };
     })
   );

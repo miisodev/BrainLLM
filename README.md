@@ -10,7 +10,7 @@ A persistent, graph-structured second brain for Claude and any MCP client — bu
 
 [**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
 
-[![Version](https://img.shields.io/badge/version-12.2.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-12.3.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -50,7 +50,8 @@ Placement, naming, labels, deduplication, relation bookkeeping, lifecycle aging,
 - **A visible graph** — `graph()` renders the whole relation graph (or any note's neighborhood) as a Mermaid flowchart, maintained as a native Trilium note.
 - **One-call day orientation** — `day()` serves the previous session, its change log, everything touched since, and the month's deliverables in a single call.
 - **Resilient plumbing** — every backend call is timeout-bounded with retry on idempotent reads; all writes are idempotent or duplicate-guarded, so crashes and retries never double-write; content surgery survives the editor's own HTML rewriting; renaming a domain cascades to everything inside it; the maintenance sweep heals drift it finds.
-- **Multi-agent by default** — all write-classified tools serialize behind a process-wide FIFO lock, so two agents (an interactive session and an automated run, say) writing through one hosted instance queue in arrival order instead of racing; reads stay fully parallel. Deletion catch-up in the daily log keeps a note deleted after its day's close from vanishing without a trace.
+- **Multi-agent by default** — all write-classified tools serialize behind a process-wide FIFO lock, so two agents (an interactive session and an automated run, say) writing through one hosted instance queue in arrival order instead of racing; reads stay fully parallel. Deletion catch-up in the daily log keeps a note deleted after its day's close from vanishing without a trace — and its window is configurable (`deletionCatchupDays` in the lifecycle policy), defaulting to Trilium's 7-day retention.
+- **Ask in prose, split on a seam** — `consistency(subject="…")` finds every note asserting about a fact however it is phrased, no regex guessing; `consistency(pattern, staleAfterDays=N)` surfaces figures held in exactly one untouched note, the ones that rot silently because nothing disagrees with them; `read(ids=[…])` batches a multi-note orientation into one round trip; and `split(noteId, sections=[…], into="…")` is the write half of the oversized-note problem — it lifts whole sections into a new note and leaves a pointer back. Information notes can carry a `#mandate` marker so a scoped session finds the one note it must obey without reading every note's prose.
 
 ---
 
@@ -193,13 +194,13 @@ Every tool declares whether it reads, writes, or destroys, so your client can gr
 
 The classification lives in one reviewable table ([`src/annotations.ts`](./src/annotations.ts)) rather than scattered across registrations, and its default is deliberately unsafe-side: a tool missing from the table is treated as a **write**, never a read, and says so at startup. Three are worth knowing because they look like reads and aren't — `start()` creates today's diary and session stubs, `session()` runs the maintenance sweep, and `graph()` writes the rendered graph note.
 
-### Core — universal verbs (32)
+### Core — universal verbs (34)
 
 | Group | Tools |
 |---|---|
 | Session lifecycle | `start` · `day` · `session` · `remarks` · `close` · `backup` |
-| Writing | `remember` · `diary` · `revise` · `resolve` · `withdraw` · `recover` |
-| Reading & search | `recall` · `domain` · `brain` · `assembly` · `outline` · `inspect` · `diff` · `template` · `consistency` |
+| Writing | `remember` · `diary` · `revise` · `split` · `resolve` · `withdraw` · `recover` |
+| Reading & search | `read` · `recall` · `domain` · `brain` · `assembly` · `outline` · `inspect` · `diff` · `template` · `consistency` |
 | Graph | `connect` · `explore` · `graph` |
 | Attachments & labels | `attach` · `detach` · `label` |
 | Maintenance & system | `addendum` · `maintain` · `claim` · `forget` · `bootstrap` |

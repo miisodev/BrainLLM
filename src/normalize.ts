@@ -1216,6 +1216,97 @@ function splitByH3(html: string): Array<{ headingText?: string; body: string; ra
   return out;
 }
 
+/** One heading section's span within a body: its heading tag position and the
+ *  range of everything under it (through the next heading at the same or a
+ *  shallower level, else the end of the body). Shares the nesting rule of
+ *  locateSection: a section owns its nested sub-sections. */
+export interface SplitSection {
+  level: 2 | 3 | 4;
+  /** The heading's text (tag-stripped) — the section= matching key. */
+  text: string;
+  /** Index of the opening <hN>. */
+  start: number;
+  /** Index just past the closing </hN> — where the section's body begins. */
+  bodyStart: number;
+  /** Index of the next heading at this level or shallower, else html.length. */
+  end: number;
+  /** Occurrence index among same-text siblings. */
+  occurrence: number;
+}
+
+/** Enumerate every heading section in a body as spans, in document order.
+ *  The same nesting contract as locateSection: each section runs from its own
+ *  heading through the next heading at an equal or shallower level, so nested
+ *  sub-sections belong to their parent. Used by extractSections() to split a
+ *  note on named seams. */
+export function sectionSpans(html: string): SplitSection[] {
+  const closed = closeDangling(html);
+  const heads: Array<{ level: 2 | 3 | 4; text: string; start: number; bodyStart: number }> = [];
+  const re = /<h([2-4])(?:\s[^>]*)?>([\s\S]*?)<\/h\1>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(closed)) !== null) {
+    const text = decodeEntities(m[2]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    heads.push({ level: Number(m[1]) as 2 | 3 | 4, text, start: m.index, bodyStart: m.index + m[0].length });
+  }
+  const seen = new Map<string, number>();
+  return heads.map((h, i) => {
+    // End = the next heading at this level or shallower (i.e. not a deeper
+    // sub-section, which belongs to this section); else end of body.
+    const next = heads.findIndex((x, j) => j > i && x.level <= h.level);
+    const end = next === -1 ? closed.length : heads[next]!.start;
+    const occurrence = (seen.get(`${h.level}::${h.text.toLowerCase()}`) ?? 0) + 1;
+    seen.set(`${h.level}::${h.text.toLowerCase()}`, occurrence);
+    return { level: h.level, text: h.text, start: h.start, bodyStart: h.bodyStart, end, occurrence };
+  });
+}
+
+/** Extract whole heading sections (heading + body) out of a body, returning the
+ *  removed markup and the remainder. The primitive behind split(): move the
+ *  sections whose headings are named from one note into another, leaving the
+ *  rest intact. Matching is on heading TEXT (the section= contract); repeated
+ *  headings are consumed first-match-per-request, so passing the same heading
+ *  twice takes the next occurrence each time. Sections that do not exist are
+ *  reported in `missed` and left untouched. */
+export function extractSections(
+  html: string,
+  headings: string[]
+): { html: string; extracted: string; matched: string[]; missed: string[] } {
+  if (!headings.length) return { html, extracted: "", matched: [], missed: [] };
+  const closed = closeDangling(html);
+  const spans = sectionSpans(closed);
+  const key = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+  const taken: SplitSection[] = [];
+  const missed: string[] = [];
+  const used = new Set<number>();
+  for (const wanted of headings) {
+    const idx = spans.findIndex((s, i) => !used.has(i) && key(s.text) === key(wanted));
+    if (idx === -1) {
+      missed.push(wanted);
+      continue;
+    }
+    used.add(idx);
+    taken.push(spans[idx]!);
+  }
+  if (!taken.length) return { html, extracted: "", matched: [], missed };
+
+  // Remove taken sections from the body in reverse index order so earlier
+  // offsets stay valid, then rebuild the extracted block in document order.
+  const sorted = [...taken].sort((a, b) => a.start - b.start);
+  let remaining = closed;
+  for (const s of [...sorted].sort((a, b) => b.start - a.start)) {
+    remaining = `${remaining.slice(0, s.start)}${remaining.slice(s.end)}`.replace(/\n{3,}/g, "\n\n");
+  }
+  const extracted = sorted
+    .map((s) => closed.slice(s.start, s.end).trim())
+    .filter(Boolean)
+    .join("\n");
+  // matched in REQUEST order, so the caller can pair each requested heading
+  // with its outcome (matched[] or missed[]); extracted stays document order.
+  return { html: remaining.trim(), extracted, matched: taken.map((s) => s.text), missed };
+}
+
 export interface SectionMergeResult {
   html: string;
   /** Group headings folded into an existing group of the same name. */

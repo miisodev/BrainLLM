@@ -149,11 +149,16 @@ export interface LifecyclePolicy {
   archiveDormantAfterDays: number;
   /** Core-invaluability rule: content untouched this many days is surfaced for review. */
   staleAfterDays: number;
+  /** How many days back a soft-deleted note is still catch-up-able in logs /
+   *  visible to the deep deletion pass — mirrors Trilium's eraser retention
+   *  (7 days default), so raising Trilium's retention needs this raised too. */
+  deletionCatchupDays: number;
 }
 
 export const DEFAULT_POLICY: LifecyclePolicy = {
   dormantAfterDays: 21,
   archiveDormantAfterDays: 45,
   staleAfterDays: 7,
+  deletionCatchupDays: 7,
 };
 

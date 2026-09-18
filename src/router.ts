@@ -25,6 +25,7 @@ export interface RememberOpts {
   topics?: string[]; // free topics — slugged server-side
   status?: Status;   // override initial status (rarely needed)
   date?: string;     // ISO date override (default: today)
+  mandate?: boolean; // information only — marks a standing brief vs current-state fact
 }
 
 export interface LabelPlan {
@@ -96,6 +97,12 @@ export function labelPlan(kind: AnyKind, opts: RememberOpts, date: string): Labe
   }
   if ((kind === "information" || kind === "domain" || kind === "sources") && opts.domain) {
     labels.push({ name: "domain", value: slugify(opts.domain) });
+  }
+  // A standing mandate/brief is behaviourally different from a current-state
+  // fact even though both are information notes — flag it at birth so a scoped
+  // session can find "the thing I must obey" without reading every note.
+  if (kind === "information" && opts.mandate) {
+    labels.push({ name: "mandate", value: "" });
   }
   for (const topic of opts.topics ?? []) {
     const slug = slugify(topic);

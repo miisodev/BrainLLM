@@ -101,7 +101,10 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
 
 // Matches Trilium's own default trash retention (eraseEntitiesAfterTimeInSeconds
 // = 604800s). A deletion is catch-up-able only while the soft-deleted row still
-// exists — past this window the feed no longer shows it.
+// exists — past this window the feed no longer shows it. The runtime value comes
+// from cfg.policy.deletionCatchupDays (default 7); operators who raise Trilium's
+// eraser retention must raise this to match, or the catch-up quietly loses
+// deletions that Trilium still holds.
 export const DELETION_CATCHUP_DAYS = 7;
 
 export interface DeletionCatchUpReport {
@@ -118,13 +121,14 @@ export interface DeletionCatchUpReport {
  *  regenerates today's log after this returns, and that regeneration sees
  *  today's deletions through the same feed. */
 export async function catchUpDeletions(trilium: TriliumClient, cfg: BrainLLMConfig, today: string): Promise<DeletionCatchUpReport> {
-  const empty = { windowDays: DELETION_CATCHUP_DAYS, deletionsFound: 0, regenerated: [] as string[] };
+  const windowDays = cfg.policy.deletionCatchupDays ?? DELETION_CATCHUP_DAYS;
+  const empty = { windowDays, deletionsFound: 0, regenerated: [] as string[] };
   if (!cfg.root || !cfg.insights.logs) return empty;
 
   const history = await trilium.getNoteHistory(cfg.root).catch(() => []);
   if (!history.length) return empty;
 
-  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - (DELETION_CATCHUP_DAYS - 1) * 86_400_000)
+  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - (windowDays - 1) * 86_400_000)
     .toISOString()
     .slice(0, 10);
 
@@ -146,5 +150,5 @@ export async function catchUpDeletions(trilium: TriliumClient, cfg: BrainLLMConf
     const report = await generateDailyLog(trilium, cfg, day).catch(() => null);
     if (report) regenerated.push(day);
   }
-  return { windowDays: DELETION_CATCHUP_DAYS, deletionsFound: total, regenerated };
+  return { windowDays, deletionsFound: total, regenerated };
 }
