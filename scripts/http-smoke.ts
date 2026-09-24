@@ -41,6 +41,7 @@ try {
       TRILIUM_ETAPI_TOKEN: "smoke-etapi-token",
       MCP_AUTH_TOKEN: "smoke-static-token",
       BRAINLLM_OWNER_PASSWORD: "smoke-owner-password",
+      BRAINLLM_OAUTH_SECRET: "smoke-oauth-secret-at-least-32-characters",
       BRAINLLM_PUBLIC_URL: base,
       BRAINLLM_MODE: "core",
       BRAINLLM_CONFIG: configPath,

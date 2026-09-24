@@ -384,16 +384,17 @@ describe("dynamic client registration", () => {
     expect(registered).not.toContain("DNS and TLS vouch for");
   });
 
-  test("POST completes from the signed transaction and ignores editable OAuth fields", async () => {
+  test("POST completes with the deployment signing secret and ignores editable OAuth fields", async () => {
     const registered = await postRegister(OPENCODE_METADATA);
     const { client_id } = await registered.json() as { client_id: string };
     const verifier = randomBytes(32).toString("base64url");
-    const page = await handleAuthorize(new Request(authorizationUrl(client_id, verifier)), BASE);
-    const transaction = transactionFrom(await page.text());
-
     const previousPassword = process.env.BRAINLLM_OWNER_PASSWORD;
+    const previousSecret = process.env.BRAINLLM_OAUTH_SECRET;
     process.env.BRAINLLM_OWNER_PASSWORD = "flow-test-owner-password";
+    process.env.BRAINLLM_OAUTH_SECRET = "flow-test-oauth-secret-at-least-32-characters";
     try {
+      const page = await handleAuthorize(new Request(authorizationUrl(client_id, verifier)), BASE);
+      const transaction = transactionFrom(await page.text());
       const wrong = await handleAuthorize(postConsent({
         transaction,
         password: "wrong-password",
@@ -437,6 +438,8 @@ describe("dynamic client registration", () => {
     } finally {
       if (previousPassword === undefined) delete process.env.BRAINLLM_OWNER_PASSWORD;
       else process.env.BRAINLLM_OWNER_PASSWORD = previousPassword;
+      if (previousSecret === undefined) delete process.env.BRAINLLM_OAUTH_SECRET;
+      else process.env.BRAINLLM_OAUTH_SECRET = previousSecret;
     }
   });
 

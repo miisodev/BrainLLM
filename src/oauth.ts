@@ -1010,7 +1010,7 @@ function issueTokens(base: string, clientId: string, resource: string, scope: st
   const now = Math.floor(Date.now() / 1000);
   const accessToken = signJwt(
     { iss: base, aud: resource, sub: "owner", scope, iat: now, exp: now + ACCESS_TOKEN_TTL_S },
-    store.secret
+    signingSecret()
   );
   const refreshToken = randomBytes(32).toString("base64url");
   store.refresh[refreshToken] = { clientId, resource, scope, expiresAt: Date.now() + REFRESH_TOKEN_TTL_MS };
