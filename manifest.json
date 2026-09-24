@@ -1,8 +1,8 @@
 {
-  "dxt_version": "0.1",
+  "manifest_version": "0.3",
   "name": "brainllm",
   "display_name": "BrainLLM",
-  "version": "12.3.0",
+  "version": "12.4.0",
   "description": "Turns TriliumNext Notes into a persistent, graph-structured second brain for Claude and other LLM clients.",
   "long_description": "BrainLLM is an MCP server that organises memory into five purpose-built areas (Master, LLM, Memory, Knowledge, Insights). The model supplies content while the server owns placement, format, lifecycle, dates and backups. Includes a full raw ETAPI surface for advanced use. Requires a running TriliumNext instance and the Bun runtime.",
   "author": {
@@ -28,6 +28,7 @@
       "env": {
         "TRILIUM_BASE_URL": "${user_config.trilium_base_url}",
         "TRILIUM_ETAPI_TOKEN": "${user_config.trilium_etapi_token}",
+        "TRILIUM_PASSWORD": "${user_config.trilium_password}",
         "BRAINLLM_MODE": "${user_config.brainllm_mode}",
         "BRAINLLM_TZ": "${user_config.brainllm_tz}"
       }
@@ -44,9 +45,16 @@
     },
     "trilium_etapi_token": {
       "type": "string",
-      "title": "Trilium ETAPI token",
-      "description": "Create one in Trilium: Options -> ETAPI -> Create token.",
-      "required": true,
+      "title": "Trilium ETAPI token (optional)",
+      "description": "Preferred: create one in Trilium under Options -> ETAPI. Leave blank when using the password alternative.",
+      "required": false,
+      "sensitive": true
+    },
+    "trilium_password": {
+      "type": "string",
+      "title": "Trilium password (alternative)",
+      "description": "Used only when no ETAPI token is supplied; BrainLLM mints and caches a token on first start.",
+      "required": false,
       "sensitive": true
     },
     "brainllm_mode": {
@@ -64,9 +72,6 @@
     }
   },
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
-    "runtimes": {
-      "bun": ">=1.0.0"
-    }
+    "platforms": ["darwin", "win32", "linux"]
   }
 }

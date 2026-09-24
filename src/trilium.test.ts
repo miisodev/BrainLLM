@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { buildBacklinkQuery, backlinkRelationNames } from "./trilium.js";
+import { buildBacklinkQuery, backlinkRelationNames, isOwnedAttribute, relationSnippet, type Note } from "./trilium.js";
 import { RelationTypes } from "./types.js";
 
 describe("buildBacklinkQuery", () => {
@@ -20,6 +20,10 @@ describe("buildBacklinkQuery", () => {
 
   test("deduplicates relation names so a clause is not repeated", () => {
     expect(buildBacklinkQuery("n1", ["relatesTo", "relatesTo"])).toBe('~relatesTo.noteId = "n1"');
+  });
+
+  test("rejects unsafe custom relation identifiers instead of injecting DSL", () => {
+    expect(() => buildBacklinkQuery("abc123", ["relatesTo", "my-rel", "x y"])).toThrow("cannot be safely queried");
   });
 
   test("no relation names yields an empty query (caller must skip the search)", () => {
@@ -47,5 +51,26 @@ describe("backlinkRelationNames", () => {
 
   test("does not duplicate a discovered name that is already canonical", () => {
     expect(backlinkRelationNames(["relatesTo"]).filter((n) => n === "relatesTo")).toHaveLength(1);
+  });
+});
+
+describe("attribute ownership", () => {
+  const note = {
+    noteId: "child123",
+    attributes: [
+      { noteId: "parent123", type: "label", name: "status", value: "active" },
+      { noteId: "child123", type: "label", name: "status", value: "dormant" },
+      { noteId: "parent123", type: "relation", name: "supports", value: "other123" },
+      { noteId: "child123", type: "relation", name: "extends", value: "other123" },
+    ],
+  } as unknown as Note;
+
+  test("identifies owned versus inherited attributes", () => {
+    expect(isOwnedAttribute(note, note.attributes[0])).toBe(false);
+    expect(isOwnedAttribute(note, note.attributes[1])).toBe(true);
+  });
+
+  test("relation snippets never present inherited edges as owned", () => {
+    expect(relationSnippet(note)).toEqual([{ relation: "extends", toNoteId: "other123" }]);
   });
 });

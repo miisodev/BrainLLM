@@ -8,7 +8,7 @@
 // knowledge), and the start orientation digest.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { type TriliumClient, type Note, ownedLabel, relationSnippet, type RelationEdge } from "./trilium.js";
+import { type TriliumClient, type Note, ownedLabel, isOwnedAttribute, relationSnippet, type RelationEdge } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import type { AnyKind } from "./types.js";
 import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, sectionProfile, escapeQueryRegex, repairDoubleEscaping, classifyDoubleEscape, LARGE_NOTE_CHARS } from "./normalize.js";
@@ -147,7 +147,7 @@ export async function sweep(
    *  Without it every scoped run re-derives for itself that the cross-venture
    *  findings are somebody else's. */
   const inScope = (n: Note): boolean =>
-    !domainSlug || n.attributes.some((a) => a.type === "label" && a.name === "domain" && a.value === domainSlug);
+    !domainSlug || n.attributes.some((a) => isOwnedAttribute(n, a) && a.type === "label" && a.name === "domain" && a.value === domainSlug);
 
   let suppressed = 0;
   const acknowledged = (n: Note): boolean => {
@@ -237,7 +237,7 @@ export async function sweep(
       for (const childId of childIds) {
         if (typedIds.has(childId) || isStructural(cfg, childId)) continue;
         const child = await trilium.getNote(childId).catch(() => null);
-        if (!child || child.attributes.some((a) => a.type === "label" && a.name === "archived")) continue;
+        if (!child || child.attributes.some((a) => isOwnedAttribute(child, a) && a.type === "label" && a.name === "archived")) continue;
 
         // A `book` with children in a flat text container is the USER's own
         // organisational folder, not an untyped content note. Knowledge/Master
@@ -291,7 +291,7 @@ export async function sweep(
       for (const childId of childIds) {
         if (typedIds.has(childId)) continue;
         const child = await trilium.getNote(childId).catch(() => null);
-        if (child && !child.attributes.some((a) => a.type === "label" && a.name === "archived")) {
+        if (child && !child.attributes.some((a) => isOwnedAttribute(child, a) && a.type === "label" && a.name === "archived")) {
           report.flagged.push(`unlabeled: ${child.title} [${childId}] in thread "${thread.title}" — add #noteType=threadEntry`);
         }
       }
@@ -616,7 +616,7 @@ export async function sweep(
       report.scanned += all.results.length;
       const byDomainTitle = new Map<string, Note[]>();
       for (const n of all.results) {
-        const domSlug = n.attributes.find((a) => a.type === "label" && a.name === "domain")?.value ?? "_unknown";
+        const domSlug = ownedLabel(n, "domain") ?? "_unknown";
         const key = `${domSlug}::${n.title.toLowerCase().trim()}`;
         if (!byDomainTitle.has(key)) byDomainTitle.set(key, []);
         byDomainTitle.get(key)!.push(n);
@@ -649,7 +649,7 @@ export async function sweep(
 
         const byDomain = new Map<string, Note[]>();
         for (const n of all.results) {
-          const domSlug = n.attributes.find((a) => a.type === "label" && a.name === "domain")?.value ?? "_unknown";
+          const domSlug = ownedLabel(n, "domain") ?? "_unknown";
           if (!byDomain.has(domSlug)) byDomain.set(domSlug, []);
           byDomain.get(domSlug)!.push(n);
         }
@@ -881,7 +881,7 @@ async function hygienePasses(
     // prediction. A claim verified the same day or later than the source's
     // last edit is still covered and stays quiet.
     if (verifiedOn) {
-      const sources = n.attributes.filter((a) => a.type === "relation" && a.name === "derivedFrom");
+      const sources = n.attributes.filter((a) => isOwnedAttribute(n, a) && a.type === "relation" && a.name === "derivedFrom");
       for (const rel of sources) {
         const src = await trilium.getNote(rel.value).catch(() => null);
         if (!src) continue;
@@ -1012,8 +1012,7 @@ function idleDays(dateModified: string): number {
   return Math.max(0, Math.floor(ms / 86_400_000));
 }
 
-const label = (n: Note, name: string) =>
-  n.attributes.find((a) => a.type === "label" && a.name === name)?.value;
+const label = (n: Note, name: string) => ownedLabel(n, name);
 
 /** A thread book's aging signal: its own "updated" label, not
  *  note.dateModified — content activity lands on threadEntry children,

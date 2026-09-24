@@ -55,6 +55,20 @@ export function localToday(): string {
   return localNowDateTime().slice(0, 10);
 }
 
+/** Validate a caller-supplied calendar date before it reaches a search expression
+ *  or a note title. The round-trip check rejects impossible dates such as
+ *  2026-02-30 as well as query-injection strings. */
+export function checkedDate(value?: string): string {
+  const date = value ?? localToday();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("date must be an ISO calendar date (YYYY-MM-DD)");
+  const [year, month, day] = date.split("-").map(Number);
+  const candidate = new Date(Date.UTC(year, month - 1, day));
+  if (candidate.getUTCFullYear() !== year || candidate.getUTCMonth() !== month - 1 || candidate.getUTCDate() !== day) {
+    throw new Error(`date is not a real calendar date: ${date}`);
+  }
+  return date;
+}
+
 /** Local wall-clock time — HH:mm, in the same timezone as localNowDateTime().
  *  Used for intra-day addendum headers so they match the user's clock, not UTC. */
 export function localNowTime(): string {

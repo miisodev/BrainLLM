@@ -3,7 +3,7 @@
 //
 // Clients group tools by their annotation hints. Without them every tool lands
 // in one undifferentiated "Other tools" bucket, and the user's only choice is
-// to allow all 71 or approve each call — which is the same failure mode as a
+// to allow all 77 or approve each call — which is the same failure mode as a
 // maintenance flag that always fires: an all-or-nothing prompt gets answered
 // "always allow" once and then never read again.
 //
@@ -40,7 +40,7 @@ const DESTRUCTIVE: Hints = { readOnlyHint: false, destructiveHint: true };
 
 export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   // ── Core: pure reads ────────────────────────────────────────────────────────
-  remarks: READ,          // cue-only; the docstring promises it writes nothing
+  remarks: WRITE,         // cue-only, but durably marks the pre-close gate
   day: READ,
   brain: READ,
   recall: READ,
@@ -68,7 +68,7 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   session: WRITE,
   graph: WRITE,
   maintain: WRITE,
-  addendum: READ,         // searches and reports; the merging is done by revise
+  addendum: WRITE,        // searches/reports and durably marks the pre-close gate
   // claim() is mode-inferred, and its modes disagree: listing and reading write
   // nothing, registering is idempotent (deduped by assertion), and recording a
   // verification appends a dated line every time. A tool gets one annotation,
@@ -139,7 +139,7 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
 
 /** Apply the table to every registered tool.
  *
- *  Done as one pass over the registry rather than an extra argument on 71
+ *  Done as one pass over the registry rather than an extra argument on 77
  *  registration calls, so the read/write split is legible as a single table.
  *  Scattered across the call sites it could not be reviewed — and reviewing it
  *  is the point, since a wrong entry here is a safety bug rather than a typo. */

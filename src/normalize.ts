@@ -14,6 +14,7 @@ const NAMED_ENTITIES: Record<string, string> = {
   amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
   mdash: "—", ndash: "–", hellip: "…", rsquo: "'", lsquo: "'",
   rdquo: '"', ldquo: '"', middot: "·", bull: "•",
+  colon: ":", tab: "\t", newline: "\n", sol: "/",
 };
 
 /** Decode one level of HTML entities. Unlike decodeEntities (which loops until
@@ -637,63 +638,132 @@ export interface SanitizeResult {
   warnings: string[];
 }
 
+const SAFE_TAGS = new Set([
+  "a", "b", "blockquote", "br", "code", "del", "div", "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img",
+  "li", "mark", "ol", "p", "pre", "s", "span", "strong", "table", "tbody", "td", "tfoot", "th",
+  "thead", "tr", "u", "ul",
+]);
+const URL_ATTRIBUTES = new Set(["href", "src", "cite", "action", "formaction", "xlink:href"]);
+const SAFE_SCHEMES = new Set(["http", "https", "mailto", "tel"]);
+const TAG_ATTRIBUTES: Record<string, Set<string>> = {
+  a: new Set(["href", "target", "rel", "download"]),
+  img: new Set(["src", "alt", "width", "height", "loading"]),
+  th: new Set(["colspan", "rowspan", "scope", "headers"]),
+  td: new Set(["colspan", "rowspan", "headers"]),
+  code: new Set(["class"]),
+  pre: new Set(["class"]),
+  span: new Set(["class"]),
+  mark: new Set(["class"]),
+  ol: new Set(["start", "reversed", "type"]),
+};
+
+function safeHtmlUrl(value: string): string | null {
+  const decoded = decodeEntities(value).replace(/[\u0000\u0001-\u001f\u007f]/g, "").trim();
+  const compact = decoded.replace(/[\u0000-\u0020]+/g, "");
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(compact)?.[1]?.toLowerCase();
+  if (scheme && !SAFE_SCHEMES.has(scheme)) return null;
+  if (/^(?:javascript|vbscript|data|file|blob):/i.test(compact)) return null;
+  return decoded;
+}
+
+function sanitizeTag(full: string, warnings: string[]): string {
+  if (full.startsWith("<!--")) return "";
+  const close = /^<\s*\/\s*([a-z][a-z0-9-]*)\s*>$/i.exec(full);
+  if (close) return SAFE_TAGS.has(close[1].toLowerCase()) ? `</${close[1].toLowerCase()}>` : "";
+  const open = /^<\s*([a-z][a-z0-9-]*)(\s[\s\S]*?)?\/?\s*>$/i.exec(full);
+  if (!open) return "";
+  const tag = open[1].toLowerCase();
+  if (!SAFE_TAGS.has(tag)) {
+    warnings.push(`Stripped unsupported <${tag}> element`);
+    return "";
+  }
+  const raw = open[2] ?? "";
+  const attrRe = /([^\s=/>]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'=<>`]+)))?/g;
+  const output: string[] = [];
+  let sawUnsafeUrl = false;
+  let sawUnsafeAttr = false;
+  let match: RegExpExecArray | null;
+  while ((match = attrRe.exec(raw)) !== null) {
+    const name = match[1].toLowerCase();
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    if (name.startsWith("on") || name === "style" || name === "xmlns" || name.startsWith("xmlns:")) {
+      sawUnsafeAttr = true;
+      continue;
+    }
+    const allowed = TAG_ATTRIBUTES[tag]?.has(name) || ["title", "class", "id", "dir", "lang"].includes(name) || name.startsWith("aria-");
+    if (!allowed || !/^[a-z][a-z0-9:-]*$/.test(name)) {
+      sawUnsafeAttr = true;
+      continue;
+    }
+    if (URL_ATTRIBUTES.has(name)) {
+      const safe = safeHtmlUrl(value);
+      if (safe === null) { sawUnsafeUrl = true; continue; }
+      output.push(`${name}=\"${escapeHtml(safe)}\"`);
+      continue;
+    }
+    if (name === "target" && !["_blank", "_self", "_parent", "_top"].includes(value)) { sawUnsafeAttr = true; continue; }
+    if (name === "class" && !/^[a-z0-9 _-]*$/i.test(value)) { sawUnsafeAttr = true; continue; }
+    if (name === "id" && !/^[a-z0-9 _:-]*$/i.test(value)) { sawUnsafeAttr = true; continue; }
+    if (["width", "height", "colspan", "rowspan", "start"].includes(name) && !/^\d{1,4}$/.test(value)) { sawUnsafeAttr = true; continue; }
+    output.push(value ? `${name}=\"${escapeHtml(decodeEntities(value))}\"` : name);
+  }
+  if (sawUnsafeUrl) warnings.push(`Stripped an unsafe URL attribute from <${tag}>`);
+  if (sawUnsafeAttr) warnings.push(`Stripped an unsafe attribute from <${tag}>`);
+  if (tag === "a" && output.some((attribute) => attribute.startsWith('target="_blank"')) && !output.some((attribute) => attribute.startsWith("rel="))) {
+    output.push("rel=\"noopener noreferrer\"");
+  }
+  if (tag === "img" && !output.some((attribute) => attribute.startsWith("src="))) return "";
+  return `<${tag}${output.length ? ` ${output.join(" ")}` : ""}>`;
+}
+
 /** Sanitize LLM-supplied HTML for Trilium / CKEditor 5 compatibility.
  *  Always returns renderable content. Reports every mutation in `warnings`
  *  so callers can surface issues without failing the write.
  *
- *  Rules applied in order:
- *  1. Strip forbidden content blocks (script/style/iframe/form/object/…)
- *  2. Strip forbidden void tags (input/embed)
- *  3. Strip style= and on* attributes
- *  4. Demote <h1> → <h2>  (h1 is reserved for the Trilium note title)
- *  5. Demote <h5>/<h6> → <h4>  (CKEditor 5 supports h2–h4 only)
- *  6. Replace <div> → <p>  (CKEditor 5 uses paragraph blocks, not divs)
- *  7. Normalize <br> runs → paragraph separators; lone <br> → space
- *  8. Close dangling open block tags at the end */
+ *  This is an allowlist sanitizer: forbidden active elements are removed even
+ *  when unclosed, unknown tags are stripped, event/style attributes are dropped,
+ *  and URL-bearing attributes are decoded and restricted to safe schemes.
+ */
 export function sanitizeHtml(html: string): SanitizeResult {
   const warnings: string[] = [];
   let s = html;
   let n = 0;
 
-  // 1. Strip forbidden content blocks (opening tag + inner content + closing tag).
-  n = 0;
+  // Remove paired forbidden blocks first, then an unclosed forbidden tail. An
+  // unclosed <script> must not be handed to closeDangling(), which would turn it
+  // into a perfectly valid active <script> element.
   s = s.replace(
-    /<(script|style|noscript|iframe|form|object|applet|select|textarea|button)(\s[^>]*)?>[\s\S]*?<\/\1>/gi,
+    /<(script|style|noscript|iframe|form|object|applet|select|textarea|button|template|svg|math|canvas)(\s[^>]*)?>[\s\S]*?<\/\1>/gi,
     () => { n++; return ""; },
   );
-  if (n) warnings.push(`Stripped ${n} forbidden element block(s) — script/style/iframe/form/object/select/textarea/button`);
+  s = s.replace(
+    /<(script|style|noscript|iframe|form|object|applet|select|textarea|button|template|svg|math|canvas)(\s[^>]*)?>[\s\S]*$/gi,
+    () => { n++; return ""; },
+  );
+  if (n) warnings.push(`Stripped ${n} forbidden element block(s) — active/content-bearing tags are not allowed`);
 
-  // 2. Strip forbidden void/lone tags.
+  // Comments can hide markup from a later parser and are not part of the note
+  // format. Remove them before the allowlist pass.
+  const comments = s.match(/<!--[\s\S]*?-->/g)?.length ?? 0;
+  if (comments) {
+    s = s.replace(/<!--[\s\S]*?-->/g, "");
+    warnings.push(`Stripped ${comments} HTML comment(s)`);
+  }
+
+  s = s.replace(/<\/?[a-z][^>]*>/gi, (tag) => sanitizeTag(tag, warnings));
+
+  let demoted = 0;
+  s = s.replace(/<(\/?)h1(\s[^>]*)?>/gi, (_, close, attrs) => { demoted++; return `<${close}h2${attrs ?? ""}>`; });
+  if (demoted) warnings.push(`Demoted ${demoted} <h1> tag(s) to <h2> — h1 is reserved for the Trilium note title`);
+
   n = 0;
-  s = s.replace(/<\/?(input|embed)(\s[^>]*)?\/?>/gi, () => { n++; return ""; });
-  if (n) warnings.push(`Stripped ${n} forbidden lone tag(s) — input/embed`);
+  s = s.replace(/<(\/?)h([56])(\s[^>]*)?>/gi, (_, close, _level, attrs) => { n++; return `<${close}h4${attrs ?? ""}>`; });
+  if (n) warnings.push(`Demoted ${n} <h5>/<h6> tag(s) to <h4> — CKEditor 5 supports h2–h4 only`);
 
-  // 3. Strip style= attributes.
-  n = 0;
-  s = s.replace(/\s+style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, () => { n++; return ""; });
-  if (n) warnings.push(`Stripped ${n} style= attribute(s) — use semantic elements instead`);
-
-  // 4. Strip on* event attributes.
-  n = 0;
-  s = s.replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, () => { n++; return ""; });
-  if (n) warnings.push(`Stripped ${n} on* event attribute(s)`);
-
-  // 5. Demote <h1> → <h2>.
-  n = 0;
-  s = s.replace(/<(\/?)h1(\s[^>]*)?>/gi, (_, close, attrs) => { n++; return `<${close}h2${attrs ?? ""}>`; });
-  if (n) warnings.push(`Demoted ${n} <h1> to <h2> — h1 is reserved for the Trilium note title`);
-
-  // 6. Demote <h5>/<h6> → <h4>.
-  n = 0;
-  s = s.replace(/<(\/?)h[56](\s[^>]*)?>/gi, (_, close, attrs) => { n++; return `<${close}h4${attrs ?? ""}>`; });
-  if (n) warnings.push(`Demoted ${n} <h5>/<h6> to <h4> — CKEditor 5 supports h2–h4 only`);
-
-  // 7. Replace <div> → <p> (attributes are not carried over — div attrs don't apply to p).
   n = 0;
   s = s.replace(/<(\/?)div(\s[^>]*)?>/gi, (_, close) => { n++; return `<${close}p>`; });
   if (n) warnings.push(`Replaced ${n} <div> with <p> — CKEditor 5 uses paragraph blocks`);
 
-  // 8. Normalize <br> — runs become paragraph separators; lone <br> becomes a space.
   if (/<br[\s/>]/i.test(s) || s.includes("<br>")) {
     const before = s;
     s = s.replace(/<br\s*\/?>(\s*<br\s*\/?>)+/gi, "</p><p>");
@@ -701,7 +771,6 @@ export function sanitizeHtml(html: string): SanitizeResult {
     if (s !== before) warnings.push("<br> normalized to paragraph separators");
   }
 
-  // 9. Close dangling open block tags at end of content.
   const closed = closeDangling(s);
   if (closed !== s) {
     warnings.push("Closed unclosed block tag(s) at end of content");
@@ -1271,8 +1340,8 @@ export function sectionSpans(html: string): SplitSection[] {
 export function extractSections(
   html: string,
   headings: string[]
-): { html: string; extracted: string; matched: string[]; missed: string[] } {
-  if (!headings.length) return { html, extracted: "", matched: [], missed: [] };
+): { html: string; extracted: string; matched: string[]; missed: string[]; overlap: string[] } {
+  if (!headings.length) return { html, extracted: "", matched: [], missed: [], overlap: [] };
   const closed = closeDangling(html);
   const spans = sectionSpans(closed);
   const key = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
@@ -1289,7 +1358,18 @@ export function extractSections(
     used.add(idx);
     taken.push(spans[idx]!);
   }
-  if (!taken.length) return { html, extracted: "", matched: [], missed };
+  if (!taken.length) return { html, extracted: "", matched: [], missed, overlap: [] };
+
+  // A parent span already owns every nested child. Selecting both would remove
+  // the same source bytes twice and can silently empty the note. Refuse the
+  // whole operation rather than performing a partial, lossy split.
+  const overlap = taken
+    .filter((candidate, index) => taken.some((other, otherIndex) => {
+      if (index === otherIndex) return false;
+      return candidate.start < other.end && other.start < candidate.end;
+    }))
+    .map((s) => s.text);
+  if (overlap.length) return { html, extracted: "", matched: [], missed, overlap };
 
   // Remove taken sections from the body in reverse index order so earlier
   // offsets stay valid, then rebuild the extracted block in document order.
@@ -1304,7 +1384,7 @@ export function extractSections(
     .join("\n");
   // matched in REQUEST order, so the caller can pair each requested heading
   // with its outcome (matched[] or missed[]); extracted stays document order.
-  return { html: remaining.trim(), extracted, matched: taken.map((s) => s.text), missed };
+  return { html: remaining.trim(), extracted, matched: taken.map((s) => s.text), missed, overlap: [] };
 }
 
 export interface SectionMergeResult {

@@ -11,14 +11,14 @@
 Full-mode tools place nothing, label nothing — so when you reach past the core surface you take on what it normally guarantees. Three things keep raw edits from silently corrupting the brain:
 
 - **A note is only a "memory" once it carries `#noteType`.** `recall` and every `<surface>` read filter out untyped notes, so a note you `create_note` without labelling is invisible to them. For a new memory, use core `remember` — it places the note, writes `#noteType` + `#created`/`#updated`, and dedups by title. Reach for `create_note` only for shapes core can't make (a `code` / `canvas` / `mermaid` note, a deliberate placement), then replicate the labels yourself: `add_label noteType <kind>`.
-- **Overwrites don't snapshot; labels don't dedup.** `update_note_content` replaces the body with no revision — `create_revision` first when the content matters. `add_label` always adds (it can leave you with two `#status` labels); change an existing one with `update_attribute`. `delete_note` deletes the whole subtree when it's the last branch — prefer core `forget`, which archives and checks backlinks.
+- **Overwrites don't snapshot; labels don't dedup.** `update_note_content` replaces the body with no revision — `create_revision` first when the content matters. Binary writes use standard base64 with `encoding="base64"`; the client decodes and sends raw bytes. `add_label` always adds (it can leave you with two `#status` labels); change an existing one with `update_attribute`. `delete_note` deletes the whole subtree when it's the last branch — prefer core `forget`, which archives and checks backlinks.
 - **Find structure by its marker, not a hardcoded id.** There is no `get_brain_config`. To locate a container, `search_notes("#brainLlmRoot")` for the root, then `get_note` and walk `children` to the area / book you need; or lift a `parents` id from any note a surface read already returned.
 
 ### Raw artifacts (code, images, files)
 
 BrainLLM memories are typed text notes; `code` / `file` / `image` notes aren't a `#noteType` kind. Keep raw artifacts *attached to* or *embedded in* a typed note rather than free-floating:
 - **Code / structured text** → embed it as a fenced block in an `information` note via core `remember` (fully conformant and full-text searchable), or
-- **Binary (image, PDF, file)** → core `attach()` it onto the relevant typed note (`role=image` / `file`) — upsert-by-title, read back with `attach(noteId, title)`.
+- **Binary (image, PDF, file)** → core `attach()` it onto the relevant typed note (`role=image` / `file`) — pass standard base64 with `encoding="base64"`; read back with `attach(noteId, title)`, which returns the base64 envelope and MIME.
 
 Create a standalone `type=code` / `file` note only when you specifically need Trilium's native handling of that type. If you do: label it (`add_label noteType <closest kind>`) so `recall` can see it, give it the same `domain` / `topic` labels as its anchor, and `connect` it to a typed note — otherwise it's an orphan with a blueprint-less type, exactly what `maintain(deep=true)` flags.
 
@@ -33,7 +33,7 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | Recover content clobbered by a bad write | `get_revisions` → `get_revision_content` |
 | Recover a Trilium-hard-deleted note | `note_history` (check `canBeUndeleted`) → `undelete_note` |
 | Fix or remove a stray label | core `label(noteId, name, value?, remove?)` — guarded, validates `status`, slugs `domain`/`topic`, refuses on containers |
-| Retarget an existing relation's value in place (not remove-then-re-add) | `get_note` (read its `attributeId`) → `update_attribute` |
+| Retarget an existing relation | Delete and re-add it; relation targets are immutable through `update_attribute` |
 | Place one note under a second parent | `clone_note` (shared content, not a copy) |
 | A Trilium journal day / week / month / year note | `get_day_note` / `get_week_note` / … |
 
@@ -45,9 +45,9 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 |---|---|
 | `search_notes` | `(query, ancestorNoteId?, limit?, orderBy?, orderDirection?, fastSearch?, includeArchived?, debug?)` — raw Trilium query language; unscoped unless `ancestorNoteId` given |
 | `get_note` | `(noteId)` — metadata + attributes + parent/child ids + dates |
-| `get_note_content` | `(noteId)` — raw content |
-| `create_note` | `(parentNoteId, title, content, type?, mime?)` — `type` ∈ text·code·book·canvas·mermaid·relationMap·render·search·file·image |
-| `update_note_content` | `(noteId, content)` — full replace |
+| `get_note_content` | `(noteId)` — raw content; binary returns `{encoding:"base64", mime, content}` |
+| `create_note` | `(parentNoteId, title, content, type?, mime?, encoding?)` — `encoding` ∈ auto·text·base64; binary creation is an empty create followed by a raw PUT |
+| `update_note_content` | `(noteId, content, mime?, encoding?)` — full replace; binary uses standard base64 and raw bytes |
 | `patch_note` | `(noteId, title?, type?, mime?)` — metadata only |
 | `delete_note` | `(noteId)` — hard-delete (subtree if last branch) |
 | `undelete_note` | `(noteId)` — recover a Trilium-deleted note from Trilium's trash (`canBeUndeleted` must be true per `note_history`). Distinct from core `recover()` which restores BrainLLM-archived notes. |
@@ -60,7 +60,7 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | `get_attribute` | `(attributeId)` |
 | `add_label` | `(noteId, name, value?, isInheritable?)` — adds a `#label` (no dedup) |
 | `add_relation` | `(fromNoteId, relationName, toNoteId, isInheritable?)` — any name (`connect` enforces the closed vocab) |
-| `update_attribute` | `(attributeId, value?, position?)` |
+| `update_attribute` | `(attributeId, value?, position?)` — label value/position only; relation targets are immutable, and relation-position compatibility errors are explicit |
 | `delete_attribute` | `(attributeId)` |
 
 ## Branches (placement)
@@ -78,16 +78,16 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 |---|---|
 | `create_revision` | `(noteId)` |
 | `get_revisions` | `(noteId)` — list, newest first |
-| `get_revision_content` | `(revisionId)` |
+| `get_revision_content` | `(revisionId)` — text or base64 envelope for binary snapshots |
 
 ## Attachments
 
 | Tool | Signature |
 |---|---|
 | `get_attachments` | `(noteId)` |
-| `get_attachment_content` | `(attachmentId)` |
-| `create_attachment` | `(ownerId, title, mime, content, role?)` — `role` ∈ file·image |
-| `update_attachment` | `(attachmentId, title?, mime?, content?)` — patch metadata and/or replace content in place |
+| `get_attachment_content` | `(attachmentId)` — text or base64 envelope for binary attachments |
+| `create_attachment` | `(ownerId, title, mime, content, role?, encoding?)` — `role` ∈ file·image; binary uses base64/raw bytes |
+| `update_attachment` | `(attachmentId, title?, mime?, content?, encoding?)` — metadata first, then raw content; binary uses base64 |
 | `delete_attachment` | `(attachmentId)` |
 
 ## Calendar (Trilium journal)
@@ -105,4 +105,4 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | Tool | Signature |
 |---|---|
 | `get_app_info` | `()` — Trilium version, DB version, runtime metadata |
-| `create_backup` | `(name?, date?)` — named DB backup (`<name>.db`, default `brainllm-{date}`); use a descriptive name for milestone snapshots |
+| `create_backup` | `(name?, date?)` — named DB backup request; ETAPI reports logical completion, not the resulting filename (`.db`/`.tnbackup` is deployment-dependent) |

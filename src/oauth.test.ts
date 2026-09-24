@@ -175,15 +175,21 @@ describe("CIMD client resolution", () => {
     expect(res).toEqual({ error: "redirect_uris must be same-origin with client_id" });
   });
 
-  test("allows loopback redirect_uris for native clients", () => {
+  test("allows only HTTP(S) loopback redirect_uris for native clients", () => {
     // Claude Code binds an ephemeral port, so its declared loopback URIs are
-    // legitimately not same-origin with the client_id host.
+    // legitimately not same-origin with the client_id host. Active schemes
+    // are never native redirects, even when their hostname is localhost.
     const cid = "https://claude.ai/oauth/claude-code-client-metadata";
     const res = validateClientDocument(cid, {
       client_id: cid,
       redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"],
     });
     expect(res).toHaveProperty("client");
+    const active = validateClientDocument(cid, {
+      client_id: cid,
+      redirect_uris: ["javascript://localhost/callback", "data://127.0.0.1/callback"],
+    });
+    expect(active).toHaveProperty("error");
   });
 
   test("rejects a document with no redirect_uris, or a non-object", () => {
@@ -203,6 +209,11 @@ describe("redirect_uri matching", () => {
     // The path still has to match, and a different host must not.
     expect(redirectUriAllowed("http://localhost:51763/evil", declared)).toBe(false);
     expect(redirectUriAllowed("http://evil.example.com/callback", declared)).toBe(false);
+  });
+
+  test("loopback matching rejects active schemes even when both sides use localhost", () => {
+    expect(redirectUriAllowed("javascript://localhost/cb", ["javascript://localhost/cb"])).toBe(false);
+    expect(redirectUriAllowed("data://127.0.0.1/cb", ["data://127.0.0.1/cb"])).toBe(false);
   });
 
   test("non-loopback requires an exact match", () => {
@@ -281,6 +292,17 @@ describe("dynamic client registration", () => {
     expect(validateRegistration({
       redirect_uris: Array.from({ length: 6 }, (_, i) => `https://h${i}.example.com/cb`),
     })).toHaveProperty("error");
+    expect(validateRegistration({ redirect_uris: [`https://example.com/${"x".repeat(2048)}`] })).toHaveProperty("error");
+    expect(validateRegistration({ redirect_uris: ["https://example.com/cb"], client_name: "x".repeat(201) })).toHaveProperty("error");
+  });
+
+  test("rejects an oversized anonymous registration body with 413", async () => {
+    const oversized = new Request(`${BASE}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redirect_uris: ["https://example.com/cb"], client_name: "x".repeat(70_000) }),
+    });
+    expect((await handleRegister(oversized)).status).toBe(413);
   });
 
   test("/authorize renders a consent screen for a registered client — it is not a URL", async () => {

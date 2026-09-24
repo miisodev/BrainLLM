@@ -33,6 +33,8 @@
   </div>
 </nav>
 
+<main>
+
 <header class="hero">
   <span class="pill"><span class="dot"></span>use cases</span>
   <h1>What changes when it <span class="accent">remembers</span></h1>
@@ -50,30 +52,30 @@
         <p style="color:var(--text-muted)">The alternative isn't "a longer prompt". It's the model quietly guessing at things you told it last week.</p>
       </div>
       <div class="card">
-<pre class="term">&gt; start()
+<pre class="term" tabindex="0" aria-label="Code example">&gt; start()
   <span class="g">master</span>   biography · goals · preferences
   <span class="g">llm</span>      responsibilities · protocols · selfcorrection
-  <span class="g">threads</span>  12 active <span class="c">· idle 0–5d</span>
-  <span class="g">since</span>    24 notes changed since 2026-08-02</pre>
+  <span class="g">memory</span>   12 active threads <span class="c">· idle 0–5d</span>
+  <span class="g">changesSinceLastSession</span>  24 notes changed since 2026-08-02</pre>
       </div>
     </div>
 
     <div class="uc flip">
       <div>
         <div class="eyebrow">Knowledge with provenance</div>
-        <h2>A knowledge base that can't invent things</h2>
+        <h2>A knowledge base that keeps its receipts</h2>
         <p style="color:var(--text-muted);margin-top:14px">Creating a domain creates its Sources note in the same breath. Every claim traces to a listed source, marked <strong>❇️ found</strong> or <strong>✅ used</strong>, with a revision table recording when each was last verified.</p>
-        <p style="color:var(--text-muted)">An unsourced note doesn't get written. That's a rule, not a habit.</p>
+        <p style="color:var(--text-muted)">The operational skill makes the source ledger part of the required workflow; the server maintains and audits it, while an explicitly forced raw write remains an advanced escape hatch.</p>
       </div>
       <div class="card">
-<pre class="tree">Knowledge/Domains/<span class="area">BrainLLM</span>/
+<pre class="tree" tabindex="0" aria-label="Memory tree example">Knowledge/Domains/<span class="area">BrainLLM</span>/
 ├── Sources            <span class="note">23 sources · ✅/❇️ · revision table</span>
 ├── Purpose and Design
 ├── Brain Structure
 ├── Tool Surface
 ├── Runtime Architecture
 ├── Session Protocol
-└── <span class="note">… 11 more, each partOf the domain</span></pre>
+└── <span class="note">… 13 more, each partOf the domain</span></pre>
       </div>
     </div>
 
@@ -84,7 +86,7 @@
         <p style="color:var(--text-muted);margin-top:14px">Scoped runs pass a domain and get findings in their own lane. An autonomous agent skips the steps that touch personal singletons. Every append carries an identification line, so months later you can tell which model, in which environment, wrote what.</p>
       </div>
       <div class="card">
-<pre class="term">&gt; session(scope=<span class="a">"agent"</span>)
+<pre class="term" tabindex="0" aria-label="Code example">&gt; session(scope=<span class="a">"agent"</span>)
   <span class="c">omits the user's-singleton steps</span>
 
 &gt; maintain(deep=true, domain=<span class="a">"myclerkbook"</span>)
@@ -103,7 +105,7 @@
         <p style="color:var(--text-muted)">A correction applied to one note leaves its siblings silently wrong. This is the check that finds them.</p>
       </div>
       <div class="card">
-<pre class="term">&gt; consistency(<span class="a">"(\d+) Titan mailboxes"</span>)
+<pre class="term" tabindex="0" aria-label="Code example">&gt; consistency(<span class="a">"(\d+) Titan mailboxes"</span>)
   <span class="a">agreement: DISAGREEMENT</span>
   <span class="g">"3"</span>  Tech Stack, Domains
   <span class="g">"1"</span>  Current State
@@ -148,6 +150,8 @@ in the same confident voice.</span></pre>
     <a class="btn btn-ghost" href="https://github.com/miisodev/BrainLLM">View on GitHub</a>
   </div>
 </div>
+
+</main>
 
 <footer>
   <div class="wrap foot">

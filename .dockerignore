@@ -1,0 +1,23 @@
+# Keep the build context deterministic and never ship local credentials into
+# the builder layer. The Docker build only needs the package metadata, source,
+# public assets, TypeScript config, and entrypoint.
+.git
+.github
+.claude
+node_modules
+dist
+coverage
+*.log
+.env
+.env.*
+brainllm.json
+*.oauth.json
+*.token
+src/brainllm.oauth.json
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+docs
+Context
+scripts/*.ts
+scripts/*.spec.ts

@@ -3,7 +3,7 @@
 | Situation | What happens / what to do |
 |---|---|
 | BrainLLM not initialized | `start` returns `status: "uninitialized"` → run `bootstrap` (idempotent, safe anytime) |
-| Second `close` same day | Appends an addendum to today's session note — by design, not an error. Pass `continuing=true` so you don't re-run the whole pre-close protocol for a session whose brain writes are already done; it's verified against today's note, so it can't stand in for a first close |
+| Second `close` same day | An exact retry is duplicate-guarded; a genuinely new continuation appends an addendum to today's session note by design. Pass `continuing=true` so you don't re-run the whole pre-close protocol for a session whose brain writes are already done; it's verified against today's note, so it can't stand in for a first close |
 | `remember()` says `action: "updated"` unexpectedly | A same-kind note with that title existed; content was appended there. If it was genuinely a different subject, `remember()` again with a distinguishing title |
 | User contradicts a stored fact about themselves | `master(which)` to read it, then `revise(id, section=…)` with the correction — the Master singletons hold current-state truth, not history |
 | A stored fact was wrong from the start | `revise(mode="replace")` — a revision snapshot is taken automatically, nothing is lost |

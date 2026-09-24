@@ -62,6 +62,7 @@ export interface Revision {
 export interface Attachment {
   attachmentId: string;
   ownerId: string;
+  contentUploaded?: boolean;
   role: string;
   mime: string;
   title: string;
@@ -92,6 +93,132 @@ export interface SearchResult {
 export interface CreateNoteResponse {
   note: Note;
   branch: Branch;
+  contentUploaded?: boolean;
+}
+
+export type ContentEncoding = "auto" | "text" | "base64";
+
+export interface BinaryContent {
+  encoding: "base64";
+  mime: string;
+  content: string;
+}
+
+export type ContentResult = string | BinaryContent;
+
+/** Authenticated ETAPI content reads are bounded so a large note cannot turn
+ * a client into an unbounded allocation. The same ceiling matches the HTTP
+ * server's request-body budget and is explicit rather than an SDK default. */
+export const MAX_ETAPI_CONTENT_BYTES = 50 * 1024 * 1024;
+
+export class ContentMetadataUpdateError extends Error {
+  readonly noteId: string;
+  readonly contentUploaded = true;
+  constructor(noteId: string, cause: unknown) {
+    super(`Note ${noteId} content was updated but its MIME metadata could not be patched: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "ContentMetadataUpdateError";
+    this.noteId = noteId;
+  }
+}
+
+export class PartialContentUploadError extends Error {
+  readonly entityId: string;
+  readonly entityType: "note" | "attachment";
+  readonly contentUploaded = false;
+  constructor(entityType: "note" | "attachment", entityId: string, cause: unknown) {
+    super(`${entityType} ${entityId} was created but its binary content upload failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "PartialContentUploadError";
+    this.entityType = entityType;
+    this.entityId = entityId;
+  }
+}
+
+export class BinaryContentError extends Error {
+  readonly content: BinaryContent;
+  constructor(content: BinaryContent) {
+    super(`Content is binary (${content.mime}); use the raw content result or provide encoding="base64" when writing.`);
+    this.name = "BinaryContentError";
+    this.content = content;
+  }
+}
+
+export function isTextMime(mime: string | undefined): boolean {
+  const value = (mime ?? "text/plain").split(";", 1)[0].trim().toLowerCase();
+  return value.startsWith("text/") || new Set([
+    "application/json", "application/ld+json", "application/xml", "application/javascript",
+    "application/x-javascript", "application/sql", "image/svg+xml",
+  ]).has(value);
+}
+
+export function decodeBase64Strict(value: string): Uint8Array {
+  if (value.startsWith("data:") || !/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 === 1) {
+    throw new Error("content is not standard RFC 4648 base64");
+  }
+  const padded = value.padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const bytes = Buffer.from(padded, "base64");
+  if (Buffer.from(bytes).toString("base64") !== padded) throw new Error("content is not canonical base64");
+  return new Uint8Array(bytes);
+}
+
+export interface EncodedContent {
+  bytes: Uint8Array;
+  contentType: string;
+  binary: boolean;
+}
+
+export function encodeContent(content: string, mime: string, encoding: ContentEncoding = "auto"): EncodedContent {
+  const binary = encoding === "base64" || (encoding === "auto" && !isTextMime(mime));
+  if (binary) {
+    return { bytes: decodeBase64Strict(content), contentType: "application/octet-stream", binary: true };
+  }
+  return { bytes: new TextEncoder().encode(content), contentType: "text/plain; charset=utf-8", binary: false };
+}
+
+async function readBoundedResponseBytes(response: Response, maxBytes = MAX_ETAPI_CONTENT_BYTES): Promise<Uint8Array> {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error("Trilium content exceeds the 50 MiB client limit");
+  if (!response.body) return new Uint8Array(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      total += part.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error("Trilium content exceeds the 50 MiB client limit");
+      }
+      chunks.push(part.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+  return result;
+}
+
+async function readContentResponse(
+  response: Response,
+  fallbackMime = "application/octet-stream",
+  noteType?: string
+): Promise<ContentResult> {
+  if (!response.ok) throw new Error(`Trilium API error ${response.status}: ${await response.text()}`);
+  const responseMime = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+  const mime = responseMime || fallbackMime;
+  const bytes = await readBoundedResponseBytes(response);
+  if (noteType === "text" || isTextMime(mime)) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      // A mislabeled text response still gets an envelope rather than replacement
+      // characters; the caller can decide whether to repair its metadata.
+    }
+  }
+  return { encoding: "base64", mime, content: Buffer.from(bytes).toString("base64") };
 }
 
 export interface AppInfo {
@@ -119,6 +246,10 @@ export interface SearchOpts {
 
 // ── Attribute helpers (pure) ─────────────────────────────────────────────────
 
+export function isOwnedAttribute(note: Note, attribute: Attribute): boolean {
+  return attribute.noteId === note.noteId;
+}
+
 /** Value of a label from ONLY the note's own (non-inherited) attributes.
  *  The ETAPI /notes/{id} response includes inherited attributes (where
  *  attribute.noteId ≠ note.noteId, inherited via parent hierarchy or ~template).
@@ -126,7 +257,7 @@ export interface SearchOpts {
  *  inheritable labels propagating down to content notes. */
 export function ownedLabel(note: Note, name: string): string | undefined {
   return note.attributes.find(
-    (a) => a.type === "label" && a.name === name && a.noteId === note.noteId
+    (a) => a.type === "label" && a.name === name && isOwnedAttribute(note, a)
   )?.value;
 }
 
@@ -143,7 +274,7 @@ export interface RelationEdge {
  *  conditionally. */
 export function relationSnippet(note: Note, max = 8): RelationEdge[] | undefined {
   const rels = note.attributes
-    .filter((a) => a.type === "relation" && a.name !== "template")
+    .filter((a) => isOwnedAttribute(note, a) && a.type === "relation" && a.name !== "template")
     .slice(0, max)
     .map((a) => ({ relation: a.name, toNoteId: a.value }));
   return rels.length ? rels : undefined;
@@ -152,7 +283,7 @@ export function relationSnippet(note: Note, max = 8): RelationEdge[] | undefined
 // ── Client ────────────────────────────────────────────────────────────────────
 
 import { RelationTypes } from "./types.js";
-import { localNowDateTime } from "./time.js";
+import { checkedDate, localNowDateTime } from "./time.js";
 
 // ── Backlink query helpers (pure) ───────────────────────────────────────────
 // Trilium's search DSL has no generic "any relation → X" predicate, and
@@ -162,17 +293,50 @@ import { localNowDateTime } from "./time.js";
 // RelationWhereExp, which matches ALL relations of that name, so multi-valued
 // relations (e.g. several `references`) are handled correctly.
 
+const SAFE_RELATION_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const quoteSearchValue = (value: string): string => JSON.stringify(value);
+
 export function buildBacklinkQuery(targetNoteId: string, relationNames: string[]): string {
   const unique = [...new Set(relationNames)];
-  return unique.map((name) => `~${name}.noteId = "${targetNoteId}"`).join(" OR ");
+  const unsafe = unique.find((name) => !SAFE_RELATION_NAME.test(name));
+  if (unsafe) throw new Error(`relation name "${unsafe}" cannot be safely queried in Trilium's search DSL`);
+  return unique.map((name) => `~${name}.noteId = ${quoteSearchValue(targetNoteId)}`).join(" OR ");
 }
 
 // Canonical relation vocabulary ∪ discovered relation names, minus Trilium's
 // internal ~template relation.
 export function backlinkRelationNames(discovered: string[]): string[] {
-  return [...new Set<string>([...RelationTypes, ...discovered])].filter(
-    (name) => name !== "template"
-  );
+  return [...new Set<string>([...RelationTypes, ...discovered])].filter((name) => name !== "template");
+}
+
+// ETAPI entity IDs are opaque to this client, but they are not URL fragments.
+// Validate before interpolation and encode again at the boundary so a malformed
+// tool argument cannot turn into a different ETAPI route.
+const ENTITY_ID_RE = /^[A-Za-z0-9_]{4,128}$/;
+const CALENDAR_SEGMENT_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const BACKUP_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function normalizeTriliumBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "").replace(/\/etapi$/, "");
+}
+
+function assertEntityId(value: string, label: string): string {
+  if (!ENTITY_ID_RE.test(value)) throw new Error(`${label} is not a valid ETAPI entity id`);
+  return value;
+}
+
+function pathSegment(value: string, label: string): string {
+  return encodeURIComponent(assertEntityId(value, label));
+}
+
+function calendarSegment(value: string, label: string): string {
+  if (!CALENDAR_SEGMENT_RE.test(value)) throw new Error(`${label} is not a valid calendar value`);
+  return encodeURIComponent(value);
+}
+
+function backupSegment(value: string): string {
+  if (!BACKUP_NAME_RE.test(value)) throw new Error("backup name must contain only letters, numbers, underscores, or hyphens (max 64 characters)");
+  return encodeURIComponent(value);
 }
 
 // Trilium entity IDs are 12-char alphanumeric. We generate the attributeId
@@ -197,7 +361,7 @@ export class TriliumClient {
   private token: string;
 
   constructor(baseUrl: string, token: string) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.baseUrl = normalizeTriliumBaseUrl(baseUrl);
     this.token = token;
   }
 
@@ -270,7 +434,7 @@ export class TriliumClient {
   }
 
   async getNote(noteId: string): Promise<Note> {
-    return this.request<Note>(`/notes/${noteId}`);
+    return this.request<Note>(`/notes/${pathSegment(noteId, "noteId")}`);
   }
 
   /** Mint an ETAPI token from the Trilium password (`POST /auth/login`).
@@ -279,12 +443,13 @@ export class TriliumClient {
    *  token by hand and pasting it into an env var, which is the highest-friction
    *  step in the whole install. Returns the token for the caller to persist. */
   static async login(baseUrl: string, password: string): Promise<string> {
-    const root = baseUrl.replace(/\/+$/, "");
-    const url = `${root}${root.endsWith("/etapi") ? "" : "/etapi"}/auth/login`;
+    const root = normalizeTriliumBaseUrl(baseUrl);
+    const url = `${root}/etapi/auth/login`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
@@ -301,79 +466,104 @@ export class TriliumClient {
     content: string,
     type: string = "text",
     mime?: string,
-    noteId?: string
+    noteId?: string,
+    encoding: ContentEncoding = "auto"
   ): Promise<CreateNoteResponse> {
-    const body: Record<string, unknown> = { parentNoteId, title, content, type };
-    if (mime)   body.mime   = mime;
+    assertEntityId(parentNoteId, "parentNoteId");
+    if (noteId) assertEntityId(noteId, "noteId");
+    const targetMime = mime ?? ((type === "image" || type === "file") ? "application/octet-stream" : "text/html");
+    const encoded = encodeContent(content, targetMime, encoding);
+    const body: Record<string, unknown> = { parentNoteId, title, content: encoded.binary ? "" : content, type, mime: targetMime };
     if (noteId) body.noteId = noteId;
-    return this.request<CreateNoteResponse>("/create-note", {
+    const created = await this.request<CreateNoteResponse>("/create-note", {
       method: "POST",
       body: JSON.stringify(body),
     });
+    if (!encoded.binary) return created;
+    try {
+      await this.updateNoteContent(created.note.noteId, content, targetMime, "base64", false);
+      return { ...created, contentUploaded: true };
+    } catch (error) {
+      throw new PartialContentUploadError("note", created.note.noteId, error);
+    }
   }
 
   async patchNote(noteId: string, fields: { title?: string; type?: string; mime?: string }): Promise<Note> {
-    return this.request<Note>(`/notes/${noteId}`, {
+    return this.request<Note>(`/notes/${pathSegment(noteId, "noteId")}`, {
       method: "PATCH",
       body: JSON.stringify(fields),
     });
   }
 
   async deleteNote(noteId: string): Promise<void> {
-    return this.request<void>(`/notes/${noteId}`, { method: "DELETE" });
+    return this.request<void>(`/notes/${pathSegment(noteId, "noteId")}`, { method: "DELETE" });
   }
 
   async undeleteNote(noteId: string): Promise<void> {
-    return this.request<void>(`/notes/${noteId}/undelete`, { method: "POST" });
+    return this.request<void>(`/notes/${pathSegment(noteId, "noteId")}/undelete`, { method: "POST" });
   }
 
   // ── Note content ───────────────────────────────────────────────────────────
 
-  async getNoteContent(noteId: string): Promise<string> {
-    const url = `${this.baseUrl}/etapi/notes/${noteId}/content`;
+  async getNoteContentResult(noteId: string, noteType?: string): Promise<ContentResult> {
+    const url = `${this.baseUrl}/etapi/notes/${pathSegment(noteId, "noteId")}/content`;
     const res = await this.boundedFetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Trilium API error ${res.status}: ${body}`);
-    }
-    return res.text();
+    return readContentResponse(res, "text/html", noteType);
   }
 
-  async updateNoteContent(noteId: string, content: string): Promise<void> {
-    const url = `${this.baseUrl}/etapi/notes/${noteId}/content`;
+  async getNoteContent(noteId: string, noteType?: string): Promise<string> {
+    const result = await this.getNoteContentResult(noteId, noteType);
+    if (typeof result !== "string") throw new BinaryContentError(result);
+    return result;
+  }
+
+  async updateNoteContent(noteId: string, content: string, mime?: string, encoding: ContentEncoding = "auto", persistMime = true): Promise<void> {
+    const current = mime ? undefined : await this.getNote(noteId);
+    const targetMime = mime ?? current!.mime;
+    const url = `${this.baseUrl}/etapi/notes/${pathSegment(noteId, "noteId")}/content`;
+    const encoded = encodeContent(content, targetMime, encoding);
     const res = await this.boundedFetch(url, {
       method: "PUT",
-      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "text/plain", "trilium-local-now-datetime": localNowDateTime() },
-      body: content === "" ? " " : content,
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": encoded.contentType, "trilium-local-now-datetime": localNowDateTime() },
+      body: encoded.bytes,
     });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Trilium API error ${res.status}: ${body}`);
+    }
+    if (mime && persistMime) {
+      try {
+        await this.patchNote(noteId, { mime });
+      } catch (error) {
+        throw new ContentMetadataUpdateError(noteId, error);
+      }
     }
   }
 
   // ── Revisions ──────────────────────────────────────────────────────────────
 
   async getNoteRevisions(noteId: string): Promise<Revision[]> {
-    return this.request<Revision[]>(`/notes/${noteId}/revisions`);
+    return this.request<Revision[]>(`/notes/${pathSegment(noteId, "noteId")}/revisions`);
   }
 
   async getRevision(revisionId: string): Promise<Revision> {
-    return this.request<Revision>(`/revisions/${revisionId}`);
+    return this.request<Revision>(`/revisions/${pathSegment(revisionId, "revisionId")}`);
   }
 
-  async getRevisionContent(revisionId: string): Promise<string> {
-    const url = `${this.baseUrl}/etapi/revisions/${revisionId}/content`;
+  async getRevisionContentResult(revisionId: string, revisionType?: string): Promise<ContentResult> {
+    const url = `${this.baseUrl}/etapi/revisions/${pathSegment(revisionId, "revisionId")}/content`;
     const res = await this.boundedFetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Trilium API error ${res.status}: ${body}`);
-    }
-    return res.text();
+    return readContentResponse(res, "application/octet-stream", revisionType);
+  }
+
+  async getRevisionContent(revisionId: string, revisionType?: string): Promise<string> {
+    const result = await this.getRevisionContentResult(revisionId, revisionType);
+    if (typeof result !== "string") throw new BinaryContentError(result);
+    return result;
   }
 
   async createRevision(noteId: string): Promise<void> {
-    const url = `${this.baseUrl}/etapi/notes/${noteId}/revision`;
+    const url = `${this.baseUrl}/etapi/notes/${pathSegment(noteId, "noteId")}/revision`;
     const res = await this.boundedFetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", "trilium-local-now-datetime": localNowDateTime() },
@@ -395,7 +585,7 @@ export class TriliumClient {
   // ── Attributes ─────────────────────────────────────────────────────────────
 
   async getAttribute(attributeId: string): Promise<Attribute> {
-    return this.request<Attribute>(`/attributes/${attributeId}`);
+    return this.request<Attribute>(`/attributes/${pathSegment(attributeId, "attributeId")}`);
   }
 
   async addLabel(
@@ -404,6 +594,7 @@ export class TriliumClient {
     value: string = "",
     isInheritable: boolean = false
   ): Promise<Attribute> {
+    assertEntityId(noteId, "noteId");
     return this.request<Attribute>(`/attributes`, {
       method: "POST",
       body: JSON.stringify({ attributeId: newEntityId(), noteId, type: "label", name, value, isInheritable }),
@@ -416,6 +607,9 @@ export class TriliumClient {
     toNoteId: string,
     isInheritable: boolean = false
   ): Promise<Attribute> {
+    assertEntityId(fromNoteId, "fromNoteId");
+    assertEntityId(toNoteId, "toNoteId");
+    if (!SAFE_RELATION_NAME.test(name)) throw new Error("relationName must be a conservative identifier ([A-Za-z_][A-Za-z0-9_]*)");
     return this.request<Attribute>(`/attributes`, {
       method: "POST",
       body: JSON.stringify({ attributeId: newEntityId(), noteId: fromNoteId, type: "relation", name, value: toNoteId, isInheritable }),
@@ -426,23 +620,49 @@ export class TriliumClient {
     attributeId: string,
     fields: { value?: string; position?: number }
   ): Promise<Attribute> {
-    return this.request<Attribute>(`/attributes/${attributeId}`, {
-      method: "PATCH",
-      body: JSON.stringify(fields),
-    });
+    const attribute = await this.getAttribute(attributeId);
+    if (attribute.type === "relation" && fields.value !== undefined) {
+      throw new Error("TRILIUM_ETAPI_RELATION_TARGET_IMMUTABLE: delete and re-add a relation to retarget it");
+    }
+    try {
+      return await this.request<Attribute>(`/attributes/${pathSegment(attributeId, "attributeId")}`, {
+        method: "PATCH",
+        body: JSON.stringify(fields),
+      });
+    } catch (error) {
+      if (attribute.type === "relation" && fields.position !== undefined) {
+        throw new Error(`TRILIUM_ETAPI_RELATION_POSITION_UNSUPPORTED: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      throw error;
+    }
   }
 
   async deleteAttribute(attributeId: string): Promise<void> {
-    return this.request<void>(`/attributes/${attributeId}`, { method: "DELETE" });
+    return this.request<void>(`/attributes/${pathSegment(attributeId, "attributeId")}`, { method: "DELETE" });
   }
 
   // ── Branches ───────────────────────────────────────────────────────────────
 
   async getBranch(branchId: string): Promise<Branch> {
-    return this.request<Branch>(`/branches/${branchId}`);
+    return this.request<Branch>(`/branches/${pathSegment(branchId, "branchId")}`);
   }
 
   async cloneNote(noteId: string, parentNoteId: string, prefix?: string): Promise<Branch> {
+    assertEntityId(noteId, "noteId");
+    assertEntityId(parentNoteId, "parentNoteId");
+    // POST /branches creates a placement, but repeating it is not harmless:
+    // Trilium's existing-branch path resets omitted position/expansion fields.
+    // Return the existing placement instead, making the raw primitive retry-safe.
+    const note = await this.getNote(noteId);
+    for (const branchId of note.parentBranchIds) {
+      const branch = await this.getBranch(branchId);
+      if (branch.parentNoteId !== parentNoteId) continue;
+      if (prefix === undefined) return branch;
+      return this.request<Branch>(`/branches/${pathSegment(branch.branchId, "branchId")}`, {
+        method: "PATCH",
+        body: JSON.stringify({ prefix }),
+      });
+    }
     return this.request<Branch>(`/branches`, {
       method: "POST",
       body: JSON.stringify({ noteId, parentNoteId, prefix: prefix ?? "" }),
@@ -450,27 +670,29 @@ export class TriliumClient {
   }
 
   async deleteBranch(branchId: string): Promise<void> {
-    return this.request<void>(`/branches/${branchId}`, { method: "DELETE" });
+    return this.request<void>(`/branches/${pathSegment(branchId, "branchId")}`, { method: "DELETE" });
   }
 
   // ── Attachments ────────────────────────────────────────────────────────────
 
   async getNoteAttachments(noteId: string): Promise<Attachment[]> {
-    return this.request<Attachment[]>(`/notes/${noteId}/attachments`);
+    return this.request<Attachment[]>(`/notes/${pathSegment(noteId, "noteId")}/attachments`);
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {
-    return this.request<Attachment>(`/attachments/${attachmentId}`);
+    return this.request<Attachment>(`/attachments/${pathSegment(attachmentId, "attachmentId")}`);
   }
 
-  async getAttachmentContent(attachmentId: string): Promise<string> {
-    const url = `${this.baseUrl}/etapi/attachments/${attachmentId}/content`;
+  async getAttachmentContentResult(attachmentId: string, fallbackMime: string = "application/octet-stream"): Promise<ContentResult> {
+    const url = `${this.baseUrl}/etapi/attachments/${pathSegment(attachmentId, "attachmentId")}/content`;
     const res = await this.boundedFetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Trilium API error ${res.status}: ${body}`);
-    }
-    return res.text();
+    return readContentResponse(res, fallbackMime);
+  }
+
+  async getAttachmentContent(attachmentId: string, fallbackMime?: string): Promise<string> {
+    const result = await this.getAttachmentContentResult(attachmentId, fallbackMime);
+    if (typeof result !== "string") throw new BinaryContentError(result);
+    return result;
   }
 
   async createAttachment(
@@ -478,24 +700,36 @@ export class TriliumClient {
     title: string,
     mime: string,
     content: string,
-    role: string = "file"
+    role: string = "file",
+    encoding: ContentEncoding = "auto"
   ): Promise<Attachment> {
-    return this.request<Attachment>(`/attachments`, {
+    assertEntityId(ownerId, "ownerId");
+    const encoded = encodeContent(content, mime, encoding);
+    const created = await this.request<Attachment>(`/attachments`, {
       method: "POST",
-      body: JSON.stringify({ ownerId, role, mime, title, content }),
+      body: JSON.stringify({ ownerId, role, mime, title, content: encoded.binary ? "" : content }),
     });
+    if (!encoded.binary) return created;
+    try {
+      await this.updateAttachmentContent(created.attachmentId, content, mime, "base64");
+      return { ...created, contentUploaded: true };
+    } catch (error) {
+      throw new PartialContentUploadError("attachment", created.attachmentId, error);
+    }
   }
 
   async deleteAttachment(attachmentId: string): Promise<void> {
-    return this.request<void>(`/attachments/${attachmentId}`, { method: "DELETE" });
+    return this.request<void>(`/attachments/${pathSegment(attachmentId, "attachmentId")}`, { method: "DELETE" });
   }
 
-  async updateAttachmentContent(attachmentId: string, content: string, mime: string = "text/plain"): Promise<void> {
-    const url = `${this.baseUrl}/etapi/attachments/${attachmentId}/content`;
+  async updateAttachmentContent(attachmentId: string, content: string, mime?: string, encoding: ContentEncoding = "auto"): Promise<void> {
+    const targetMime = mime ?? (await this.getAttachment(attachmentId)).mime;
+    const url = `${this.baseUrl}/etapi/attachments/${pathSegment(attachmentId, "attachmentId")}/content`;
+    const encoded = encodeContent(content, targetMime, encoding);
     const res = await this.boundedFetch(url, {
       method: "PUT",
-      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": mime, "trilium-local-now-datetime": localNowDateTime() },
-      body: content,
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": encoded.contentType, "trilium-local-now-datetime": localNowDateTime() },
+      body: encoded.bytes,
     });
     if (!res.ok) {
       const body = await res.text();
@@ -507,7 +741,7 @@ export class TriliumClient {
     attachmentId: string,
     fields: { title?: string; mime?: string }
   ): Promise<Attachment> {
-    return this.request<Attachment>(`/attachments/${attachmentId}`, {
+    return this.request<Attachment>(`/attachments/${pathSegment(attachmentId, "attachmentId")}`, {
       method: "PATCH",
       body: JSON.stringify(fields),
     });
@@ -516,27 +750,27 @@ export class TriliumClient {
   // ── Calendar / special notes ───────────────────────────────────────────────
 
   async getDayNote(date: string): Promise<{ noteId: string; title: string }> {
-    const note = await this.request<Note>(`/calendar/days/${date}`);
+    const note = await this.request<Note>(`/calendar/days/${calendarSegment(date, "date")}`);
     return { noteId: note.noteId, title: note.title };
   }
 
   async getWeekNote(week: string): Promise<{ noteId: string; title: string }> {
-    const note = await this.request<Note>(`/calendar/weeks/${week}`);
+    const note = await this.request<Note>(`/calendar/weeks/${calendarSegment(week, "week")}`);
     return { noteId: note.noteId, title: note.title };
   }
 
   async getMonthNote(month: string): Promise<{ noteId: string; title: string }> {
-    const note = await this.request<Note>(`/calendar/months/${month}`);
+    const note = await this.request<Note>(`/calendar/months/${calendarSegment(month, "month")}`);
     return { noteId: note.noteId, title: note.title };
   }
 
   async getYearNote(year: string): Promise<{ noteId: string; title: string }> {
-    const note = await this.request<Note>(`/calendar/years/${year}`);
+    const note = await this.request<Note>(`/calendar/years/${calendarSegment(year, "year")}`);
     return { noteId: note.noteId, title: note.title };
   }
 
   async getInboxNote(date: string): Promise<{ noteId: string; title: string }> {
-    const note = await this.request<Note>(`/inbox/${date}`);
+    const note = await this.request<Note>(`/inbox/${calendarSegment(date, "date")}`);
     return { noteId: note.noteId, title: note.title };
   }
 
@@ -545,8 +779,8 @@ export class TriliumClient {
   async createBackup(nameOrDate: string): Promise<void> {
     // Accepts either a full backup name (e.g. "brainllm-2024-01-15" or "before-migration")
     // or a bare date (YYYY-MM-DD), which is prefixed to match the default convention.
-    const backupName = /^\d{4}-\d{2}-\d{2}$/.test(nameOrDate) ? `brainllm-${nameOrDate}` : nameOrDate;
-    const url = `${this.baseUrl}/etapi/backup/${backupName}`;
+    const backupName = /^\d{4}-\d{2}-\d{2}$/.test(nameOrDate) ? `brainllm-${checkedDate(nameOrDate)}` : nameOrDate;
+    const url = `${this.baseUrl}/etapi/backup/${backupSegment(backupName)}`;
     const res = await this.boundedFetch(url, {
       method: "PUT",
       headers: { Authorization: `Bearer ${this.token}` },
@@ -575,16 +809,19 @@ export class TriliumClient {
     let results: Note[] = [];
     try {
       const res = await this.searchNotes(query, { limit: 200, includeArchivedNotes: true });
+      if (res.results.length >= 200) throw new Error("backlink result safety cap reached");
       results = res.results;
-    } catch {
-      // Malformed query or search unavailable — return empty rather than throw.
-      return [];
+    } catch (error) {
+      // A backend failure is not the same thing as a note with no backlinks.
+      // Propagate it so explore() can report the outage instead of presenting a
+      // silently incomplete graph.
+      throw new Error(`Backlink search failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     // Extract relation names directly from search result attributes (avoids N+1 fetches)
     const backlinks: Array<{ noteId: string; title: string; relationName: string }> = [];
     for (const n of results) {
-      const rels = n.attributes.filter((a) => a.type === "relation" && a.value === noteId);
+      const rels = n.attributes.filter((a) => isOwnedAttribute(n, a) && a.type === "relation" && a.value === noteId);
       for (const rel of rels) {
         backlinks.push({ noteId: n.noteId, title: n.title, relationName: rel.name });
       }
@@ -621,7 +858,7 @@ export class TriliumClient {
 
       titleMap.set(note.noteId, note.title);
 
-      const relations = note.attributes.filter((a) => a.type === "relation");
+      const relations = note.attributes.filter((a) => isOwnedAttribute(note, a) && a.type === "relation");
       for (const rel of relations) {
         const nextId = rel.value;
         if (!nextId || visited.has(nextId)) continue;
@@ -697,7 +934,7 @@ export class TriliumClient {
 
       if (current.dist < depth) {
         const relations = note.attributes.filter(
-          (a) => a.type === "relation" && (!relationType || a.name === relationType)
+          (a) => isOwnedAttribute(note, a) && a.type === "relation" && (!relationType || a.name === relationType)
         );
         for (const rel of relations) {
           if (rel.value && !visited.has(rel.value)) {
@@ -712,8 +949,8 @@ export class TriliumClient {
               queue.push({ id: bl.noteId, dist: current.dist + 1, via: `←${bl.relationName}`, from: current.id });
             }
           }
-        } catch {
-          // Backlink search unavailable for this hop — outbound edges still walked above.
+        } catch (error) {
+          throw new Error(`Neighborhood backlink traversal failed at ${current.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     }
@@ -730,7 +967,7 @@ export class TriliumClient {
   async removeRelation(fromNoteId: string, relationName: string, toNoteId: string): Promise<void> {
     const note = await this.getNote(fromNoteId);
     const rel = note.attributes.find(
-      (a) => a.type === "relation" && a.name === relationName && a.value === toNoteId
+      (a) => a.type === "relation" && a.noteId === fromNoteId && a.name === relationName && a.value === toNoteId
     );
     if (!rel) {
       throw new Error(
@@ -744,23 +981,31 @@ export class TriliumClient {
     }
   }
 
-  // Discover all distinct relation type names used across a subtree.
-  // Bounded to notes carrying our #noteType label; structural scaffold excluded.
+  // Discover all distinct relation type names used across the whole note set.
+  // The previous #noteType-only scan missed custom relations on untyped and
+  // archived notes, which made a hard-delete backlink check unsound. Trilium's
+  // title wildcard matches every note; a cap is treated as an explicit failure
+  // rather than silently returning a partial vocabulary.
   async listRelationTypes(ancestorNoteId?: string): Promise<string[]> {
     const types = new Set<string>();
+    const limit = 5_000;
     try {
-      const res = await this.searchNotes("#noteType", {
+      const res = await this.searchNotes('note.title *=* ""', {
         ancestorNoteId,
-        limit: 500,
+        limit,
         fastSearch: true,
+        includeArchivedNotes: true,
       });
+      if (res.results.length >= limit) {
+        throw new Error(`relation vocabulary exceeds the ${limit}-note safety cap`);
+      }
       for (const n of res.results) {
         n.attributes
-          .filter((a) => a.type === "relation")
+          .filter((a) => isOwnedAttribute(n, a) && a.type === "relation")
           .forEach((a) => types.add(a.name));
       }
-    } catch {
-      // Return empty set on failure
+    } catch (error) {
+      throw new Error(`Relation vocabulary discovery failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     return Array.from(types).sort();
   }
@@ -770,7 +1015,7 @@ export class TriliumClient {
   async updateLabelValue(noteId: string, labelName: string, newValue: string): Promise<Attribute> {
     const note = await this.getNote(noteId);
     const existing = note.attributes.filter(
-      (a) => a.type === "label" && a.name === labelName
+      (a) => a.type === "label" && a.noteId === noteId && a.name === labelName
     );
     if (existing.length > 0) {
       const [primary, ...duplicates] = existing;

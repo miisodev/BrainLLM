@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { applyResolution, isContainer, isStructural } from "./lifecycle.js";
 import { labelPlan } from "./router.js";
-import { RESOLUTION_ANCHOR, isOpenResolutionOnly, missingSections } from "./templates.js";
+import { RESOLUTION_ANCHOR, contentFor, isOpenResolutionOnly, missingSections } from "./templates.js";
 import { ownedLabel, type Note, type Attribute } from "./trilium.js";
 import { EMPTY_BRAINLLM } from "./config.js";
 import { DEFAULT_POLICY } from "./types.js";
@@ -168,6 +168,10 @@ describe("deletionCatchupDays — configurable policy, default 7", () => {
 // Each of these pins a defect that actually shipped and was found in use.
 
 describe("isOpenResolutionOnly — the guard that refused what remember() writes", () => {
+  test("fresh singleton templates satisfy their own required-section contract", () => {
+    expect(missingSections("protocols", contentFor("protocols", { date: "2026-08-16", body: "" }))).toEqual([]);
+    expect(missingSections("selfcorrection", contentFor("selfcorrection", { date: "2026-08-16", body: "" }))).toEqual([]);
+  });
   test("accepts the canonical empty placeholder contentFor() itself emits", () => {
     expect(isOpenResolutionOnly(`<h2>Context</h2>\n<h3>Goal</h3>\n<p>x</p>\n${RESOLUTION_ANCHOR}\n<p><em>— open —</em></p>`)).toBe(true);
   });

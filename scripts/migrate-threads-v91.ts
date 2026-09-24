@@ -27,18 +27,14 @@
  *   bun run scripts/migrate-threads-v91.ts --apply --only=<noteId> # write, one thread (pilot)
  *   bun run scripts/migrate-threads-v91.ts --apply                 # write, all threads
  *
- * Requires TRILIUM_BASE_URL and TRILIUM_ETAPI_TOKEN. Reads brainllm.json
- * from dist/ (next to the built bundle) or BRAIN_CONFIG_PATH.
+ * Requires TRILIUM_BASE_URL and TRILIUM_ETAPI_TOKEN. Uses the same
+ * BRAINLLM_CONFIG-aware config loader as the runtime server.
  */
 
-import { readFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
 import { TriliumClient, type Note } from "../src/trilium.js";
 import { contentFor, RESOLUTION_ANCHOR } from "../src/templates.js";
 import { closeDangling } from "../src/normalize.js";
-import { DEFAULT_POLICY } from "../src/types.js";
-import type { BrainLLMConfig } from "../src/config.js";
+import { configFilePath, loadConfig } from "../src/config.js";
 
 const baseUrl = process.env.TRILIUM_BASE_URL;
 const token = process.env.TRILIUM_ETAPI_TOKEN;
@@ -47,15 +43,10 @@ if (!baseUrl || !token) {
   process.exit(1);
 }
 
-const here = dirname(fileURLToPath(import.meta.url));
-const configPath = process.env.BRAIN_CONFIG_PATH ?? join(here, "..", "dist", "brainllm.json");
-
-let cfg: BrainLLMConfig;
-try {
-  const parsed = JSON.parse(readFileSync(configPath, "utf-8"));
-  cfg = { ...parsed, policy: { ...DEFAULT_POLICY, ...(parsed.policy ?? {}) } };
-} catch (err) {
-  console.error(`Could not read brain config at ${configPath}: ${err}`);
+const configPath = configFilePath();
+const cfg = loadConfig();
+if (!cfg) {
+  console.error(`Could not read a valid brain config at ${configPath}`);
   process.exit(1);
 }
 

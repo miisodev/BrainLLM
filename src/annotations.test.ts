@@ -87,6 +87,19 @@ describe("the core/raw boundary", () => {
     const core = namesOf(register("core")).length;
     const raw = namesOf(register("full")).length - core;
     expect({ core, raw, total: core + raw }).toEqual({ core: 44, raw: 33, total: 77 });
+
+    const split = (mode: "core" | "full") => {
+      const result = { read: 0, write: 0, destructive: 0 };
+      for (const name of namesOf(register(mode))) {
+        const hint = TOOL_ANNOTATIONS[name];
+        if (hint.readOnlyHint) result.read += 1;
+        else if (hint.destructiveHint) result.destructive += 1;
+        else result.write += 1;
+      }
+      return result;
+    };
+    expect(split("core")).toEqual({ read: 22, write: 20, destructive: 2 });
+    expect(split("full")).toEqual({ read: 33, write: 38, destructive: 6 });
   });
 });
 
@@ -94,6 +107,11 @@ describe("the tools added in 10.3–10.4 are classified correctly", () => {
   test("assembly and diff are reads — they write nothing", () => {
     expect(TOOL_ANNOTATIONS.assembly?.readOnlyHint).toBe(true);
     expect(TOOL_ANNOTATIONS.diff?.readOnlyHint).toBe(true);
+  });
+
+  test("pre-close gate markers are writes even when the tool is cue/search-only", () => {
+    expect(TOOL_ANNOTATIONS.remarks?.readOnlyHint).toBe(false);
+    expect(TOOL_ANNOTATIONS.addendum?.readOnlyHint).toBe(false);
   });
 
   test("claim is a write, because two of its four modes write", () => {
