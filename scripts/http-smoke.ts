@@ -177,7 +177,25 @@ try {
   }, 200, "OAuth-authenticated MCP initialization");
   if (!initialized.headers.get("mcp-session-id")) fail("OAuth-authenticated MCP initialization returned no session id");
 
-  console.log("HTTP auth smoke passed: static/OAuth authentication, every transport, callback CSP, and security headers");
+  // Exercise the exact compatibility path used by the hosted Claude connector:
+  // after OAuth succeeds, its MCP initialization can arrive at the origin root.
+  const oauthRootInitialized = await expectStatus("/", {
+    method: "POST",
+    headers: {
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "http-smoke-oauth-root", version: "1" } },
+    }),
+  }, 200, "OAuth-authenticated root MCP compatibility alias");
+  if (!oauthRootInitialized.headers.get("mcp-session-id")) fail("OAuth-authenticated root MCP alias returned no session id");
+
+  console.log("HTTP auth smoke passed: static/OAuth authentication, every transport, callback CSP, root MCP compatibility, and security headers");
 } finally {
   child?.kill("SIGTERM");
   rmSync(temp, { recursive: true, force: true });
