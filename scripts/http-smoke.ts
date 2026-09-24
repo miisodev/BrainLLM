@@ -55,6 +55,21 @@ try {
   if (!unauthenticatedMcp.headers.get("www-authenticate")) fail("unauthenticated /mcp did not return WWW-Authenticate");
   if (unauthenticatedMcp.headers.get("x-frame-options") !== "DENY") fail("security headers missing from /mcp");
 
+  // Claude's hosted connector has been observed sending its post-token MCP
+  // requests to `/` even when the configured resource is `/mcp`. The root must
+  // therefore be a protocol alias, not the HTML landing page, for MCP-shaped
+  // requests — including the unauthenticated discovery probe.
+  const unauthenticatedRootMcp = await expectStatus("/", {
+    method: "POST",
+    headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+  }, 401, "unauthenticated root MCP compatibility alias");
+  if (!unauthenticatedRootMcp.headers.get("www-authenticate")) fail("unauthenticated root MCP alias did not return WWW-Authenticate");
+  const rootPage = await fetch(`${base}/`, { headers: { Accept: "text/html" } });
+  if (rootPage.status !== 200 || !rootPage.headers.get("content-type")?.includes("text/html")) {
+    fail("root browser request no longer serves the landing page");
+  }
+
   await expectStatus("/sse", { headers: { Accept: "text/event-stream" } }, 401, "unauthenticated /sse");
   await expectStatus("/messages", { method: "POST", body: "{}" }, 401, "unauthenticated /messages");
   await expectStatus("/mcp", {
@@ -62,6 +77,18 @@ try {
     headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json", Authorization: "Bearer smoke-static-token" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
   }, 400, "authenticated uninitialized /mcp");
+
+  const rootInitialized = await expectStatus("/", {
+    method: "POST",
+    headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json", Authorization: "Bearer smoke-static-token" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "http-smoke-root", version: "1" } },
+    }),
+  }, 200, "authenticated root MCP compatibility alias");
+  if (!rootInitialized.headers.get("mcp-session-id")) fail("root MCP compatibility alias returned no session id");
 
   const largeBody = JSON.stringify({
     jsonrpc: "2.0",

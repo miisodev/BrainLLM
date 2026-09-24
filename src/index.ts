@@ -155,7 +155,7 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "12.4.1",
+    version: "12.4.2",
     icons: brandingIcons(origin),
   });
   // The two surfaces, composed here rather than nested inside registerTools —
@@ -393,13 +393,29 @@ if (port) {
 
       // The root names the server instead of 404ing — a human or a probing
       // client landing on the origin gets the endpoint and the auth contract.
-      if (url.pathname === "/") {
+      //
+      // Claude's hosted connector has a post-token path quirk: after a
+      // successful exchange it can send the MCP JSON-RPC requests to `/`
+      // instead of the configured `/mcp`. Serving the landing page for that
+      // request returns HTTP 200 with HTML, which Claude reports as a server
+      // connection error even though OAuth succeeded. Keep the human page for
+      // ordinary browser GETs, but route protocol-shaped requests at the root
+      // through the exact same authenticated streamable-HTTP handler as /mcp.
+      const rootMcpRequest = url.pathname === "/" && (
+        req.method !== "GET" ||
+        req.headers.has("mcp-session-id") ||
+        req.headers.has("mcp-protocol-version") ||
+        (req.headers.get("accept") ?? "").includes("application/json") ||
+        (req.headers.get("accept") ?? "").includes("text/event-stream")
+      );
+      if (url.pathname === "/" && !rootMcpRequest) {
         return withCors(new Response(landingPage(base, oauthOn, true), {
           headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
         }));
       }
 
-      if (url.pathname !== "/mcp" && url.pathname !== "/sse" && url.pathname !== "/messages") {
+      const isMcpEndpoint = url.pathname === "/mcp" || rootMcpRequest;
+      if (!isMcpEndpoint && url.pathname !== "/sse" && url.pathname !== "/messages") {
         return withCors(new Response("Not Found", { status: 404 }));
       }
       const transportLimit = rateLimited(rateLimiters.transport, requestKey);
