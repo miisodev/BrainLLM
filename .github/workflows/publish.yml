@@ -33,7 +33,6 @@ name: Publish
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 jobs:
   publish:
@@ -43,13 +42,22 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1"
 
       - run: bun install --frozen-lockfile
+
+      - name: npm lockfile integrity
+        run: npm ci --ignore-scripts --dry-run
+
+      - name: Dependency audit
+        run: bun audit --audit-level=high
+
+      - name: MCPB manifest validation
+        run: bun run validate:manifest
 
       # The same gates CI runs. A tag should never be the first time these run,
       # but a release is the worst possible moment to find out they were skipped.
@@ -59,13 +67,33 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Unit tests
-        run: bun test src/*.test.ts
+      - name: HTTP authentication smoke
+        run: bun run test:http
 
-      # The version sites drift independently — there are six of them across
-      # five files, and two separate releases shipped with one or more stale.
-      # A tag that disagrees with the manifest would publish the wrong version
-      # number to two registries at once, so it fails here instead.
+      - name: Verify npm package contents
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > /tmp/brainllm-pack.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const pack = JSON.parse(fs.readFileSync('/tmp/brainllm-pack.json', 'utf8'))[0];
+          const files = new Set(pack.files.map((entry) => entry.path));
+          for (const required of ['dist/index.js', 'SECURITY.md', 'skills/brainllm/SKILL.md', 'manifest.json', 'server.json']) {
+            if (!files.has(required)) throw new Error(`npm package is missing ${required}`);
+          }
+          for (const forbidden of ['src/brainllm.oauth.json', 'brainllm.oauth.json', 'brainllm.token', '.env']) {
+            if (files.has(forbidden)) throw new Error(`npm package contains local state: ${forbidden}`);
+          }
+          console.log(`npm package contains ${files.size} files and no local credential state`);
+          NODE
+
+      - name: Unit tests
+        run: bun run test:unit
+
+      # The manifest sites drift independently. A tag that disagrees with any
+      # of them would publish the wrong version number to two registries at once,
+      # so it fails here; the release gate below also checks the source handshake,
+      # README badge, landing-page pill, and npm lockfile.
       - name: Tag matches the manifests
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
@@ -76,7 +104,7 @@ jobs:
           echo "tag=$TAG package.json=$PKG server.json=$SRV server.json/packages[0]=$SRVPKG manifest.json=$MANIFEST"
           for V in "$PKG" "$SRV" "$SRVPKG" "$MANIFEST"; do
             if [ "$V" != "$TAG" ]; then
-              echo "::error::Version mismatch — tag v$TAG but a manifest says $V. Bump all six sites before tagging."
+              echo "::error::Version mismatch — tag v$TAG but a manifest says $V. Bump every version-bearing surface before tagging."
               exit 1
             fi
           done
@@ -91,29 +119,84 @@ jobs:
       # npm CLI >= 11.5.1 and Node >= 22.14.0 are required for trusted
       # publishing; the runner's bundled npm is not guaranteed to be new enough,
       # so it is upgraded explicitly rather than hoped for.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Ensure npm supports trusted publishing
         run: |
-          npm install -g npm@latest
+          npm install -g npm@11.5.1
           npm --version
 
-      # No NODE_AUTH_TOKEN: the CLI detects the OIDC credential itself.
-      - name: Publish to npm
-        run: npm publish
+      # No NODE_AUTH_TOKEN: the CLI detects the OIDC credential itself. The step
+      # is idempotent so a registry failure can be resumed by rerunning the tag
+      # workflow without attempting an immutable npm republish.
+      - name: Publish to npm (idempotent)
+        run: |
+          set -euo pipefail
+          PACKAGE=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if EXISTING=$(npm view "${PACKAGE}@${VERSION}" version 2>/dev/null); then
+            test "$EXISTING" = "$VERSION"
+            echo "npm already serves ${PACKAGE}@${VERSION}; skipping immutable republish"
+          else
+            npm publish
+          fi
+
+      # npm's CDN and the registry's package fetch are eventually consistent.
+      # The registry proves ownership by reading the just-published package, so
+      # starting it immediately after npm publish is a race — v12.3.0 lost a
+      # release run to exactly this and needed a manual republish.
+      - name: Wait for npm propagation
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          for i in $(seq 1 12); do
+            if [ "$(npm view "brainllm@$TAG" version 2>/dev/null || true)" = "$TAG" ]; then
+              echo "npm serves $TAG (attempt $i)"
+              exit 0
+            fi
+            echo "npm has not served $TAG yet (attempt $i/12)"
+            sleep 15
+          done
+          echo "::error::npm never served $TAG after 3 minutes; do not publish the registry entry yet."
+          exit 1
 
       - name: Install mcp-publisher
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          set -euo pipefail
+          PUBLISHER_VERSION="1.8.1"
+          case "$(uname -m)" in
+            x86_64) ASSET="mcp-publisher_linux_amd64.tar.gz"; SHA256="a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc" ;;
+            aarch64|arm64) ASSET="mcp-publisher_linux_arm64.tar.gz"; SHA256="8dd75a6cf6845688b5d4e46df58d3ca26d5c8d233bb0626606e1db82c5e883e4" ;;
+            *) echo "Unsupported runner architecture: $(uname -m)"; exit 1 ;;
+          esac
+          URL="https://github.com/modelcontextprotocol/registry/releases/download/v${PUBLISHER_VERSION}/${ASSET}"
+          curl --fail --location --silent --show-error "$URL" --output mcp-publisher.tar.gz
+          echo "${SHA256}  mcp-publisher.tar.gz" | sha256sum --check --status
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+          chmod 0755 mcp-publisher
 
       - name: Authenticate to the MCP Registry
         run: ./mcp-publisher login github-oidc
 
-      - name: Publish to the MCP Registry
-        run: ./mcp-publisher publish
+      - name: Publish to the MCP Registry (idempotent)
+        run: |
+          set -u
+          TAG="${GITHUB_REF#refs/tags/v}"
+          if curl -fsS "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.miisodev/brainllm" | grep -Fq "\"version\":\"$TAG\""; then
+            echo "MCP Registry already serves v${TAG}; skipping immutable republish"
+            exit 0
+          fi
+          for i in $(seq 1 4); do
+            if ./mcp-publisher publish; then
+              exit 0
+            fi
+            echo "::warning::MCP Registry publish attempt $i/4 failed; retrying after propagation delay"
+            sleep 15
+          done
+          echo "::error::MCP Registry publish failed after 4 attempts; inspect the registry directly before re-running."
+          exit 1
 
       # Verify from outside — with retries, because both registries are
       # eventually consistent and the first version of this step was not.
@@ -145,3 +228,6 @@ jobs:
           verify "MCP Registry" \
             "curl -s 'https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.miisodev/brainllm'" \
             "\"version\":\"$TAG\""
+          verify "Pages" \
+            "curl -s 'https://miisodev.github.io/BrainLLM/'" \
+            "v$TAG · open source"

@@ -90,44 +90,69 @@ describe("serializeWrites — registry-level handler wrapping", () => {
   test("write-classified handlers are queued; read-only handlers are not", async () => {
     const server = new McpServer({ name: "t", version: "0.0.0" });
     const order: string[] = [];
-    const mk = (name: string, ms: number) => async () => {
+
+    type Deferred = { promise: Promise<void>; resolve: () => void };
+    const deferred = (): Deferred => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => { resolve = r; });
+      return { promise, resolve };
+    };
+
+    const readEntered = deferred();
+    const readRelease = deferred();
+    const write1Entered = deferred();
+    const write1Release = deferred();
+    const write2Entered = deferred();
+    const write2Release = deferred();
+    const write2Exited = deferred();
+    const mk = (name: string, entered: Deferred, release: Deferred, exited?: Deferred) => async () => {
       order.push(`enter:${name}`);
-      await new Promise((r) => setTimeout(r, ms));
+      entered.resolve();
+      await release.promise;
       order.push(`exit:${name}`);
+      exited?.resolve();
       // A real CallToolResult shape — the SDK's handler type demands content,
       // and the point here is the wrapper, not the payload.
       return { content: [{ type: "text" as const, text: name }] };
     };
 
-    // brain-check.mjs's own negative-testing lesson applies here too: a
-    // wrapper that has only ever been seen to pass is not known to wrap.
-    // So the reads are fired FIRST with the longest delay, writes after —
-    // if reads were wrongly serialized, the write could not start until the
-    // read finished and order would scramble.
-    server.tool("recall", "read", { q: z.string() }, mk("read", 40));
-    server.tool("revise", "write", { q: z.string() }, mk("write1", 20));
-    server.tool("remember", "write", { q: z.string() }, mk("write2", 5));
+    // Gate each call instead of relying on timer durations. Under a loaded
+    // test runner, a 40ms timer can be delivered after a 5ms timer; the
+    // contract under test is ordering and exclusion, not wall-clock latency.
+    server.tool("recall", "read", { q: z.string() }, mk("read", readEntered, readRelease));
+    server.tool("revise", "write", { q: z.string() }, mk("write1", write1Entered, write1Release));
+    server.tool("remember", "write", { q: z.string() }, mk("write2", write2Entered, write2Release, write2Exited));
 
     const { serialized, readsUntouched } = serializeWrites(server as never);
     expect(serialized).toBe(2);
     expect(readsUntouched).toBe(1);
 
-    await Promise.all([
+    const calls = Promise.all([
       registryHandler(server, "recall")({ q: "x" }),
       registryHandler(server, "revise")({ q: "x" }),
       registryHandler(server, "remember")({ q: "x" }),
     ]);
 
-    // The contract is reads PARALLEL with everything, writes FIFO among
-    // themselves — so the read's exit is LAST (the writes ran inside its
-    // window), and each write still enters before the previous one exits.
-    // If reads were wrongly serialized, enter:write1 would come after
-    // exit:read and this order would scramble.
+    await readEntered.promise;
+    await write1Entered.promise;
+    // The read is not holding the write queue, so write1 can enter while it
+    // remains active. write2 must still be waiting behind write1.
+    expect(order).toEqual(["enter:read", "enter:write1"]);
+
+    write1Release.resolve();
+    await write2Entered.promise;
+    expect(order).toEqual(["enter:read", "enter:write1", "exit:write1", "enter:write2"]);
+
+    write2Release.resolve();
+    await write2Exited.promise;
     expect(order).toEqual([
-      "enter:read",
-      "enter:write1", "exit:write1",
-      "enter:write2", "exit:write2",
-      "exit:read",
+      "enter:read", "enter:write1", "exit:write1", "enter:write2", "exit:write2",
+    ]);
+
+    readRelease.resolve();
+    await calls;
+    expect(order).toEqual([
+      "enter:read", "enter:write1", "exit:write1", "enter:write2", "exit:write2", "exit:read",
     ]);
   });
 

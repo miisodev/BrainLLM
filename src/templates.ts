@@ -82,7 +82,8 @@ export const REQUIRED_SECTIONS: Partial<Record<AnyKind, readonly string[]>> = {
   goals: ["Near-term", "Long-term"],
   preferences: ["Communication", "Working style", "Tools and stack"],
   responsibilities: ["Core", "Current priorities"],
-  protocols: ["Operating", "Self-correction"],
+  protocols: ["Operating"],
+  selfcorrection: ["Corrections"],
   claim: ["Check", "Verifications"],
 };
 

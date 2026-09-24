@@ -10,13 +10,25 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1"
 
       - run: bun install --frozen-lockfile
+
+      # The npm lockfile is also published as a contributor convenience, so a
+      # stale one must fail the gate rather than waiting for an npm user to
+      # discover it. Dry-run keeps this check metadata-only.
+      - name: npm lockfile integrity
+        run: npm ci --ignore-scripts --dry-run
+
+      - name: Dependency audit
+        run: bun audit --audit-level=high
+
+      - name: MCPB manifest validation
+        run: bun run validate:manifest
 
       # `bun build` bundles without type-checking, so a genuine type error
       # produces a clean build and a green CI. Check types explicitly — a
@@ -27,21 +39,17 @@ jobs:
 
       - run: bun run build
 
-      # Every *.test.ts, discovered rather than listed.
+      - name: HTTP authentication smoke
+        run: bun run test:http
+
+      # Every *.test.ts, discovered by Bun itself. This is deliberately not a
+      # shell glob: the same command then works in PowerShell on Windows and in
+      # the Ubuntu runner, instead of passing locally while matching no files.
       #
-      # This used to name each suite explicitly, which meant a new suite was
-      # outside CI until someone remembered to add it — and nothing failed when
-      # they didn't. It happened twice: oauth.test.ts (the CIMD impersonation
-      # and code-harvesting tests, written specifically to run against hostile
-      # documents) sat outside CI for a release, and kinds.test.ts did the same
-      # the day it was written. A list that must be maintained by hand to stay
-      # correct will eventually be wrong, and its being wrong looks exactly like
-      # its being right: green.
-      #
-      # src/test.ts is excluded by the pattern, not by omission — it is the
+      # src/test.ts is excluded by Bun's test discovery because it is the
       # integration runner and needs a live Trilium instance.
       - name: Unit tests
-        run: bun test src/*.test.ts
+        run: bun run test:unit
 
       # Release metadata, checked on every push rather than at tag time.
       #

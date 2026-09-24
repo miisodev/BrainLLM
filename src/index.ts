@@ -11,6 +11,7 @@ import { join, dirname } from "path";
 import { TriliumClient } from "./trilium.js";
 import { registerTools } from "./tools.js";
 import { serializeWrites } from "./serialize.js";
+import { FixedWindowRateLimiter } from "./rate-limit.js";
 import { coerceToolArgs } from "./coerce.js";
 import { registerAdvancedTools } from "./tools-advanced.js";
 import { applyToolAnnotations } from "./annotations.js";
@@ -114,6 +115,11 @@ const authToken = process.env.MCP_AUTH_TOKEN;
 // BRAINLLM_MODE=core (default): the 44 brain-aware tools (34 universal verbs + 10 surface reads).
 // BRAINLLM_MODE=full: additionally registers the 33 raw ETAPI tools, for 77.
 const mode: "core" | "full" = process.env.BRAINLLM_MODE === "full" ? "full" : "core";
+const allowUnauthenticatedHttp = process.env.BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP === "true";
+if (port && !authToken && !oauthEnabled() && !allowUnauthenticatedHttp) {
+  console.error("HTTP mode requires MCP_AUTH_TOKEN or BRAINLLM_OWNER_PASSWORD. Set BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP=true only for a trusted, isolated network.");
+  process.exit(1);
+}
 
 // Brand identity advertised in the MCP handshake (serverInfo.icons). Clients
 // that render server icons show the BrainLLM logo in their connector list and
@@ -149,7 +155,7 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "12.3.0",
+    version: "12.4.0",
     icons: brandingIcons(origin),
   });
   // The two surfaces, composed here rather than nested inside registerTools —
@@ -168,7 +174,7 @@ function createServer(origin: string | null = null): McpServer {
 
   // Group the surface into read-only vs write/destructive for the client's
   // permission UI. Without it every tool is "Other", and the only choice on
-  // offer is allow-all-75 or approve-every-call.
+  // offer is allow-all-77 or approve-every-call.
   const { unclassified } = applyToolAnnotations(s);
   if (unclassified.length) {
     console.error(`[brainllm] Unclassified tools, treated as writes: ${unclassified.join(", ")}`);
@@ -212,10 +218,49 @@ if (port) {
     "Access-Control-Expose-Headers": "mcp-session-id, WWW-Authenticate",
     "Access-Control-Max-Age": "86400",
   };
+  // The OAuth consent page accepts a password and is reachable from a browser;
+  // it must not be framed, interpreted as a document, or used as a referrer.
+  // Keep these on every HTTP response, including errors and discovery metadata.
+  const SECURITY_HEADERS: Record<string, string> = {
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; img-src 'self' data:",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  };
   const withCors = (res: Response): Response => {
-    for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v);
+    for (const [k, v] of Object.entries({ ...CORS_HEADERS, ...SECURITY_HEADERS })) res.headers.set(k, v);
     return res;
   };
+
+  // Public endpoints have deliberately different budgets: an owner-password
+  // guess is more expensive than a metadata read, while a busy MCP client must
+  // not be mistaken for an attacker behind a shared NAT.
+  const rateLimiters = {
+    authorize: new FixedWindowRateLimiter(30, 15 * 60_000),
+    token: new FixedWindowRateLimiter(120, 15 * 60_000),
+    register: new FixedWindowRateLimiter(30, 60 * 60_000),
+    transport: new FixedWindowRateLimiter(600, 15 * 60_000),
+  };
+  const rateLimited = (limiter: FixedWindowRateLimiter, key: string): Response | null => {
+    const decision = limiter.allow(key);
+    if (decision.allowed) return null;
+    return withCors(new Response(JSON.stringify({
+      error: "rate_limited",
+      error_description: "Too many requests. Retry after the indicated delay.",
+    }), {
+      status: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Retry-After": String(decision.retryAfterSeconds),
+      },
+    }));
+  };
+  const clientKey = (req: Request, server: { requestIP(request: Request): { address: string } | null }): string =>
+    server.requestIP(req)?.address ?? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const MAX_HTTP_SESSIONS = 1_000;
 
   // Evict sessions idle past 1 hour — clients that drop without sending DELETE
   // would otherwise accumulate forever in the map. An evicted SSE transport is
@@ -224,7 +269,10 @@ if (port) {
   setInterval(() => {
     const cutoff = Date.now() - SESSION_TTL_MS;
     for (const [id, entry] of sessions) {
-      if (entry.lastUsed < cutoff) sessions.delete(id);
+      if (entry.lastUsed < cutoff) {
+        sessions.delete(id);
+        entry.transport.close().catch(() => {});
+      }
     }
     for (const [id, entry] of sseSessions) {
       if (entry.lastUsed < cutoff) {
@@ -238,11 +286,12 @@ if (port) {
     port,
     // 50 MB cap — prevents runaway memory on large note writes in HTTP mode.
     maxRequestBodySize: 50 * 1024 * 1024,
-    async fetch(req: Request): Promise<Response> {
+    async fetch(req: Request, server): Promise<Response> {
       const url = new URL(req.url);
+      const requestKey = clientKey(req, server);
 
       if (req.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: CORS_HEADERS });
+        return withCors(new Response(null, { status: 204 }));
       }
 
       if (url.pathname === "/health") {
@@ -317,14 +366,20 @@ if (port) {
           return json(authorizationServerMetadata(base));
         }
         if (url.pathname === "/authorize") {
+          const limited = rateLimited(rateLimiters.authorize, requestKey);
+          if (limited) return limited;
           return withCors(await handleAuthorize(req, base));
         }
         if (url.pathname === "/token") {
+          const limited = rateLimited(rateLimiters.token, requestKey);
+          if (limited) return limited;
           return withCors(await handleToken(req, base));
         }
         // RFC 7591 dynamic registration — clients without CIMD support
         // (opencode, MCP TS SDK ≤1.29) refuse to proceed without it.
         if (url.pathname === "/register") {
+          const limited = rateLimited(rateLimiters.register, requestKey);
+          if (limited) return limited;
           return withCors(await handleRegister(req));
         }
       }
@@ -340,6 +395,8 @@ if (port) {
       if (url.pathname !== "/mcp" && url.pathname !== "/sse" && url.pathname !== "/messages") {
         return withCors(new Response("Not Found", { status: 404 }));
       }
+      const transportLimit = rateLimited(rateLimiters.transport, requestKey);
+      if (transportLimit) return transportLimit;
 
       // ── Authentication ──────────────────────────────────────────────────────
       // Two credentials are accepted, deliberately. A static MCP_AUTH_TOKEN is
@@ -365,6 +422,12 @@ if (port) {
         ));
       };
 
+      // Authenticate every transport before any session lookup or MCP parser
+      // runs. The streamable-HTTP branch below is the primary door; gating only
+      // /sse and /messages leaves /mcp reachable without credentials.
+      const denied = gate();
+      if (denied) return denied;
+
       // ── Legacy SSE transport ────────────────────────────────────────────────
       // GET /sse opens the stream; POST /messages ingests one JSON-RPC message.
       // Same auth gate, same CORS, same idle eviction as /mcp.
@@ -372,8 +435,12 @@ if (port) {
         if (req.method !== "GET") {
           return withCors(new Response("Method Not Allowed", { status: 405, headers: { "Allow": "GET" } }));
         }
-        const denied = gate();
-        if (denied) return denied;
+        if (sessions.size + sseSessions.size >= MAX_HTTP_SESSIONS) {
+          return withCors(new Response(JSON.stringify({ error: "session_limit" }), {
+            status: 503,
+            headers: { "Content-Type": "application/json", "Retry-After": "60" },
+          }));
+        }
         const transport = new BunSseServerTransport("/messages");
         sseSessions.set(transport.sessionId, { transport, lastUsed: Date.now() });
         transport.onclose = () => sseSessions.delete(transport.sessionId);
@@ -385,8 +452,6 @@ if (port) {
         if (req.method !== "POST") {
           return withCors(new Response("Method Not Allowed", { status: 405, headers: { "Allow": "POST" } }));
         }
-        const denied = gate();
-        if (denied) return denied;
         const sid = url.searchParams.get("sessionId") ?? "";
         const entry = sseSessions.get(sid);
         if (!entry) {
@@ -404,7 +469,9 @@ if (port) {
       // MCP spec: DELETE /mcp terminates the session explicitly.
       if (req.method === "DELETE") {
         if (sessionId && sessions.has(sessionId)) {
+          const entry = sessions.get(sessionId)!;
           sessions.delete(sessionId);
+          await entry.transport.close().catch(() => {});
           return withCors(new Response(null, { status: 204 }));
         }
         return withCors(new Response(JSON.stringify({ error: "Session not found" }), {
@@ -420,8 +487,15 @@ if (port) {
       }
 
       if (!sessionId) {
+        if (sessions.size + sseSessions.size >= MAX_HTTP_SESSIONS) {
+          return withCors(new Response(JSON.stringify({ error: "session_limit" }), {
+            status: 503,
+            headers: { "Content-Type": "application/json", "Retry-After": "60" },
+          }));
+        }
         // Initialization request — create a fresh session
         const transport = new WebStandardStreamableHTTPServerTransport({
+          maxRequestBodySize: 50 * 1024 * 1024,
           sessionIdGenerator: () => crypto.randomUUID(),
           onsessioninitialized: (id) => { sessions.set(id, { transport, lastUsed: Date.now() }); },
           onsessionclosed:      (id) => { sessions.delete(id); },

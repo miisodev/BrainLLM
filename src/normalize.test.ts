@@ -26,6 +26,7 @@ import {
   looksLikeHtml,
   looksLikeEncodedHtml,
   renderBody,
+  sanitizeHtml,
   setSection,
   headingOutline,
   structureReport,
@@ -461,6 +462,32 @@ describe("entity-encoded bodies", () => {
     expect(decoded.html).toBe("<p>hi</p>");
     expect(decoded.warnings.join(" ")).toContain("Entity-encoded markup decoded");
     expect(renderBody("<p>hi</p>").warnings).toEqual([]);
+  });
+});
+
+describe("HTML allowlist sanitizer", () => {
+  test("removes unclosed active blocks instead of closing them into executable markup", () => {
+    const result = sanitizeHtml("<p>before</p><script>alert(1)");
+    expect(result.html).not.toContain("script");
+    expect(result.html).not.toContain("alert");
+    expect(result.warnings.join(" ")).toContain("forbidden");
+  });
+
+  test("removes javascript and entity-obfuscated URL schemes", () => {
+    const result = sanitizeHtml('<p><a href="javascript:alert(1)" onclick="x">x</a><a href="java&#x73;cript:alert(1)">y</a><a href="java&colon;script:alert(1)">c</a><a href="java&Tab;script:alert(1)">t</a><a href="https://example.com">z</a></p>');
+    expect(result.html).not.toContain("javascript");
+    expect(result.html).not.toContain("java&colon;");
+    expect(result.html).not.toContain("java&Tab;");
+    expect(result.html).not.toContain("onclick");
+    expect(result.html).toContain('href="https://example.com"');
+  });
+
+  test("demotes headings and drops event/style attributes while preserving safe structure", () => {
+    const result = sanitizeHtml('<h1 class="x">Title</h1><div class="x"><p style="color:red" onmouseover="x">Body</p></div>');
+    expect(result.html).toContain("<h2 class=\"x\">Title</h2>");
+    expect(result.html).toContain("<p>Body</p>");
+    expect(result.html).not.toContain("style");
+    expect(result.html).not.toContain("onmouseover");
   });
 });
 
@@ -923,6 +950,15 @@ describe("extractSections — the split() primitive", () => {
     expect(r.matched).toEqual([]);
     expect(r.missed).toEqual(["Nope"]);
     expect(r.html).toBe(DOC);
+  });
+
+  test("refuses overlapping parent/child selections without emptying the source", () => {
+    const html = "<h2>Parent</h2><p>P</p><h3>Child</h3><p>C</p><h2>Next</h2><p>N</p>";
+    const r = extractSections(html, ["Parent", "Child"]);
+    expect(r.overlap).toEqual(["Parent", "Child"]);
+    expect(r.html).toBe(html);
+    expect(r.extracted).toBe("");
+    expect(r.matched).toEqual([]);
   });
 });
 

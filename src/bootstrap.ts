@@ -2,7 +2,7 @@
 // BrainLLM — structure builder (V10)
 // Shared by the bootstrap tool and the init.ts CLI.
 //
-// Builds the six-area tree on a fresh instance. Collection containers are real
+// Builds the five-area tree (plus the structural Templates area) on a fresh instance. Collection containers are real
 // Trilium `book` notes; the singleton maintained notes (biography, goals, …)
 // are `text` notes — structured singletons are also seeded with their enforced
 // section skeleton. Each note is engraved with its purpose at creation, and the

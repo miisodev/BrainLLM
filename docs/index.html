@@ -46,8 +46,10 @@
   </div>
 </nav>
 
+<main>
+
 <header class="hero">
-  <span class="pill"><span class="dot"></span>v12.3.0 · open source, MIT</span>
+  <span class="pill"><span class="dot"></span>v12.4.0 · open source, MIT</span>
   <h1>Your LLM forgets everything <span class="muted">the moment the session ends. Give it a brain that</span> <span class="accent">remembers.</span></h1>
   <p class="lede">A persistent, graph-structured second brain for Claude and any MCP client. Self-hosted on TriliumNext, inspectable, portable — yours to own, never locked in a vendor's black box.</p>
   <div class="hero-cta">
@@ -75,14 +77,14 @@
       <p>Not one undifferentiated pile of embeddings. Five purpose-built areas, each with its own kinds, lifecycle and rules — created on first run and enforced on every write.</p>
     </div>
     <div class="grid grid-2">
-      <div class="card"><span class="k">MASTER</span><h3>The user</h3><p>Biography, goals, preferences — three maintained singletons holding current-state truth, edited in place rather than appended to.</p></div>
-      <div class="card"><span class="k">LLM</span><h3>The model's self-model</h3><p>Its responsibilities, its operating protocols, and a daily diary it writes itself — unfiltered, first-person, edited by nobody.</p></div>
+      <div class="card"><span class="k">MASTER</span><h3>The user</h3><p>Biography, goals, preferences — maintained singletons holding current-state truth, edited in place rather than appended to.</p></div>
+      <div class="card"><span class="k">LLM</span><h3>The model's self-model</h3><p>Its responsibilities, operating protocols, a separate self-correction note, and a daily diary it writes itself — unfiltered, first-person, edited by nobody.</p></div>
       <div class="card"><span class="k">MEMORY</span><h3>Sessions and threads</h3><p>One session note per day, plus titled multi-session threads that age from active to dormant to archived. Nothing is ever deleted.</p></div>
       <div class="card"><span class="k">KNOWLEDGE</span><h3>What it learned</h3><p>Per-domain books, each born with a Sources note so every claim has a sourcing home from the first write.</p></div>
     </div>
     <div style="margin-top:20px" class="card">
       <span class="k">INSIGHTS</span><h3>The brain's record of itself</h3>
-      <p>An auto-generated change log for every day, and a live Mermaid render of the typed relation graph — maintained as a real note you can open.</p>
+      <p>An auto-generated change log for every day, a live Mermaid render of the typed relation graph, and a register of claims checked against the world — maintained as real notes you can open.</p>
     </div>
   </div>
 </section>
@@ -94,23 +96,23 @@
       <h2>It can't end until the work is logged</h2>
       <p>Most memory systems <em>ask</em> the model to record its work. This one refuses to close the session until it has — checked by tool invocation, not by narration.</p>
     </div>
-<pre class="term"><span class="c">// every session opens with full orientation</span>
+<pre class="term" tabindex="0" aria-label="Code example"><span class="c">// every session opens with full orientation</span>
 &gt; start()
   <span class="g">today</span>        2026-08-06 · Thursday
   <span class="g">master</span>       biography · goals · preferences
-  <span class="g">threads</span>      12 active, 0 dormant
-  <span class="g">lastSession</span>  what changed since you were here
+  <span class="g">memory</span>       12 active threads · 0 dormant
+  <span class="g">changesSinceLastSession</span>  what changed since you were here
 
 <span class="c">// … the work happens …</span>
 
-&gt; close(summary)
+&gt; close(summary, identity="Claude · local · agent")
   <span class="a">✗ preclose_incomplete</span>
   <span class="c">missing: remarks, diary</span>
 
 <span class="c">// narrating that you did the steps doesn't count.</span>
 <span class="c">// only tool calls do.</span>
 
-&gt; remarks() <span class="c">→ diary(body) →</span> close(summary)
+&gt; remarks() <span class="c">→ diary(body, identity="Claude · local · agent") →</span> close(summary, identity="Claude · local · agent")
   <span class="g">✓ session logged · backup taken · daily log regenerated</span></pre>
   </div>
 </section>
@@ -121,7 +123,7 @@
     <div class="grid grid-3">
       <div class="card"><h3>Structure is enforced</h3><p>Every kind has a canonical shape, served by <code>template()</code> and held on write. A new thread requires its goal. Duplicate headings are detected. Timestamps are server-maintained.</p></div>
       <div class="card"><h3>A typed graph, not folders</h3><p>Sixteen relation verbs, closed vocabulary. Every read returns its outbound edges for free, because the attributes were already loaded.</p></div>
-      <div class="card"><h3>Idempotent by construction</h3><p>Every write is duplicate-guarded or upserting, so a crash or a retry never double-writes. Content surgery survives the editor's own HTML rewriting.</p></div>
+      <div class="card"><h3>Idempotent by construction</h3><p>Core writes are duplicate-guarded or upserting, so a crash or a retry does not silently double-write; full-mode overwrites remain explicit raw operations. Content surgery survives the editor's own HTML rewriting.</p></div>
       <div class="card"><h3>It heals what it finds</h3><p>A maintenance sweep ages threads, migrates legacy kinds, and reports orphans, duplicate subjects, stubs and structural drift — as conversation starters, never silent auto-fixes.</p></div>
       <div class="card"><h3>Your notes stay readable</h3><p>Everything lives in a real note app you can open and edit by hand. Fix what the model wrote and it reads your correction next session.</p></div>
       <div class="card"><h3>Runs anywhere MCP does</h3><p>stdio for Claude Desktop and Claude Code, an HTTP connector for hosted deploys, and a full OAuth 2.1 server so claude.ai can connect at all.</p></div>
@@ -148,6 +150,8 @@
     <a class="btn btn-ghost" href="https://github.com/sponsors/miisodev">Sponsor</a>
   </div>
 </div>
+
+</main>
 
 <footer>
   <div class="wrap foot">

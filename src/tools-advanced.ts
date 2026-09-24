@@ -9,7 +9,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { TriliumClient, ownedLabel } from "./trilium.js";
+import { TriliumClient, ownedLabel, ContentMetadataUpdateError, PartialContentUploadError } from "./trilium.js";
 import { localToday } from "./time.js";
 import { labelPlan } from "./router.js";
 import type { BrainLLMConfig } from "./config.js";
@@ -84,9 +84,12 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "get_note_content",
-    "Raw note content (HTML / text / code).",
+    "Raw note content. Text returns the body; binary returns {encoding:'base64', mime, content} without lossy decoding.",
     { noteId: z.string() },
-    async ({ noteId }) => txt(await trilium.getNoteContent(noteId))
+    async ({ noteId }) => {
+      const note = await trilium.getNote(noteId);
+      return txt(await trilium.getNoteContentResult(noteId, note.type));
+    }
   );
 
   server.tool(
@@ -98,20 +101,35 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
       content: z.string(),
       type: z.enum(["text", "code", "book", "canvas", "mermaid", "relationMap", "render", "search", "file", "image"]).optional(),
       mime: z.string().optional(),
+      encoding: z.enum(["auto", "text", "base64"]).optional().describe("Content encoding; auto treats text/* as UTF-8 and other MIME types as base64"),
     },
-    async ({ parentNoteId, title, content, type, mime }) => {
-      const r = await trilium.createNote(parentNoteId, title, content, type ?? "text", mime);
-      return txt({ noteId: r.note.noteId, branchId: r.branch.branchId, title: r.note.title });
+    async ({ parentNoteId, title, content, type, mime, encoding }) => {
+      try {
+        const r = await trilium.createNote(parentNoteId, title, content, type ?? "text", mime, undefined, encoding ?? "auto");
+        return txt({ noteId: r.note.noteId, branchId: r.branch.branchId, title: r.note.title, contentUploaded: r.contentUploaded ?? true });
+      } catch (error) {
+        if (error instanceof PartialContentUploadError) return txt({ ok: false, error: "partial_upload", entityType: error.entityType, entityId: error.entityId, contentUploaded: false, detail: error.message });
+        throw error;
+      }
     }
   );
 
   server.tool(
     "update_note_content",
-    "Replace a note's full content.",
-    { noteId: z.string(), content: z.string() },
-    async ({ noteId, content }) => {
-      await trilium.updateNoteContent(noteId, content);
-      return txt({ ok: true, noteId });
+    "Replace a note's full content. Binary input must use encoding=base64; text remains UTF-8.",
+    { noteId: z.string(), content: z.string(), mime: z.string().optional(), encoding: z.enum(["auto", "text", "base64"]).optional() },
+    async ({ noteId, content, mime, encoding }) => {
+      const note = await trilium.getNote(noteId);
+      const targetMime = mime ?? note.mime;
+      try {
+        await trilium.updateNoteContent(noteId, content, targetMime, encoding ?? "auto");
+      } catch (error) {
+        if (error instanceof ContentMetadataUpdateError) {
+          return txt({ ok: false, error: "content_metadata_update_failed", noteId, contentUploaded: true, detail: error.message, hint: "The bytes landed, but the MIME metadata did not. Re-run patch_note with the intended mime." });
+        }
+        throw error;
+      }
+      return txt({ ok: true, noteId, mime: targetMime, contentUploaded: true });
     }
   );
 
@@ -134,6 +152,19 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
     "Hard-delete a note (and its subtree if this is its last branch). Irreversible.",
     { noteId: z.string() },
     async ({ noteId }) => {
+      const note = await trilium.getNote(noteId);
+      let backlinks;
+      try {
+        backlinks = await trilium.getBacklinks(noteId);
+      } catch (error) {
+        return txt({ ok: false, blocked: true, error: "backlink_check_failed", noteId, detail: error instanceof Error ? error.message : String(error), hint: "The backlink vocabulary or result set was incomplete; raw hard delete is blocked." });
+      }
+      if (backlinks.length > 0) {
+        return txt({ ok: false, blocked: true, error: "backlinks_exist", noteId, backlinks, hint: "Remove or retarget the listed relations before deleting." });
+      }
+      if ((note.childNoteIds?.length ?? 0) > 0 || (note.parentBranchIds?.length ?? 0) > 1) {
+        return txt({ ok: false, blocked: true, error: "blast_radius", noteId, childNoteIds: note.childNoteIds ?? [], parentBranchIds: note.parentBranchIds ?? [], hint: "Deleting this note would remove a subtree or multiple placements." });
+      }
       await trilium.deleteNote(noteId);
       return txt({ ok: true, deleted: noteId });
     }
@@ -159,8 +190,9 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
       // did preserve attributes, or the note has since been typed, that is
       // authoritative and this is a no-op.
       const cfg = b();
-      const note = await trilium.getNote(noteId).catch(() => null);
+      const note = await trilium.getNote(noteId);
       const restored: string[] = [];
+      const failedLabels: string[] = [];
       let inferredKind: string | undefined;
 
       if (note) {
@@ -193,8 +225,12 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
           if (inferredKind) {
             for (const l of labelPlan(inferredKind as Kind, {}, localToday())) {
               if (!ownedLabel(note, l.name)) {
-                await trilium.addLabel(noteId, l.name, l.value, l.inheritable ?? false).catch(() => null);
-                restored.push(l.value ? `${l.name}=${l.value}` : l.name);
+                try {
+                  await trilium.addLabel(noteId, l.name, l.value, l.inheritable ?? false);
+                  restored.push(l.value ? `${l.name}=${l.value}` : l.name);
+                } catch {
+                  failedLabels.push(l.name);
+                }
               }
             }
           }
@@ -202,10 +238,11 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
       }
 
       return txt({
-        ok: true,
+        ok: failedLabels.length === 0 && !!inferredKind,
         undeleted: noteId,
         ...(inferredKind ? { kind: inferredKind } : {}),
         ...(restored.length ? { labelsRestored: restored } : {}),
+        ...(failedLabels.length ? { labelsFailed: failedLabels, partial: true } : {}),
         ...(note && !inferredKind
           ? {
               warning:
@@ -248,7 +285,7 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "add_relation",
-    "Add a ~relation with any name (the core connect() enforces the canonical vocabulary).",
+    "Add a ~relation with a conservative identifier name (the core connect() enforces the canonical vocabulary).",
     { fromNoteId: z.string(), relationName: z.string(), toNoteId: z.string(), isInheritable: z.boolean().optional() },
     async ({ fromNoteId, relationName, toNoteId, isInheritable }) => {
       const attr = await trilium.addRelation(fromNoteId, relationName, toNoteId, isInheritable ?? false);
@@ -302,17 +339,23 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
     "Move a note to a new parent (clone to the new parent, then remove the old branch).",
     { noteId: z.string(), fromParentNoteId: z.string(), toParentNoteId: z.string() },
     async ({ noteId, fromParentNoteId, toParentNoteId }) => {
+      if (fromParentNoteId === toParentNoteId) return txt({ ok: true, action: "already_moved", noteId, movedTo: toParentNoteId });
       const newBranch = await trilium.cloneNote(noteId, toParentNoteId);
       const fresh = await trilium.getNote(noteId);
+      let removedBranchId: string | null = null;
       for (const bid of fresh.parentBranchIds) {
         if (bid === newBranch.branchId) continue;
         const branch = await trilium.getBranch(bid);
         if (branch.parentNoteId === fromParentNoteId) {
           await trilium.deleteBranch(bid);
+          removedBranchId = bid;
           break;
         }
       }
-      return txt({ ok: true, noteId, movedTo: toParentNoteId, newBranchId: newBranch.branchId });
+      if (!removedBranchId) {
+        return txt({ ok: false, error: "source_branch_not_found", noteId, movedTo: toParentNoteId, newBranchId: newBranch.branchId, detail: "The destination placement was created, but no branch under fromParentNoteId was removed; the note may now be present in both parents." });
+      }
+      return txt({ ok: true, noteId, movedTo: toParentNoteId, newBranchId: newBranch.branchId, removedBranchId });
     }
   );
 
@@ -344,15 +387,18 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
     { noteId: z.string() },
     async ({ noteId }) => {
       const revs = await trilium.getNoteRevisions(noteId);
-      return txt(revs.map((r) => ({ id: r.revisionId, title: r.title, date: r.utcDateCreated, size: r.contentLength })));
+      return txt(revs.map((r) => ({ id: r.revisionId, title: r.title, mime: r.mime, date: r.utcDateCreated, size: r.contentLength })));
     }
   );
 
   server.tool(
     "get_revision_content",
-    "Content of a historical revision snapshot.",
+    "Content of a historical revision snapshot. Binary snapshots return a base64 envelope.",
     { revisionId: z.string() },
-    async ({ revisionId }) => txt(await trilium.getRevisionContent(revisionId))
+    async ({ revisionId }) => {
+      const revision = await trilium.getRevision(revisionId);
+      return txt(await trilium.getRevisionContentResult(revisionId, revision.type));
+    }
   );
 
   // ── Attachments ─────────────────────────────────────────────────────────────
@@ -369,42 +415,48 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "get_attachment_content",
-    "Read the content of a text/code attachment.",
+    "Read an attachment. Text returns its body; binary returns {encoding:'base64', mime, content}.",
     { attachmentId: z.string() },
-    async ({ attachmentId }) => txt(await trilium.getAttachmentContent(attachmentId))
+    async ({ attachmentId }) => txt(await trilium.getAttachmentContentResult(attachmentId))
   );
 
   server.tool(
     "create_attachment",
-    "Attach a file or text blob to a note (role: file | image).",
-    { ownerId: z.string(), title: z.string(), mime: z.string(), content: z.string().describe("Text content (base64 for binary)"), role: z.enum(["file", "image"]).optional() },
-    async ({ ownerId, title, mime, content, role }) => {
-      const att = await trilium.createAttachment(ownerId, title, mime, content, role ?? "file");
-      return txt({ id: att.attachmentId, title: att.title, mime: att.mime, size: att.contentLength });
+    "Attach a file or text blob to a note (role: file | image). Binary content uses standard base64 and is uploaded as raw bytes.",
+    { ownerId: z.string(), title: z.string(), mime: z.string(), content: z.string().describe("Text content, or standard base64 for binary"), role: z.enum(["file", "image"]).optional(), encoding: z.enum(["auto", "text", "base64"]).optional() },
+    async ({ ownerId, title, mime, content, role, encoding }) => {
+      try {
+        const att = await trilium.createAttachment(ownerId, title, mime, content, role ?? "file", encoding ?? "auto");
+        return txt({ id: att.attachmentId, title: att.title, mime: att.mime, size: att.contentLength, contentUploaded: att.contentUploaded ?? true });
+      } catch (error) {
+        if (error instanceof PartialContentUploadError) return txt({ ok: false, error: "partial_upload", entityType: error.entityType, entityId: error.entityId, contentUploaded: false, detail: error.message });
+        throw error;
+      }
     }
   );
 
   server.tool(
     "update_attachment",
-    "Update an attachment's content and/or metadata (title, mime). Pass content to replace the binary/text data in place; pass title/mime to update metadata only.",
+    "Update an attachment's content and/or metadata. MIME changes are applied before raw binary content so the server never coerces bytes using the old type.",
     {
       attachmentId: z.string(),
       title: z.string().optional(),
-      mime: z.string().optional().describe("MIME type — also used as Content-Type when writing content"),
-      content: z.string().optional().describe("New content (replaces existing; text or base64 for binary)"),
+      mime: z.string().optional().describe("Stored MIME metadata; raw uploads use text/plain or application/octet-stream as appropriate"),
+      content: z.string().optional().describe("New content; binary must be standard base64"),
+      encoding: z.enum(["auto", "text", "base64"]).optional(),
     },
-    async ({ attachmentId, title, mime, content }) => {
-      if (content != null) {
-        await trilium.updateAttachmentContent(attachmentId, content, mime ?? "text/plain");
-      }
+    async ({ attachmentId, title, mime, content, encoding }) => {
       if (title != null || mime != null) {
         const fields: { title?: string; mime?: string } = {};
         if (title != null) fields.title = title;
         if (mime != null) fields.mime = mime;
-        const att = await trilium.updateAttachment(attachmentId, fields);
-        return txt({ id: att.attachmentId, title: att.title, mime: att.mime, contentUpdated: content != null });
+        await trilium.updateAttachment(attachmentId, fields);
       }
-      return txt({ ok: true, attachmentId, contentUpdated: content != null });
+      if (content != null) {
+        const current = mime ?? (await trilium.getAttachment(attachmentId).then((a) => a.mime).catch(() => "text/plain"));
+        await trilium.updateAttachmentContent(attachmentId, content, current, encoding ?? "auto");
+      }
+      return txt({ id: attachmentId, contentUpdated: content != null, metadataUpdated: title != null || mime != null });
     }
   );
 
@@ -466,15 +518,19 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "create_backup",
-    "Trigger a named Trilium database backup. The backup file is written to Trilium's backup directory as <name>.db (default name: brainllm-{date}). Use a descriptive name for milestone snapshots (e.g. 'before-migration').",
+    "Trigger a named Trilium database backup. ETAPI confirms the logical request completed but does not expose the resulting file path or format (it may be .db or .tnbackup). Use a descriptive name for milestone snapshots (e.g. 'before-migration').",
     {
       name: z.string().optional().describe("Backup file name without .db extension (default: brainllm-{today})"),
       date: z.string().optional().describe("ISO date used in the default name when name is omitted (default: today)"),
     },
     async ({ name, date }) => {
       const backupName = name ?? `brainllm-${date ?? localToday()}`;
-      await trilium.createBackup(backupName);
-      return txt({ ok: true, backup: `${backupName}.db` });
+      try {
+        await trilium.createBackup(backupName);
+        return txt({ ok: true, backup: backupName, backupStatus: "completed" });
+      } catch (error) {
+        return txt({ ok: false, backup: backupName, backupStatus: "failed", error: error instanceof Error ? error.message : String(error) });
+      }
     }
   );
 }

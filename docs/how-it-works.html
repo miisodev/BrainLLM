@@ -33,6 +33,8 @@
   </div>
 </nav>
 
+<main>
+
 <header class="hero">
   <span class="pill"><span class="dot"></span>how it works</span>
   <h1>A brain with <span class="accent">rules</span>, not a pile of embeddings</h1>
@@ -44,11 +46,11 @@
     <div class="section-head"><div class="eyebrow">The tree</div><h2>Five areas, built on first run</h2>
       <p>Created by <code>bootstrap()</code> against a fresh Trilium instance. The root carries a discovery marker, and every structural note is engraved with its purpose at creation.</p></div>
     <div class="card">
-<pre class="tree">BrainLLM
+<pre class="tree" tabindex="0" aria-label="Memory tree example">BrainLLM
 ├── <span class="area">👤 Master</span>      the user — durable identity
-│   └── Biography · Goals · Preferences        <span class="note">3 singletons</span>
+│   └── Biography · Goals · Preferences        <span class="note">maintained singletons</span>
 ├── <span class="area">🤖 LLM</span>         the assistant's self-model
-│   ├── Responsibilities · Protocols · Self-correction  <span class="note">3 singletons</span>
+│   ├── Responsibilities · Protocols · Self-correction  <span class="note">maintained singletons</span>
 │   └── Diary/          <span class="note">one [yyyy-mm-dd] note per day</span>
 ├── <span class="area">🗂️ Memory</span>      the operational record
 │   ├── Sessions/       <span class="note">one [yyyy-mm-dd] note per day</span>
@@ -60,17 +62,18 @@
 │   └── Domains/        <span class="note">one Sources note + N information notes</span>
 └── <span class="area">💡 Insights</span>    the brain's record of itself
     ├── Logs/           <span class="note">auto-generated daily change log</span>
-    └── Graph           <span class="note">live Mermaid render of the relation graph</span></pre>
+    ├── Graph           <span class="note">live Mermaid render of the relation graph</span>
+     └── Claims          <span class="note">assertions checked against the world</span></pre>
     </div>
   </div>
 </section>
 
 <section class="band">
   <div class="wrap">
-    <div class="section-head"><div class="eyebrow">Note classes</div><h2>Three behaviours, fourteen kinds</h2>
+    <div class="section-head"><div class="eyebrow">Note classes</div><h2>Three behaviours, sixteen kinds</h2>
       <p>What a note <em>is</em> determines how writes to it behave. This is the distinction that keeps a knowledge base from decaying into a changelog.</p></div>
     <div class="grid grid-3">
-      <div class="card"><h3>Singletons</h3><p>Exactly one maintained note; writes upsert into it. They hold <strong>current-state truth, edited in place</strong> — biography, goals, preferences, responsibilities, protocols, and each domain's Sources note.</p></div>
+      <div class="card"><h3>Singletons</h3><p>Exactly one maintained note; writes upsert into it. They hold <strong>current-state truth, edited in place</strong> — biography, goals, preferences, responsibilities, protocols, self-correction, and each domain's Sources note.</p></div>
       <div class="card"><h3>Dated records</h3><p>One per calendar day, titled by date. Diary and session writes append a timestamped block, because chronology <em>is</em> the point. The daily log is regenerated in place — one clean snapshot, never stacked.</p></div>
       <div class="card"><h3>Collections</h3><p>Titled notes, deduplicated by normalised title within their scope. A thread is itself a book: its body holds only Context and Resolution, and each active day gets its own child.</p></div>
     </div>
@@ -82,7 +85,7 @@
     <div class="section-head"><div class="eyebrow">Lifecycle</div><h2>Threads age. Nothing is deleted.</h2>
       <p>Degradation demotes rather than removes, so an archived note keeps its content and stays retrievable. Any touch reactivates it.</p></div>
     <div class="card">
-<pre class="tree">active  <span class="note">──────────────▶</span>  resolved | superseded   <span class="note">terminal, archived in place</span>
+<pre class="tree" tabindex="0" aria-label="Memory tree example">active  <span class="note">──────────────▶</span>  resolved | superseded   <span class="note">terminal, archived in place</span>
   │ <span class="note">untouched 21 days</span>
   ▼
 dormant <span class="note">──────────────▶</span>  archived in place       <span class="note">#archived + #closed</span>
@@ -113,7 +116,7 @@ dormant <span class="note">──────────────▶</span> 
     <div class="section-head center"><div class="eyebrow">The gate</div><h2>Ordered, durable, and checked by tool call</h2>
       <p>A session can't commit until every step has run — and in the right order, because the diary is the closing record and should be written with the reflection cues in hand.</p></div>
     <div class="card">
-<pre class="term">session()  <span class="c">→</span>  addendum()  <span class="c">→</span>  maintain()  <span class="c">→</span>  <span class="a">remarks()</span>  <span class="c">→</span>  <span class="a">diary()</span>  <span class="c">→</span>  close()
+<pre class="term" tabindex="0" aria-label="Code example">session()  <span class="c">→</span>  addendum()  <span class="c">→</span>  maintain()  <span class="c">→</span>  <span class="a">remarks()</span>  <span class="c">→</span>  <span class="a">diary()</span>  <span class="c">→</span>  close()
 
 <span class="c">Gate state lives on today's session note as a label, not in process
 memory — so it survives a restart and behaves identically whether the
@@ -130,6 +133,8 @@ server is running over stdio or behind a load balancer.</span></pre>
     <a class="btn btn-ghost" href="use-cases.html">See use cases</a>
   </div>
 </div>
+
+</main>
 
 <footer>
   <div class="wrap foot">

@@ -16,7 +16,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { TriliumClient, type Note, type RecentChange, ownedLabel, relationSnippet, type RelationEdge } from "./trilium.js";
+import { TriliumClient, type Note, type RecentChange, ownedLabel, isOwnedAttribute, relationSnippet, type RelationEdge, PartialContentUploadError } from "./trilium.js";
 import { type BrainLLMConfig, saveConfig } from "./config.js";
 import {
   Kinds,
@@ -81,7 +81,7 @@ import {
 import { sweep, buildDigest, applyResolution, isStructural, isContainer, type SweepReport } from "./lifecycle.js";
 import { createBrainLLMStructure, containerPurposes } from "./bootstrap.js";
 import { generateDailyLog, catchUpDeletions } from "./journal.js";
-import { localToday, localNowTime } from "./time.js";
+import { checkedDate, localToday, localNowTime } from "./time.js";
 import { registerMasterTools } from "./tools-master.js";
 import { registerLlmTools } from "./tools-llm.js";
 import { registerMemoryTools } from "./tools-memory.js";
@@ -102,10 +102,10 @@ const err = (code: string, detail: string, hint?: string) =>
   txt({ error: code, detail, ...(hint ? { hint } : {}) });
 
 const labelOf = (n: Note, name: string) =>
-  n.attributes.find((a) => a.type === "label" && a.name === name)?.value;
+  n.attributes.find((a) => isOwnedAttribute(n, a) && a.type === "label" && a.name === name)?.value;
 
 const hasLabel = (n: Note, name: string) =>
-  n.attributes.some((a) => a.type === "label" && a.name === name);
+  n.attributes.some((a) => isOwnedAttribute(n, a) && a.type === "label" && a.name === name);
 
 /** Insert a section before the Resolution anchor (or append). */
 function insertBeforeResolution(html: string, section: string): string {
@@ -182,15 +182,16 @@ export function registerTools(
   let preCloseSeq = 0;
   const REQUIRED_PRECLOSE_STEPS = ["session", "addendum", "maintain", "remarks", "diary"] as const;
 
-  /** Today's session note, the gate's durable home. Null before start() has
-   *  created it — the gate then degrades to the in-memory cache, which is
-   *  correct because close() refuses on missing steps anyway. */
+  /** Today's session note, the gate's durable home. Search failures propagate:
+   *  a missing note and an unavailable Trilium connection are different states,
+   *  and treating the latter as "no gate" would let close() certify fiction. */
   const gateNote = async (date: string): Promise<string | null> => {
     const cfg = b();
     if (!cfg.memory.sessions) return null;
-    const found = await trilium
-      .searchNotes(`#noteType=session #created='${date}'`, { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 1 })
-      .catch(() => ({ results: [] as Note[] }));
+    const found = await trilium.searchNotes(
+      `#noteType=session #created='${date}'`,
+      { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 1 },
+    );
     return found.results[0]?.noteId ?? null;
   };
 
@@ -206,39 +207,37 @@ export function registerTools(
   const serializeGate = (m: Map<string, number>): string =>
     [...m.entries()].map(([step, seq]) => `${step}:${seq}`).join(",");
 
-  /** Record a completed pre-close step, write-through to today's session note. */
+  /** Record a completed pre-close step, write-through to today's session note.
+   *  The durable write is authoritative; the in-memory map is only a cache and
+   *  is updated after it succeeds. */
   const markStep = async (step: string, date?: string): Promise<void> => {
-    const d = date ?? today();
-    preCloseSteps.set(step, ++preCloseSeq);
+    const d = checkedDate(date);
     const noteId = await gateNote(d);
-    if (!noteId) return;
-    const note = await trilium.getNote(noteId).catch(() => null);
-    if (!note) return;
+    if (!noteId) throw new Error(`Cannot record pre-close step "${step}": today's session note was not found`);
+    const note = await trilium.getNote(noteId);
     const stored = parseGate(labelOf(note, "gate"));
     const next = Math.max(preCloseSeq, ...[...stored.values()], 0) + 1;
     stored.set(step, next);
+    await trilium.updateLabelValue(noteId, "gate", serializeGate(stored));
+    preCloseSteps.set(step, next);
     preCloseSeq = next;
-    await trilium.updateLabelValue(noteId, "gate", serializeGate(stored)).catch(() => null);
   };
 
-  /** The authoritative gate state: what the session note records, merged with
-   *  anything this process marked that hasn't landed there (a label write can
-   *  fail without failing the step it describes). */
+  /** Read the authoritative durable gate state. */
   const readGate = async (date: string): Promise<Map<string, number>> => {
     const noteId = await gateNote(date);
-    if (!noteId) return new Map(preCloseSteps);
-    const note = await trilium.getNote(noteId).catch(() => null);
-    const stored = parseGate(note ? labelOf(note, "gate") : undefined);
-    for (const [step, seq] of preCloseSteps) if (!stored.has(step)) stored.set(step, seq);
-    return stored;
+    if (!noteId) return new Map();
+    const note = await trilium.getNote(noteId);
+    return parseGate(labelOf(note, "gate"));
   };
 
-  /** Clear the gate after a successful close so the next session re-arms. */
+  /** Clear the durable gate after a successful close so the next session re-arms. */
   const clearGate = async (date: string): Promise<void> => {
+    const noteId = await gateNote(date);
+    if (!noteId) throw new Error("Cannot clear the pre-close gate: today's session note was not found");
+    await trilium.updateLabelValue(noteId, "gate", "");
     preCloseSteps.clear();
     preCloseSeq = 0;
-    const noteId = await gateNote(date);
-    if (noteId) await trilium.updateLabelValue(noteId, "gate", "").catch(() => null);
   };
 
   // Chronological records legitimately repeat headings across addendum blocks —
@@ -274,9 +273,10 @@ export function registerTools(
   async function findExisting(kind: AnyKind, title: string): Promise<Note | null> {
     const scope = dedupScope(b(), kind);
     if (!scope) return null;
-    const res = await trilium
-      .searchNotes(`#noteType=${kind}`, { ancestorNoteId: scope, fastSearch: true, limit: 100 })
-      .catch(() => ({ results: [] as Note[] }));
+    const res = await trilium.searchNotes(
+      `#noteType=${kind}`,
+      { ancestorNoteId: scope, fastSearch: true, limit: 100 },
+    );
     const typedHit = res.results.find((n) => sameTitle(n.title, title));
     if (typedHit) return typedHit;
 
@@ -311,19 +311,20 @@ export function registerTools(
     block: string,
     d: string
   ): Promise<{ noteId: string; action: "created" | "appended" | "already_written" }> {
-    const found = await trilium
-      .searchNotes(`#noteType=threadEntry #created='${d}'`, { ancestorNoteId: threadId, fastSearch: true, limit: 1 })
-      .catch(() => ({ results: [] as Note[] }));
+    const found = await trilium.searchNotes(
+      `#noteType=threadEntry #created='${d}'`,
+      { ancestorNoteId: threadId, fastSearch: true, limit: 1 },
+    );
     const time = localNowTime();
 
     if (found.results[0]) {
       const noteId = found.results[0].noteId;
-      const current = fixRecordHeader(await trilium.getNoteContent(noteId).catch(() => ""), "threadEntry", d).html;
+      const current = fixRecordHeader(await trilium.getNoteContent(noteId), "threadEntry", d).html;
       const norm = (s: string) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().toLowerCase();
       const incoming = norm(block);
       const blocks = current.split(/<h2>Addendum — \d{2}:\d{2}<\/h2>\n?/i).slice(1);
       if (incoming && blocks.some((b) => norm(b) === incoming)) return { noteId, action: "already_written" };
-      await trilium.createRevision(noteId).catch(() => null);
+      await trilium.createRevision(noteId);
       await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Addendum — ${time}</h2>`, block));
       await trilium.updateLabelValue(noteId, "updated", d);
       return { noteId, action: "appended" };
@@ -353,7 +354,7 @@ session needs them whole before it knows enough to ask for them. Biography, goal
 responsibilities come back as section headings + preview.
 Runs maintenance, creates today's diary and session notes if not yet open, then returns: today
 and weekday, the Master digest (biography / goals / preferences), the LLM digest
-(responsibilities / protocols / today's diary preview and ID), this session's note ID, active
+(responsibilities / protocols / self-correction / today's diary preview and ID), this session's note ID, active
 threads with idle ages, dormant threads for review, the last session summary, and
 changesSinceLastSession (notes modified in the brain since the previous session).
 
@@ -363,7 +364,7 @@ default because orientation used to serve every singleton in full on every sessi
 one-line question paid the same several-thousand-token cost as a full day's work. Pass
 depth="full" when the session genuinely needs the whole self-model up front — a strategy
 review, a singleton rewrite, a first session on a new machine. Read the headings first: most
-sessions need one section, not five documents.`,
+sessions need one section, not six documents.`,
     {
       depth: z.enum(["digest", "full"]).optional().describe('Singleton detail: "digest" (default — section headings + preview + size) or "full" (every singleton inline; token-heavy)'),
     },
@@ -494,7 +495,7 @@ Returns pending= — how much each remaining step actually has to do (addendum m
 maintenance flags already raised, diary blocks written today, which singletons were written
 today). The close protocol is ~7 tools landing exactly when context is scarcest, and reciting
 every step unconditionally spends that context on steps with nothing to do. Also returns audit=,
-a cross-singleton check nothing else performs: whether the five singletons agree with each other,
+a cross-singleton check nothing else performs: whether the six singletons agree with each other,
 AND whether the LLM's operating rules still serve what the user's goals and preferences call for
 — a semantic question, not a textual one, which consistency() and maintain() cannot answer.
 
@@ -503,7 +504,7 @@ step is tracked by the tool call itself, not by sequence), but close() enforces 
 of diary(), session() [this call], remarks(), addendum(), and maintain() actually ran before it
 will commit the log:
 1. Update master singletons (biography / goals / preferences) via revise() with session observations about the user.
-2. Update LLM singletons (responsibilities / protocols) via revise() with session observations about yourself.
+2. Update LLM singletons (responsibilities / protocols / self-correction) via revise() with session observations about yourself.
 3. Call addendum() — find and merge pending addendums.
 4. Call maintain() — full brain hygiene audit.
 5. Call remarks() — get the diary cues (your experience/opinions/existence this session, plus BrainLLM remarks).
@@ -520,11 +521,11 @@ rather than listing them unconditionally for every caller to work around.`,
       light: z.boolean().optional().describe("Deprecated — light is now the default; accepted for compatibility and ignored"),
     },
     async ({ date, full, scope }) => {
-      const d = date ?? today();
+      const d = checkedDate(date);
       const cfg = b();
       if (!cfg.master.root || !cfg.llm.root)
         throw new Error("BrainLLM not bootstrapped — run bootstrap.");
-      await markStep("session", d);
+      // The gate is marked only after every read/sweep above succeeds.
 
       const fetchSingleton = async (id: string) => {
         if (!full) {
@@ -625,6 +626,7 @@ rather than listing them unconditionally for every caller to work around.`,
         singletonsWrittenToday: touchedToday.length ? touchedToday : "none",
       };
 
+      await markStep("session", d);
       const scoped = scope === "agent";
       return txt({
         date: d,
@@ -690,14 +692,14 @@ diary entry:
   brainllm (additional) — your remarks and opinions on BrainLLM itself: capabilities hit walls,
                           bugs, usability, efficiency, and where it should go next.
 
-This tool writes nothing — answer the cues as prose in today's diary via diary(). Skip a cue
+This tool is cue-only for content, but the call durably marks the remarks pre-close gate. Answer the cues as prose in today's diary via diary(). Skip a cue
 outright rather than padding it; two honest paragraphs beat eight forced ones.`,
     {},
     async () => {
       const cfg = b();
       if (!cfg.root) return txt({ status: "uninitialized", action: "Run bootstrap first." });
-      await markStep("remarks");
 
+      await markStep("remarks");
       return txt({
         cues: {
           experience: [
@@ -730,7 +732,7 @@ each step's last call): the diary is the day's closing record, written with the 
 hand. Pass force=true only when a listed step genuinely has nothing to do this session (e.g. a
 trivial one-message exchange); the return will say which steps were bypassed.
 
-Idempotent per date: a second call the same day appends an addendum to the existing session
+Idempotent per date: an exact retry is duplicate-guarded; a genuinely new same-day continuation appends an addendum to the existing session
 note. The session note title is always [yyyy-mm-dd]; the title param appears as an <h2> heading
 above Summary. Generates the daily log and triggers a database backup. On success, the gate
 resets for the next session.
@@ -753,7 +755,7 @@ Unlike force, it is not a bypass of anything that had work to do.`,
       force: z.boolean().optional().describe("Bypass the pre-close gate — only when a missing step truly has nothing to log"),
     },
     async ({ summary, title, identity, learned, icon, date, backup, continuing, force }) => {
-      const gateDate = date ?? today();
+      const gateDate = checkedDate(date);
       const cfgForGate = b();
 
       // A same-day continuation: verify it really is one before letting it past
@@ -761,11 +763,12 @@ Unlike force, it is not a bypass of anything that had work to do.`,
       // the gate exists to prevent.
       let continued = false;
       if (continuing) {
-        const prior = await trilium
-          .searchNotes(`#noteType=session #created='${gateDate}'`, { ancestorNoteId: cfgForGate.memory.sessions, fastSearch: true, limit: 1 })
-          .catch(() => ({ results: [] as Note[] }));
+        const prior = await trilium.searchNotes(
+          `#noteType=session #created='${gateDate}'`,
+          { ancestorNoteId: cfgForGate.memory.sessions, fastSearch: true, limit: 1 },
+        );
         const priorContent = prior.results[0]
-          ? await trilium.getNoteContent(prior.results[0].noteId).catch(() => "")
+          ? await trilium.getNoteContent(prior.results[0].noteId)
           : "";
         continued = /<h2(?:\s[^>]*)?>\s*Addendum/i.test(priorContent);
         if (!continued) {
@@ -803,7 +806,7 @@ Unlike force, it is not a bypass of anything that had work to do.`,
         );
       }
 
-      const d = date ?? today();
+      const d = checkedDate(date);
       const cfg = b();
       const parentId = cfg.memory.sessions;
       if (!parentId) throw new Error("BrainLLM not bootstrapped — run bootstrap.");
@@ -828,25 +831,30 @@ Unlike force, it is not a bypass of anything that had work to do.`,
       const contentBlock = sections.join("\n");
 
       // Idempotent per date — search by label, not by title.
-      const existing = await trilium
-        .searchNotes(`#noteType=session #created='${d}'`, { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 5 })
-        .catch(() => ({ results: [] as Note[] }));
+      const existing = await trilium.searchNotes(
+        `#noteType=session #created='${d}'`,
+        { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 5 },
+      );
 
       let noteId: string;
-      let action: "created" | "appended";
+      let action: "created" | "appended" | "already_written";
       if (existing.results[0]) {
         noteId = existing.results[0].noteId;
         // Dated-record header guard: correct a stale meta-line date (rewrite
         // residue) to the note's canonical date before appending.
-        const current = fixRecordHeader(await trilium.getNoteContent(noteId).catch(() => ""), "session", d).html;
+        const current = fixRecordHeader(await trilium.getNoteContent(noteId), "session", d).html;
         const time = localNowTime();
         const hasContent = current.includes("<h2>Summary</h2>") || /<h2>addendum/i.test(current);
-        if (hasContent) {
+        if (hasContent && isDuplicateAppend(current, contentBlock)) {
+          action = "already_written";
+        } else if (hasContent) {
+          await trilium.createRevision(noteId);
           await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Addendum — ${time}</h2>`, contentBlock));
           action = "appended";
         } else {
           // Records are chronological: even the first commit of the day lands
           // as a timestamped addendum block, so every entry reads the same.
+          await trilium.createRevision(noteId);
           await trilium.updateNoteContent(noteId, contentFor("session", { date: d, body: `<h2>Addendum — ${time}</h2>\n${contentBlock}` }));
           action = "created";
         }
@@ -869,7 +877,7 @@ Unlike force, it is not a bypass of anything that had work to do.`,
       // without any tool noticing.
       const caughtUp = await catchUpDeletions(trilium, cfg, d).catch(() => null);
 
-      const logReport = await generateDailyLog(trilium, cfg, d).catch(() => null);
+      const logReport = await generateDailyLog(trilium, cfg, d);
 
       // Wire session ↔ log with ~references relations — genuinely idempotent:
       // check each side's existing edges first (the V8 unconditional adds
@@ -885,8 +893,16 @@ Unlike force, it is not a bypass of anything that had work to do.`,
         if (!hasEdge(logNote, noteId)) await trilium.addRelation(logReport.noteId, "references", noteId).catch(() => null);
       }
 
-      let backedUp = false;
-      if (backup !== false) backedUp = await trilium.createBackup(d).then(() => true).catch(() => false);
+      let backupStatus: "disabled" | "completed" | "failed" = "disabled";
+      let backupName = `brainllm-${d}`;
+      if (backup !== false) {
+        try {
+          await trilium.createBackup(backupName);
+          backupStatus = "completed";
+        } catch {
+          backupStatus = "failed";
+        }
+      }
 
       await clearGate(d);
 
@@ -894,9 +910,12 @@ Unlike force, it is not a bypass of anything that had work to do.`,
         action,
         noteId,
         date: d,
-        backup: backedUp ? `brainllm-${d}.db` : "skipped",
+        backup: backupName,
+        backupStatus,
         log: logReport ? `${logReport.action} (${logReport.created}c/${logReport.updated}u/${logReport.deleted}d)` : "skipped",
-        ...(caughtUp && caughtUp.deletionsFound
+        ...(caughtUp?.coverage === "unknown"
+          ? { deletionCatchUp: "unknown — Trilium's deletion history could not be read; the configured catch-up window is not fully verified" }
+          : caughtUp && caughtUp.deletionsFound
           ? { deletionCatchUp: `${caughtUp.deletionsFound} deletion(s) caught up — logs regenerated for: ${caughtUp.regenerated.join(", ")}` }
           : {}),
         ...(iconSet ? { icon: iconSet } : {}),
@@ -920,8 +939,12 @@ close() already triggers a backup automatically — use this for on-demand miles
     async ({ name }) => {
       const d = today();
       const backupName = name ?? `brainllm-${d}`;
-      await trilium.createBackup(backupName);
-      return txt({ ok: true, backup: `${backupName}.db`, date: d });
+      try {
+        await trilium.createBackup(backupName);
+        return txt({ ok: true, backup: backupName, backupStatus: "completed", date: d });
+      } catch (error) {
+        return txt({ ok: false, backup: backupName, backupStatus: "failed", error: error instanceof Error ? error.message : String(error), date: d });
+      }
     }
   );
 
@@ -949,11 +972,10 @@ automatically.`,
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
     },
     async ({ body, identity, icon, date }) => {
-      const d = date ?? today();
+      const d = checkedDate(date);
       const cfg = b();
       const parentId = cfg.llm.diary;
       if (!parentId) throw new Error('BrainLLM not bootstrapped — run bootstrap.');
-      await markStep("diary", d);
       const sanitized = renderBody(body);
       const warnings = sanitized.warnings;
       // Canonical diary structure: every addendum block opens with the
@@ -968,14 +990,15 @@ automatically.`,
       }
       const html = identity && !leadingIdentification(sanitized.html) ? `<h3>${escapeHtml(identity)}</h3>\n${sanitized.html}` : sanitized.html;
 
-      const found = await trilium
-        .searchNotes(`#noteType=diary #created='${d}'`, { ancestorNoteId: parentId, fastSearch: true, limit: 1 })
-        .catch(() => ({ results: [] as Note[] }));
+      const found = await trilium.searchNotes(
+        `#noteType=diary #created='${d}'`,
+        { ancestorNoteId: parentId, fastSearch: true, limit: 1 },
+      );
 
       if (found.results[0]) {
         const noteId = found.results[0].noteId;
         // Dated-record header guard: correct a stale meta-line date before appending.
-        const current = fixRecordHeader(await trilium.getNoteContent(noteId).catch(() => ""), "diary", d).html;
+        const current = fixRecordHeader(await trilium.getNoteContent(noteId), "diary", d).html;
         const time = localNowTime();
 
         // Idempotency guard: the diary note is one-per-day, so every addendum
@@ -988,6 +1011,7 @@ automatically.`,
         const incoming = norm(html);
         const blocks = current.split(/<h2>Addendum — \d{2}:\d{2}<\/h2>\n?/i).slice(1);
         if (incoming && blocks.some((b) => norm(b) === incoming)) {
+          await markStep("diary", d);
           return txt({ action: "already_written", noteId, date: d });
         }
 
@@ -995,6 +1019,7 @@ automatically.`,
         await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Addendum — ${time}</h2>`, html));
         await trilium.updateLabelValue(noteId, "updated", d);
         const iconSet = await applyIcon(noteId, icon);
+        await markStep("diary", d);
         return txt({ action: "appended", noteId, date: d, ...(iconSet ? { icon: iconSet } : {}), ...(warnings.length ? { sanitized: warnings } : {}) });
       }
 
@@ -1006,7 +1031,8 @@ automatically.`,
       await trilium.addLabel(noteId, "noteType", "diary");
       await trilium.addLabel(noteId, "created", d);
       const iconSet = await applyIcon(noteId, icon);
-      return txt({ action: "created", noteId, date: d, location: locationLabel("diary"), ...(iconSet ? { icon: iconSet } : {}), ...(warnings.length ? { sanitized: warnings } : {}) });
+      await markStep("diary", d);
+       return txt({ action: "created", noteId, date: d, location: locationLabel("diary"), ...(iconSet ? { icon: iconSet } : {}), ...(warnings.length ? { sanitized: warnings } : {}) });
     }
   );
 
@@ -1073,7 +1099,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           `Read it first with ${kind === "thread" ? "memory" : "knowledge"}(${existingId}). To add to it deliberately, re-run without mustCreate, or use revise(${existingId}, …). To keep both, pick a title that distinguishes them.`
         );
       const opts: RememberOpts = { domain, topics, date, ...(mandate ? { mandate: true } : {}) };
-      const d = date ?? today();
+      const d = checkedDate(date);
       const { html, warnings: sanitizeWarnings } = renderBody(body ?? "");
 
       // strict= mirrors revise(): a body whose tag structure the sanitizer had
@@ -1107,7 +1133,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       /** Append content into a single maintained note. Returns false (no-op) if the
        *  last addendum already carries the same normalised content — retry-safe. */
       const upsertInto = async (id: string): Promise<boolean> => {
-        const current = await trilium.getNoteContent(id).catch(() => "");
+        const current = await trilium.getNoteContent(id);
         if (isDuplicateAppend(current, html)) return false;
         await trilium.createRevision(id).catch(() => null);
         await trilium.updateNoteContent(id, safeAppend(current, `<h2>Addendum — ${d}</h2>`, html));
@@ -1125,11 +1151,11 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         const wiredEdges: RelationEdge[] = [];
         for (const { relation, toNoteId } of connectRels) {
           if (toNoteId === noteId) continue;
-          const exists = from.attributes.some((a) => a.type === "relation" && a.name === relation && a.value === toNoteId);
+          const exists = from.attributes.some((a) => isOwnedAttribute(from, a) && a.type === "relation" && a.name === relation && a.value === toNoteId);
           if (!exists) await trilium.addRelation(noteId, relation, toNoteId).catch(() => null);
           if (SymmetricRelations.includes(relation)) {
             const to = await trilium.getNote(toNoteId).catch(() => null);
-            if (to && !to.attributes.some((a) => a.type === "relation" && a.name === relation && a.value === noteId)) {
+            if (to && !to.attributes.some((a) => isOwnedAttribute(to, a) && a.type === "relation" && a.name === relation && a.value === noteId)) {
               await trilium.addRelation(toNoteId, relation, noteId).catch(() => null);
             }
           }
@@ -1178,7 +1204,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           }
           wrote = true;
         } else if (html && toText(html, 50)) {
-          const current = await trilium.getNoteContent(sid).catch(() => "");
+          const current = await trilium.getNoteContent(sid);
           if (!current.includes(html)) {
             await trilium.createRevision(sid).catch(() => null);
             // Group-by-group, not a wholesale append: appending an incoming
@@ -1199,7 +1225,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         // every time the same source gets re-verified.
         const revisionChanges: string[] = [];
         if (sid && revision?.length) {
-          let current = await trilium.getNoteContent(sid).catch(() => "");
+          let current = await trilium.getNoteContent(sid);
           let changed = false;
           for (const row of revision) {
             const result = upsertTableRow(current, "Revision", row.source, [row.marker, row.date ?? d]);
@@ -1277,12 +1303,16 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         const existing = inDomain.results.find((n) => sameTitle(n.title, subTitle));
         if (existing && mustCreate) return refuseAdoption(existing.noteId, existing.title, `in domain "${domainTitle}"`);
         if (existing) {
-          const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
-          if (isDuplicateAppend(current, html)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title, domainId });
+          const current = await trilium.getNoteContent(existing.noteId);
+          if (isDuplicateAppend(current, html)) {
+            if (mandate && !ownedLabel(existing, "mandate")) await trilium.addLabel(existing.noteId, "mandate", "");
+            return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title, domainId });
+          }
           await trilium.createRevision(existing.noteId).catch(() => null);
           const appended = bumpLastUpdated(safeAppend(current, `<h2>Addendum — ${d}</h2>`, html), d);
           await trilium.updateNoteContent(existing.noteId, appended.html);
           await trilium.updateLabelValue(existing.noteId, "updated", d);
+          if (mandate && !ownedLabel(existing, "mandate")) await trilium.addLabel(existing.noteId, "mandate", "");
           const connected = await wireRequested(existing.noteId);
           const iconSet = await applyIcon(existing.noteId, icon);
           const relations = relationSnippet(existing);
@@ -1351,7 +1381,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           await trilium.updateLabelValue(existing.noteId, "updated", d);
           for (const t of topics ?? []) {
             const slug = slugify(t);
-            if (slug && !existing.attributes.some((a) => a.name === "topic" && a.value === slug)) {
+            if (slug && !existing.attributes.some((a) => isOwnedAttribute(existing, a) && a.name === "topic" && a.value === slug)) {
               await trilium.addLabel(existing.noteId, "topic", slug);
             }
           }
@@ -1361,7 +1391,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
           return txt({ action: "updated", noteId: existing.noteId, entryId: entry.noteId, entryAction: entry.action, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
         }
 
-        const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
+        const current = await trilium.getNoteContent(existing.noteId);
         if (isDuplicateAppend(current, block)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title });
         await trilium.createRevision(existing.noteId).catch(() => null);
         const updatedContent = bumpLastUpdated(insertBeforeResolution(closeDangling(current), `<h2>Addendum — ${d}</h2>\n${block}`), d);
@@ -1369,7 +1399,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         await trilium.updateLabelValue(existing.noteId, "updated", d);
         for (const t of topics ?? []) {
           const slug = slugify(t);
-          if (slug && !existing.attributes.some((a) => a.name === "topic" && a.value === slug)) {
+          if (slug && !existing.attributes.some((a) => isOwnedAttribute(existing, a) && a.name === "topic" && a.value === slug)) {
             await trilium.addLabel(existing.noteId, "topic", slug);
           }
         }
@@ -1802,9 +1832,14 @@ efficient path — read() returns whole bodies.`,
         ids.map(async (id) => {
           try {
             const note = await trilium.getNote(id);
-            const content = await trilium.getNoteContent(id).catch(() => "");
+            const contentResult = await trilium.getNoteContentResult(id, note.type);
             const relations = relationSnippet(note);
-            return { id, title: note.title, kind: ownedLabel(note, "noteType") ?? undefined, content, ...(relations ? { relations } : {}) };
+            return {
+              id, title: note.title, kind: ownedLabel(note, "noteType") ?? undefined,
+              content: typeof contentResult === "string" ? contentResult : contentResult.content,
+              ...(typeof contentResult === "string" ? {} : { contentEncoding: contentResult.encoding, mime: contentResult.mime }),
+              ...(relations ? { relations } : {}),
+            };
           } catch {
             return { id, missing: true as const };
           }
@@ -1867,7 +1902,7 @@ target — which is what it used to do, emptying the target while reporting matc
     async ({ noteId, body, title, section, occurrence, mode, find, nth, edits, identity, icon, date, strict }) => {
       if (isContainer(b(), noteId))
         return err("protected_note", `Note ${noteId} is a container — its content cannot be edited directly.`, "Use remember() to write to singletons, or specify a content note id.");
-      const d = date ?? today();
+      const d = checkedDate(date);
       const note = await trilium.getNote(noteId);
       const noteKind = labelOf(note, "noteType");
       const warnings: string[] = [];
@@ -1978,7 +2013,7 @@ target — which is what it used to do, emptying the target while reporting matc
             : {};
         };
 
-        const current = await trilium.getNoteContent(noteId).catch(() => "");
+        const current = await trilium.getNoteContent(noteId);
         let working = current;
         const results: Array<{ find: string; replaced: number; matchMode?: string; hint?: string; matchedUpTo?: string; storedNearby?: string }> = [];
         let total = 0;
@@ -2051,7 +2086,7 @@ target — which is what it used to do, emptying the target while reporting matc
       // the `if (body)` guard that every other section mode lives behind —
       // which is precisely why deleting a section had no working path before.
       if (mode === "remove" && section) {
-        const current = await trilium.getNoteContent(noteId).catch(() => "");
+        const current = await trilium.getNoteContent(noteId);
         const result = setSection(current, section, "", "remove", occurrence ?? 1);
         if (!result.matched) {
           return txt({
@@ -2121,7 +2156,7 @@ target — which is what it used to do, emptying the target while reporting matc
           );
         }
 
-        const current = await trilium.getNoteContent(noteId).catch(() => "");
+        const current = await trilium.getNoteContent(noteId);
         if (section) {
           const sectionMode =
             mode === "append" || mode === "before" || mode === "after" || mode === "prepend" ? mode : "replace";
@@ -2255,13 +2290,13 @@ status, and archive it in place (it stays where it is, excluded from default rec
     async ({ noteId, outcome, status, supersededBy, date }) => {
       if (isStructural(b(), noteId))
         return err("protected_note", `Note ${noteId} is a structural note and cannot be resolved.`, "Only thread and content notes can be resolved.");
-      const d = date ?? today();
+      const d = checkedDate(date);
       const terminal = status ?? "resolved";
       const note = await trilium.getNote(noteId);
 
       const { html: outcomeHtml, warnings } = renderBody(outcome);
       await trilium.createRevision(noteId).catch(() => null);
-      const current = await trilium.getNoteContent(noteId).catch(() => "");
+      const current = await trilium.getNoteContent(noteId);
       await trilium.updateNoteContent(noteId, applyResolution(current, outcomeHtml, d));
       await trilium.updateLabelValue(noteId, "status", terminal);
       await trilium.updateLabelValue(noteId, "closed", d);
@@ -2318,12 +2353,19 @@ content notes.`,
     async ({ noteId, sections, into, date }) => {
       if (isStructural(b(), noteId))
         return err("protected_note", `Note ${noteId} is a structural note (container or singleton) and cannot be split.`, "split() is for content notes — pass a content note id, not a container.");
-      const d = date ?? today();
+      const d = checkedDate(date);
       const note = await trilium.getNote(noteId);
       const kind = labelOf(note, "noteType") ?? "information";
-      const current = await trilium.getNoteContent(noteId).catch(() => "");
+      const current = await trilium.getNoteContent(noteId);
 
       const result = extractSections(current, sections);
+      if (result.overlap.length) {
+        return err(
+          "overlapping_sections",
+          `The requested sections overlap: ${result.overlap.join(" and ")}.`,
+          "A parent section already contains its nested child; request the parent or child, not both."
+        );
+      }
       if (!result.matched.length)
         return err(
           "no_sections_matched",
@@ -2342,11 +2384,11 @@ content notes.`,
         return err("no_parent", "The source note has no parent — cannot place the split target.", "A content note should have exactly one parent.");
       const created = await trilium.createNote(parentId, cleanTitle, result.extracted, "text");
       const nid = created.note.noteId;
-      for (const l of labelPlan(kind as AnyKind, { domain: labelOf(note, "domain"), topics: (note.attributes.filter((a) => a.type === "label" && a.name === "topic").map((a) => a.value ?? "").filter(Boolean)) }, d)) {
+      for (const l of labelPlan(kind as AnyKind, { domain: labelOf(note, "domain"), topics: (note.attributes.filter((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === "topic").map((a) => a.value ?? "").filter(Boolean)) }, d)) {
         if (l.name === "noteType" || l.name === "created") await trilium.addLabel(nid, l.name, l.value, l.inheritable ?? false);
       }
       if (labelOf(note, "domain")) await trilium.addLabel(nid, "domain", labelOf(note, "domain")!).catch(() => null);
-      for (const t of note.attributes.filter((a) => a.type === "label" && a.name === "topic")) {
+      for (const t of note.attributes.filter((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === "topic")) {
         if (t.value) await trilium.addLabel(nid, "topic", t.value).catch(() => null);
       }
 
@@ -2359,7 +2401,7 @@ content notes.`,
 
       await trilium.addRelation(noteId, "references", nid).catch(() => null);
 
-      const remaining = await trilium.getNoteContent(noteId).catch(() => "");
+      const remaining = await trilium.getNoteContent(noteId);
       const remainingNote = await trilium.getNote(noteId).catch(() => null);
       return txt({
         ok: true,
@@ -2390,21 +2432,21 @@ Use when a resolved or dormant thread resurfaces as live work.`,
     async ({ noteId, reason, date }) => {
       if (isStructural(b(), noteId))
         return err("protected_note", `Note ${noteId} is structural and cannot be withdrawn.`);
-      const d = date ?? today();
+      const d = checkedDate(date);
       const note = await trilium.getNote(noteId);
       const kind = labelOf(note, "noteType");
       if (kind !== "thread")
         return err("wrong_kind", `withdraw() is for threads only — this note has kind "${kind ?? "untyped"}".`, "Use recover() to restore any other archived or resolved note.");
 
-      const archivedAttr = note.attributes.find((a) => a.type === "label" && a.name === "archived");
+      const archivedAttr = note.attributes.find((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === "archived");
       if (archivedAttr) await trilium.deleteAttribute(archivedAttr.attributeId).catch(() => null);
 
-      const closedAttr = note.attributes.find((a) => a.type === "label" && a.name === "closed");
+      const closedAttr = note.attributes.find((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === "closed");
       if (closedAttr) await trilium.deleteAttribute(closedAttr.attributeId).catch(() => null);
 
       await trilium.updateLabelValue(noteId, "status", "active");
 
-      const current = await trilium.getNoteContent(noteId).catch(() => "");
+      const current = await trilium.getNoteContent(noteId);
       const { html: withdrawHtml, warnings } = reason
         ? renderBody(reason)
         : { html: "<p><em>Thread re-activated.</em></p>", warnings: [] as string[] };
@@ -2490,7 +2532,7 @@ setting updated itself.`,
       const note = await trilium.getNote(noteId);
 
       if (remove) {
-        const attr = note.attributes.find((a) => a.type === "label" && a.name === name);
+        const attr = note.attributes.find((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === name);
         if (!attr) return txt({ ok: true, noteId, name, action: "not_found" });
         await trilium.deleteAttribute(attr.attributeId);
         if (name !== "updated") await trilium.updateLabelValue(noteId, "updated", today()).catch(() => null);
@@ -2537,11 +2579,11 @@ calling twice is safe. Use remove=true to delete an edge.`,
       }
 
       const from = await trilium.getNote(fromNoteId);
-      const exists = from.attributes.some((a) => a.type === "relation" && a.name === relation && a.value === toNoteId);
+      const exists = from.attributes.some((a) => isOwnedAttribute(from, a) && a.type === "relation" && a.name === relation && a.value === toNoteId);
       if (!exists) await trilium.addRelation(fromNoteId, relation, toNoteId);
       if (symmetric) {
         const to = await trilium.getNote(toNoteId);
-        const reverseExists = to.attributes.some((a) => a.type === "relation" && a.name === relation && a.value === fromNoteId);
+        const reverseExists = to.attributes.some((a) => isOwnedAttribute(to, a) && a.type === "relation" && a.name === relation && a.value === fromNoteId);
         if (!reverseExists) await trilium.addRelation(toNoteId, relation, fromNoteId);
       }
       return txt({ ok: true, action: exists ? "already-existed" : "created", edge: `${fromNoteId} ~${relation}${symmetric ? "↔" : "→"} ${toNoteId}` });
@@ -2568,7 +2610,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
         case "links": {
           const note = await trilium.getNote(noteId);
           const rels = note.attributes.filter(
-            (a) => a.type === "relation" && a.name !== "template" && (!relation || a.name === relation)
+            (a) => isOwnedAttribute(note, a) && a.type === "relation" && a.name !== "template" && (!relation || a.name === relation)
           );
           const linked = await Promise.all(
             rels.map(async (r) => {
@@ -2849,7 +2891,11 @@ read for oversized notes, where outline() alone assumes you already know which s
     },
     async ({ noteId }) => {
       const note = await trilium.getNote(noteId);
-      const content = await trilium.getNoteContent(noteId).catch(() => "");
+      const contentResult = await trilium.getNoteContentResult(noteId, note.type);
+      if (typeof contentResult !== "string") {
+        return txt({ noteId, title: note.title, kind: labelOf(note, "noteType"), binary: true, encoding: contentResult.encoding, mime: contentResult.mime, size: contentResult.content.length, note: "Binary notes have no HTML heading outline; use inspect(content=true) or the raw content tool." });
+      }
+      const content = contentResult;
       const headings = headingOutline(content);
       const report = structureReport(content);
       const tables = headings
@@ -2928,16 +2974,21 @@ miss is diagnosed in the same call rather than in three more.`,
       find: z.string().optional().describe("Literal string to count in the body — returns total occurrences + per-addendum-block counts (flag-staleness tracking)"),
     },
     async ({ noteId, content, section, find }) => {
-      const [note, attachments, rawBody] = await Promise.all([
-        trilium.getNote(noteId),
+      const note = await trilium.getNote(noteId);
+      const [attachments, rawResult] = await Promise.all([
         trilium.getNoteAttachments(noteId).catch(() => []),
-        content || find ? trilium.getNoteContent(noteId).catch(() => "") : Promise.resolve(undefined),
+        content || find ? trilium.getNoteContentResult(noteId, note.type) : Promise.resolve(undefined),
       ]);
+      if (rawResult && typeof rawResult !== "string" && (section || find)) {
+        return err("binary_content", `Note ${noteId} contains binary ${rawResult.mime} data; section= and find= operate on text only.`, "Read the full body without section/find, or use the raw get_note_content tool for the base64 envelope.");
+      }
+      const rawBody = typeof rawResult === "string" ? rawResult : undefined;
+      const binaryBody = rawResult && typeof rawResult !== "string" ? rawResult : undefined;
       // A sectioned raw read: the same heading contract as revise(section=), so
       // "inspect the part I am about to edit" costs the section, not the note.
       let sectionRead: ReturnType<typeof getSection> | null = null;
       if (content && section && rawBody !== undefined) sectionRead = getSection(rawBody, section);
-      const body = content ? (sectionRead ? sectionRead.content : rawBody) : undefined;
+      const body = content ? (binaryBody ?? (sectionRead ? sectionRead.content : rawBody)) : undefined;
 
       // Literal-occurrence count, total + per addendum block. Blocks are keyed
       // by their marker heading; content before the first marker is "(head)".
@@ -3002,7 +3053,7 @@ miss is diagnosed in the same call rather than in three more.`,
       }
       const labels = note.attributes
         .filter((a) => a.type === "label")
-        .map((a) => ({ name: a.name, value: a.value, ...(a.isInheritable ? { inheritable: true } : {}) }));
+        .map((a) => ({ name: a.name, value: a.value, owned: isOwnedAttribute(note, a), ...(a.isInheritable ? { inheritable: true } : {}) }));
       const relations = relationSnippet(note, 50);
       return txt({
         id: note.noteId,
@@ -3027,7 +3078,7 @@ miss is diagnosed in the same call rather than in three more.`,
             ? { section, sectionMatched: true, ...(sectionRead.subsections?.length ? { subsections: sectionRead.subsections } : {}) }
             : { section, sectionMatched: false, available: sectionRead.available, hint: `No "${section}" heading — content is empty. Re-target from available=.` }
           : {}),
-        ...(body !== undefined ? { content: body } : {}),
+        ...(body !== undefined ? { content: typeof body === "string" ? body : body.content, ...(typeof body === "string" ? {} : { contentEncoding: body.encoding }) } : {}),
       });
     }
   );
@@ -3116,14 +3167,14 @@ broken ones, so staleness arrives as a maintenance finding instead of a surprise
         }
 
         if (holds === undefined) {
-          const content = await trilium.getNoteContent(claimId).catch(() => "");
+          const content = await trilium.getNoteContent(claimId);
           return txt({ ...row(note), check: getSection(content, "Check").content, history: getSection(content, "Verifications").content, relations: relationSnippet(note) });
         }
 
         if (!evidence)
           return err("missing_param", "A verification needs evidence.", 'Pass evidence="<what you actually observed>" — the output, the count, the response. Recording a verdict without it makes the register a record of opinions.');
 
-        const content = await trilium.getNoteContent(claimId).catch(() => "");
+        const content = await trilium.getNoteContent(claimId);
         const entry = `<p><strong>${d} — ${holds ? "HOLDS" : "BROKEN"}</strong>: ${escapeHtml(evidence)}</p>`;
         const updated = setSection(content, "Verifications", entry, "append");
         await trilium.createRevision(claimId).catch(() => null);
@@ -3157,7 +3208,7 @@ broken ones, so staleness arrives as a maintenance finding instead of a surprise
           `<h2>Verifications</h2>\n`;
 
         if (existing) {
-          const current = await trilium.getNoteContent(existing.noteId).catch(() => "");
+          const current = await trilium.getNoteContent(existing.noteId);
           await trilium.createRevision(existing.noteId).catch(() => null);
           await trilium.updateNoteContent(existing.noteId, setSection(current, "Check", `<p>${escapeHtml(check)}</p>`, "replace").html);
           if (intervalDays) await trilium.updateLabelValue(existing.noteId, "interval", String(intervalDays)).catch(() => null);
@@ -3232,8 +3283,8 @@ HTML, so a formatting-only change is a real difference and shows as one.`,
         return err("not_found", `Revision ${revisionId} does not belong to note ${noteId}.`, `Available: ${revisions.slice(0, 10).map((r) => r.revisionId).join(", ")}`);
 
       const [before, after] = await Promise.all([
-        trilium.getRevisionContent(target.revisionId).catch(() => ""),
-        trilium.getNoteContent(noteId).catch(() => ""),
+        trilium.getRevisionContent(target.revisionId),
+        trilium.getNoteContent(noteId),
       ]);
 
       const index = revisions.map((r) => ({
@@ -3299,7 +3350,7 @@ Dual-mode by the content param:
                       re-running the same call converges on the same state.
   content omitted  → READ: returns the named attachment's metadata and content.
 Attachments ride on the note — the native home for raw artifacts that belong with a typed
-memory rather than in its body. Binary content is base64. List a note's attachments with
+memory rather than in its body. Binary content is standard base64 and is uploaded as raw bytes; reads return the same envelope. List a note's attachments with
 inspect(noteId); remove with detach().`,
     {
       noteId: z.string().describe("Owning note"),
@@ -3307,25 +3358,41 @@ inspect(noteId); remove with detach().`,
       content: z.string().optional().describe("Content to write (text, or base64 for binary). Omit to read the attachment instead."),
       mime: z.string().optional().describe("MIME type (default text/plain on create; kept on update unless given)"),
       role: z.enum(["file", "image"]).optional().describe("Attachment role on create (default: file)"),
+      encoding: z.enum(["auto", "text", "base64"]).optional().describe("Content encoding; auto uses MIME to choose UTF-8 vs base64"),
     },
-    async ({ noteId, title, content, mime, role }) => {
+    async ({ noteId, title, content, mime, role, encoding }) => {
       const existing = (await trilium.getNoteAttachments(noteId).catch(() => [])).find((a) => a.title === title);
 
       if (content == null) {
         if (!existing)
           return err("not_found", `No attachment titled "${title}" on note ${noteId}.`, "inspect(noteId) lists its attachments; provide content to create this one.");
-        const data = await trilium.getAttachmentContent(existing.attachmentId).catch(() => "");
-        return txt({ id: existing.attachmentId, noteId, title, mime: existing.mime, role: existing.role, size: existing.contentLength, content: data });
+        const data = await trilium.getAttachmentContentResult(existing.attachmentId, existing.mime);
+        return txt({
+          id: existing.attachmentId, noteId, title, mime: existing.mime, role: existing.role, size: existing.contentLength,
+          content: typeof data === "string" ? data : data.content,
+          ...(typeof data === "string" ? {} : { contentEncoding: data.encoding }),
+        });
       }
 
       if (existing) {
-        await trilium.updateAttachmentContent(existing.attachmentId, content, mime ?? existing.mime);
-        if (mime && mime !== existing.mime) await trilium.updateAttachment(existing.attachmentId, { mime }).catch(() => null);
-        return txt({ action: "updated", id: existing.attachmentId, noteId, title, mime: mime ?? existing.mime });
+        const targetMime = mime ?? existing.mime;
+        if (mime && mime !== existing.mime) await trilium.updateAttachment(existing.attachmentId, { mime });
+        try {
+          await trilium.updateAttachmentContent(existing.attachmentId, content, targetMime, encoding ?? "auto");
+        } catch (error) {
+          if (mime && mime !== existing.mime) throw new Error(`attachment MIME changed to ${mime}, but content upload failed: ${error instanceof Error ? error.message : String(error)}`);
+          throw error;
+        }
+        return txt({ action: "updated", id: existing.attachmentId, noteId, title, mime: targetMime });
       }
 
-      const created = await trilium.createAttachment(noteId, title, mime ?? "text/plain", content, role ?? "file");
-      return txt({ action: "created", id: created.attachmentId, noteId, title, mime: created.mime, role: created.role });
+      try {
+        const created = await trilium.createAttachment(noteId, title, mime ?? "text/plain", content, role ?? "file", encoding ?? "auto");
+        return txt({ action: "created", id: created.attachmentId, noteId, title, mime: created.mime, role: created.role, contentUploaded: created.contentUploaded ?? true });
+      } catch (error) {
+        if (error instanceof PartialContentUploadError) return err("partial_upload", error.message, `The ${error.entityType} was created as ${error.entityId}; retry the content upload rather than creating another entity.`);
+        throw error;
+      }
     }
   );
 
@@ -3365,7 +3432,7 @@ an already-removed target returns cleanly instead of erroring.`,
 
   server.tool(
     "addendum",
-    `Search Master, LLM singletons (responsibilities + protocols only, not diary), and Knowledge
+    `Search Master, LLM singletons (responsibilities + protocols + self-correction, not diary), and Knowledge
 for notes containing pending addendum blocks that need to be folded into the main content.
 
 These surfaces should be clean, merged, structured notes — not stacks of timestamped addendum
@@ -3374,15 +3441,14 @@ its content into the relevant section body using revise(mode=replace or section=
 no addendum marker behind. Addendum-style append is appropriate only for sessions, diary
 entries, and logs — records by nature whose history has value. Everywhere else, merge.
 
-Returns note IDs, titles, kinds, and content snippets so you can identify what to fold in.`,
+Returns note IDs, titles, kinds, and content snippets so you can identify what to fold in. The successful call also durably marks the pre-close gate.`,
     {},
     async () => {
       const cfg = b();
       if (!cfg.root) return txt({ error: "BrainLLM not bootstrapped — run bootstrap." });
-      await markStep("addendum");
 
       const searchIn = (ancestorNoteId: string) =>
-        trilium.searchNotes("Addendum", { ancestorNoteId, limit: 50 }).catch(() => ({ results: [] as Note[] }));
+        trilium.searchNotes("Addendum", { ancestorNoteId, limit: 50 });
 
       const [masterRes, llmRes, knowledgeRes] = await Promise.all([
         cfg.master.root    ? searchIn(cfg.master.root)    : Promise.resolve({ results: [] as Note[] }),
@@ -3411,7 +3477,7 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
         unique.map(async (n) => {
           const kind = labelOf(n, "noteType");
           if (!kind) return null;
-          const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+          const content = await trilium.getNoteContent(n.noteId);
           if (!hasAddendumMarker(content)) return null; // prose mention, not a pending block
           const relations = relationSnippet(n);
           return {
@@ -3425,6 +3491,7 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
       );
 
       const found = notes.filter(Boolean);
+      await markStep("addendum");
       return txt({
         found: found.length,
         notes: found,
@@ -3472,7 +3539,6 @@ coverage names any pass that hit a cap, so a short list is never mistaken for a 
       repair: z.array(z.string()).optional().describe("Note ids to auto-repair entity corruption on — unwinds one level of double-escaping, revision taken first"),
     },
     async ({ deep, dryRun, domain, ack, repair }) => {
-      await markStep("maintain");
       const report = await sweep(trilium, b(), {
         deep: deep ?? false,
         dryRun: dryRun ?? false,
@@ -3486,6 +3552,7 @@ coverage names any pass that hit a cap, so a short list is never mistaken for a 
       if (deep && !dryRun && b().sizes && Object.keys(b().sizes!).length) {
         saveConfig(b());
       }
+      await markStep("maintain");
       return txt(report);
     }
   );
@@ -3507,7 +3574,16 @@ re-wire with connect() first). To undo an archive, use recover().`,
       const note = await trilium.getNote(noteId);
 
       if (hard) {
-        const backlinks = await trilium.getBacklinks(noteId).catch(() => []);
+        let backlinks: Array<{ noteId: string; title: string; relationName: string }>;
+        try {
+          backlinks = await trilium.getBacklinks(noteId);
+        } catch (error) {
+          return err(
+            "backlink_check_failed",
+            `Could not verify backlinks for ${noteId}; hard delete was blocked.`,
+            `The Trilium search failed (${error instanceof Error ? error.message : String(error)}). Archive instead, or restore the search connection and retry; an unknown backlink state is never treated as zero.`
+          );
+        }
         if (backlinks.length > 0) {
           return txt({
             blocked: true,
@@ -3525,7 +3601,7 @@ re-wire with connect() first). To undo an archive, use recover().`,
         // neither close() nor generateDailyLog() deletes anything), so it is
         // the one place worth making the caller look before it fires.
         const children = note.childNoteIds ?? [];
-        const parents = note.parentNoteIds ?? [];
+        const parents = note.parentBranchIds ?? [];
         if (children.length > 0 || parents.length > 1) {
           const childTitles = await Promise.all(
             children.slice(0, 25).map((id) =>
@@ -3539,7 +3615,7 @@ re-wire with connect() first). To undo an archive, use recover().`,
                 ? `Hard delete takes the whole subtree — ${children.length} child note(s) would be destroyed with it.`
                 : `This note is cloned into ${parents.length} containers; deleting it removes it from all of them, not just the one you have in mind.`,
             children: childTitles,
-            parentNoteIds: parents,
+            parentBranchIds: parents,
             hint:
               "Archive instead (omit hard), or delete the children first if losing them is genuinely intended. " +
               "Threads keep their day-to-day content in threadEntry children, so a thread almost never wants a hard delete.",
@@ -3551,7 +3627,7 @@ re-wire with connect() first). To undo an archive, use recover().`,
       }
 
       if (reason) {
-        const current = await trilium.getNoteContent(noteId).catch(() => "");
+        const current = await trilium.getNoteContent(noteId);
         await trilium.updateNoteContent(noteId, safeAppend(current, `<p><em>Archived ${today()}: ${escapeHtml(reason)}</em></p>`));
       }
       await trilium.updateLabelValue(noteId, "closed", today());
@@ -3576,18 +3652,18 @@ prior snapshot. For notes deleted from Trilium entirely (not just archived), use
     async ({ noteId, reason, date }) => {
       if (isStructural(b(), noteId))
         return err("protected_note", `Note ${noteId} is structural and cannot be recovered.`);
-      const d = date ?? today();
+      const d = checkedDate(date);
       const note = await trilium.getNote(noteId);
 
-      const archivedAttr = note.attributes.find((a) => a.type === "label" && a.name === "archived");
+      const archivedAttr = note.attributes.find((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === "archived");
       if (archivedAttr) await trilium.deleteAttribute(archivedAttr.attributeId).catch(() => null);
 
-      const closedAttr = note.attributes.find((a) => a.type === "label" && a.name === "closed");
+      const closedAttr = note.attributes.find((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === "closed");
       if (closedAttr) await trilium.deleteAttribute(closedAttr.attributeId).catch(() => null);
 
       await trilium.updateLabelValue(noteId, "status", "active");
 
-      const current = await trilium.getNoteContent(noteId).catch(() => "");
+      const current = await trilium.getNoteContent(noteId);
       const { html: recoverHtml, warnings } = reason
         ? renderBody(reason)
         : { html: "<p><em>Note restored from archive.</em></p>", warnings: [] as string[] };
@@ -3676,25 +3752,36 @@ whole-brain view.`,
         const fetched = await Promise.all(hood.map((h) => trilium.getNote(h.noteId).catch(() => null)));
         notes = fetched.filter((n): n is Note => !!n);
       } else {
-        notes = await trilium
-          .searchNotes("#noteType", { ancestorNoteId: cfg.root, fastSearch: true, limit: 300, includeArchivedNotes: includeArchived ?? false })
-          .then((r) => r.results)
-          .catch(() => [] as Note[]);
+        notes = (await trilium.searchNotes(
+          "#noteType",
+          { ancestorNoteId: cfg.root, fastSearch: true, limit: 300, includeArchivedNotes: includeArchived ?? false },
+        )).results;
       }
       if (!includeArchived) notes = notes.filter((n) => !hasLabel(n, "archived"));
 
       const included = new Map(notes.map((n) => [n.noteId, n]));
-      const mmLabel = (n: Note) => {
-        const t = n.title.length > 34 ? `${n.title.slice(0, 33)}…` : n.title;
-        return t.replace(/"/g, "#quot;");
+      const mermaidLabel = (value: string): string => {
+        const compact = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\\/g, "\\\\");
+        const truncated = compact.length > 34 ? `${compact.slice(0, 33)}…` : compact;
+        return truncated
+          .replace(/"/g, "#quot;")
+          .replace(/\[/g, "&#91;")
+          .replace(/\]/g, "&#93;")
+          .replace(/\{/g, "&#123;")
+          .replace(/\}/g, "&#125;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\|/g, "&#124;");
       };
+      const safeRelationName = /^[A-Za-z_][A-Za-z0-9_]*$/;
+      const skippedRelationNames = new Set<string>();
       const AREA_CLASS: Record<string, string> = {
         master: "master", llm: "llm", memory: "memory", knowledge: "knowledge", insights: "insights",
       };
       const lines: string[] = ["flowchart LR"];
       const classAssignments: Record<string, string[]> = {};
       for (const n of notes) {
-        lines.push(`  ${n.noteId}["${mmLabel(n)}"]`);
+        lines.push(`  ${n.noteId}["${mermaidLabel(n.title)}"]`);
         const kind = labelOf(n, "noteType") as AnyKind | undefined;
         const area = kind ? AREA_CLASS[KIND_AREA[kind]] : undefined;
         if (area) (classAssignments[area] ??= []).push(n.noteId);
@@ -3704,6 +3791,7 @@ whole-brain view.`,
       for (const n of notes) {
         for (const a of n.attributes) {
           if (a.type !== "relation" || a.name === "template" || a.noteId !== n.noteId) continue;
+          if (!safeRelationName.test(a.name)) { skippedRelationNames.add(a.name); continue; }
           if (!included.has(a.value)) continue;
           const key = `${n.noteId}|${a.name}|${a.value}`;
           if (drawn.has(key)) continue; // duplicate edges render once
@@ -3728,6 +3816,7 @@ whole-brain view.`,
         const found = await trilium.searchNotes(`note.title = 'Graph'`, { ancestorNoteId: cfg.insights.root, fastSearch: true, limit: 1 });
         if (found.results[0]) {
           graphNoteId = found.results[0].noteId;
+          await trilium.createRevision(graphNoteId);
           await trilium.updateNoteContent(graphNoteId, mermaid);
         } else {
           const created = await trilium.createNote(cfg.insights.root, "Graph", mermaid, "mermaid", "text/mermaid");
@@ -3740,6 +3829,7 @@ whole-brain view.`,
         scope: noteId ? { noteId, depth: depth ?? 2 } : "brain",
         nodes: notes.length,
         edges: edgeCount,
+        ...(skippedRelationNames.size ? { skippedRelationNames: [...skippedRelationNames], note: "Unsafe custom relation names were omitted from Mermaid syntax; the notes remain intact." } : {}),
         ...(graphNoteId ? { graphNoteId } : {}),
         mermaid,
       });
@@ -3768,7 +3858,7 @@ exception.`,
     async ({ date, recap }) => {
       const cfg = b();
       if (!cfg.root) return txt({ status: "uninitialized", action: "Run bootstrap first." });
-      const todayStr = date ?? today();
+      const todayStr = checkedDate(date);
 
       // ── recap: everything written today, in order, across every surface ─────
       if (recap) {

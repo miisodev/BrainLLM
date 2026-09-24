@@ -18,7 +18,7 @@
 // retention window.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { type TriliumClient, type Note, ownedLabel } from "./trilium.js";
+import { type TriliumClient, ownedLabel } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { isStructural } from "./lifecycle.js";
 import { escapeHtml } from "./normalize.js";
@@ -38,14 +38,15 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
   const nextDay = new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 
   // Content notes touched on `date` (excluding scaffolding, blueprints, and logs).
-  const touched = await trilium
-    .searchNotes(`#noteType note.dateModified >= '${date}' note.dateModified < '${nextDay}'`, {
+  const touched = await trilium.searchNotes(
+    `#noteType note.dateModified >= '${date}' note.dateModified < '${nextDay}'`,
+    {
       ancestorNoteId: cfg.root,
       fastSearch: true,
       includeArchivedNotes: true,
       limit: 300,
-    })
-    .catch(() => ({ results: [] as Note[] }));
+    },
+  );
 
   const created: Array<{ title: string; noteId: string }> = [];
   const updated: Array<{ title: string; noteId: string }> = [];
@@ -57,7 +58,7 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
   }
 
   // Deletions from Trilium's change feed.
-  const history = await trilium.getNoteHistory(cfg.root).catch(() => []);
+  const history = await trilium.getNoteHistory(cfg.root);
   const deleted = history
     .filter((h) => h.current_isDeleted && h.date.startsWith(date))
     .map((h) => ({ title: h.current_title || h.title, noteId: h.noteId }));
@@ -77,17 +78,19 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
   const counts = { created: created.length, updated: updated.length, deleted: deleted.length };
 
   // Upsert the day's log note in Insights/Logs.
-  const existing = await trilium
-    .searchNotes(`#noteType=log #created='${date}'`, { ancestorNoteId: cfg.insights.logs, fastSearch: true, limit: 1 })
-    .catch(() => ({ results: [] as Note[] }));
+  const existing = await trilium.searchNotes(
+    `#noteType=log #created='${date}'`,
+    { ancestorNoteId: cfg.insights.logs, fastSearch: true, limit: 1 },
+  );
 
   if (existing.results[0]) {
     const id = existing.results[0].noteId;
-    const current = await trilium.getNoteContent(id).catch(() => "");
+    const current = await trilium.getNoteContent(id);
     if (current.trim() === body.trim()) return { date, noteId: id, ...counts, action: "unchanged" };
     // The body above is the complete regenerated log for the day — REPLACE the
     // note content. The V8 append here stacked a full near-identical log block
     // per close() call (observed 6× on one day's note).
+    await trilium.createRevision(id);
     await trilium.updateNoteContent(id, body);
     return { date, noteId: id, ...counts, action: "updated" };
   }
@@ -109,6 +112,8 @@ export const DELETION_CATCHUP_DAYS = 7;
 
 export interface DeletionCatchUpReport {
   windowDays: number;
+  /** Whether the change feed was available for the requested window. */
+  coverage: "full" | "unknown";
   /** Deletion events the feed showed inside the window (today excluded). */
   deletionsFound: number;
   /** Days whose logs were actually regenerated — empty means nothing to do. */
@@ -122,13 +127,18 @@ export interface DeletionCatchUpReport {
  *  today's deletions through the same feed. */
 export async function catchUpDeletions(trilium: TriliumClient, cfg: BrainLLMConfig, today: string): Promise<DeletionCatchUpReport> {
   const windowDays = cfg.policy.deletionCatchupDays ?? DELETION_CATCHUP_DAYS;
-  const empty = { windowDays, deletionsFound: 0, regenerated: [] as string[] };
+  const empty = { windowDays, coverage: "full" as const, deletionsFound: 0, regenerated: [] as string[] };
   if (!cfg.root || !cfg.insights.logs) return empty;
 
-  const history = await trilium.getNoteHistory(cfg.root).catch(() => []);
+  let history;
+  try {
+    history = await trilium.getNoteHistory(cfg.root);
+  } catch {
+    return { ...empty, coverage: "unknown" };
+  }
   if (!history.length) return empty;
 
-  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - (windowDays - 1) * 86_400_000)
+  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - windowDays * 86_400_000)
     .toISOString()
     .slice(0, 10);
 
@@ -150,5 +160,5 @@ export async function catchUpDeletions(trilium: TriliumClient, cfg: BrainLLMConf
     const report = await generateDailyLog(trilium, cfg, day).catch(() => null);
     if (report) regenerated.push(day);
   }
-  return { windowDays, deletionsFound: total, regenerated };
+  return { windowDays, coverage: "full", deletionsFound: total, regenerated };
 }

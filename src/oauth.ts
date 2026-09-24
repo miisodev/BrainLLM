@@ -37,8 +37,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createHmac, randomBytes, createHash, timingSafeEqual } from "crypto";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { configFilePath } from "./config.js";
+import { fetchPublicJson } from "./network-security.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,55 @@ const REFRESH_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 /** Claude allows 10s for discovery/authorize/token. Fetching the client's CIMD
  *  happens inside that budget, so it gets a fraction of it. */
 const CIMD_FETCH_TIMEOUT_MS = 5000;
+/** OAuth metadata and forms are small by definition. Keep anonymous endpoints
+ *  from consuming the 50 MB MCP request budget just by posting a giant body. */
+export const MAX_OAUTH_BODY_BYTES = 64 * 1024;
+const MAX_CIMD_DOCUMENT_BYTES = 64 * 1024;
+const MAX_REDIRECT_URIS = 5;
+const MAX_REDIRECT_URI_LENGTH = 2048;
+const MAX_CLIENT_NAME_LENGTH = 200;
+const MAX_OAUTH_STORE_BYTES = 4 * 1024 * 1024;
+
+class BodyTooLargeError extends Error {
+  constructor() { super("request body exceeds the OAuth size limit"); }
+}
+
+async function readLimitedBody(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<Uint8Array> {
+  if (!body) return new Uint8Array(0);
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      total += part.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new BodyTooLargeError();
+      }
+      chunks.push(part.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+  return result;
+}
+
+async function readFormBody(req: Request): Promise<URLSearchParams> {
+  return new URLSearchParams(new TextDecoder().decode(await readLimitedBody(req.body, MAX_OAUTH_BODY_BYTES)));
+}
+
+const bodyLimitResponse = (format: "json" | "html" = "json"): Response => {
+  if (format === "html") return htmlError("The request body is too large.", 413);
+  return new Response(JSON.stringify({ error: "request_too_large", error_description: "Request body exceeds 64 KiB." }), {
+    status: 413,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+};
 
 // ── base64url + JWT ───────────────────────────────────────────────────────────
 
@@ -150,15 +200,15 @@ let cache: OAuthStore | null = null;
 function loadStore(): OAuthStore {
   if (cache) return cache;
   const path = storePath();
-  if (existsSync(path)) {
-    try {
+  try {
+    if (existsSync(path) && statSync(path).size <= MAX_OAUTH_STORE_BYTES) {
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<OAuthStore>;
       if (typeof parsed.secret === "string" && parsed.secret) {
         cache = { secret: parsed.secret, codes: parsed.codes ?? {}, refresh: parsed.refresh ?? {}, clients: parsed.clients ?? {} };
         return cache;
       }
-    } catch { /* fall through to a fresh store */ }
-  }
+    }
+  } catch { /* fall through to a fresh store */ }
   cache = { secret: randomBytes(32).toString("hex"), codes: {}, refresh: {}, clients: {} };
   saveStore();
   return cache;
@@ -171,20 +221,46 @@ function saveStore(): void {
   const now = Date.now();
   for (const [k, v] of Object.entries(cache.codes)) if (v.expiresAt < now) delete cache.codes[k];
   for (const [k, v] of Object.entries(cache.refresh)) if (v.expiresAt < now) delete cache.refresh[k];
+  while (Object.keys(cache.codes).length > 1_000) {
+    const oldest = Object.entries(cache.codes).sort((a, b) => a[1].expiresAt - b[1].expiresAt)[0]?.[0];
+    if (!oldest) break;
+    delete cache.codes[oldest];
+  }
+  while (Object.keys(cache.refresh).length > 1_000) {
+    const oldest = Object.entries(cache.refresh).sort((a, b) => a[1].expiresAt - b[1].expiresAt)[0]?.[0];
+    if (!oldest) break;
+    delete cache.refresh[oldest];
+  }
   // Enforce the registration ceiling — evict oldest first.
   const regs = Object.entries(cache.clients ?? {});
   if (regs.length > MAX_REGISTERED_CLIENTS) {
     regs.sort(([, a], [, b]) => a.issuedAt - b.issuedAt);
     for (const [k] of regs.slice(0, regs.length - MAX_REGISTERED_CLIENTS)) delete cache.clients![k];
   }
+  let serialized = JSON.stringify(cache);
+  if (Buffer.byteLength(serialized) > MAX_OAUTH_STORE_BYTES) {
+    // A bounded registration request still leaves a hard ceiling for a corrupted
+    // or manually edited store. Evict oldest clients before refusing to grow.
+    for (const [key] of Object.entries(cache.clients ?? {}).sort((a, b) => a[1].issuedAt - b[1].issuedAt)) {
+      delete cache.clients![key];
+      serialized = JSON.stringify(cache);
+      if (Buffer.byteLength(serialized) <= MAX_OAUTH_STORE_BYTES) break;
+    }
+  }
+  if (Buffer.byteLength(serialized) > MAX_OAUTH_STORE_BYTES) return;
   try {
-    writeFileSync(storePath(), JSON.stringify(cache), { mode: 0o600 });
+    writeFileSync(storePath(), serialized, { mode: 0o600 });
   } catch { /* non-fatal: tokens still work until restart */ }
 }
 
 /** The HMAC secret used to sign access tokens. Persisted so a redeploy doesn't
  *  invalidate every issued token. */
 export function signingSecret(): string {
+  const configured = process.env.BRAINLLM_OAUTH_SECRET?.trim();
+  if (configured) {
+    if (configured.length < 32) throw new Error("BRAINLLM_OAUTH_SECRET must be at least 32 characters");
+    return configured;
+  }
   return loadStore().secret;
 }
 
@@ -206,8 +282,9 @@ export function baseUrl(req: Request): string {
   const override = process.env.BRAINLLM_PUBLIC_URL;
   if (override) return override.replace(/\/+$/, "");
   const url = new URL(req.url);
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host;
-  const proto = req.headers.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
+  const trustProxy = process.env.BRAINLLM_TRUST_PROXY === "true";
+  const host = (trustProxy ? req.headers.get("x-forwarded-host") : null) ?? req.headers.get("host") ?? url.host;
+  const proto = (trustProxy ? req.headers.get("x-forwarded-proto") : null) ?? (host.startsWith("localhost") ? "http" : "https");
   return `${proto}://${host}`;
 }
 
@@ -278,12 +355,14 @@ interface ClientMetadata {
  *  http://localhost/callback and http://127.0.0.1/callback and binds a random
  *  port, so the same port-agnostic match has to apply to `localhost` too. */
 function isLoopback(u: URL): boolean {
-  return u.hostname === "127.0.0.1" || u.hostname === "::1" || u.hostname === "localhost";
+  return (u.protocol === "http:" || u.protocol === "https:") &&
+    (u.hostname === "127.0.0.1" || u.hostname === "::1" || u.hostname === "localhost");
 }
 
 function redirectUriAllowed(requested: string, allowed: string[]): boolean {
   let want: URL;
   try { want = new URL(requested); } catch { return false; }
+  if (want.protocol !== "http:" && want.protocol !== "https:") return false;
   return allowed.some((entry) => {
     let have: URL;
     try { have = new URL(entry); } catch { return false; }
@@ -314,6 +393,9 @@ export function validateClientDocument(
 
   const d = doc as ClientMetadata | null;
   if (!d || typeof d !== "object") return { error: "client_id document is not a JSON object" };
+  if (typeof d.client_name === "string" && d.client_name.length > MAX_CLIENT_NAME_LENGTH) {
+    return { error: "client_name is too long" };
+  }
 
   // Self-referential: the document must claim the exact URL it was served from.
   // Without this, anyone can host a document claiming someone else's client_id.
@@ -322,7 +404,13 @@ export function validateClientDocument(
   if (!Array.isArray(d.redirect_uris) || d.redirect_uris.length === 0) {
     return { error: "client_id document declares no redirect_uris" };
   }
+  if (d.redirect_uris.length > MAX_REDIRECT_URIS) {
+    return { error: `client_id document may list at most ${MAX_REDIRECT_URIS} redirect_uris` };
+  }
   for (const entry of d.redirect_uris) {
+    if (typeof entry !== "string" || entry.length > MAX_REDIRECT_URI_LENGTH) {
+      return { error: "client_id document contains an invalid redirect_uri length" };
+    }
     let r: URL;
     try { r = new URL(entry); } catch { return { error: `invalid redirect_uri: ${entry}` }; }
     if (isLoopback(r)) continue; // native clients — matched port-agnostically later
@@ -354,12 +442,10 @@ export async function resolveClient(clientId: string): Promise<{ client: ClientM
 
   let doc: unknown;
   try {
-    const res = await fetch(url.href, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(CIMD_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) return { error: `client_id document returned ${res.status}` };
-    doc = await res.json();
+    // The client controls this URL, so it is an outbound request from the
+    // authorization server. Resolve and reject non-public destinations, bound
+    // the response, and re-check every redirect before following it.
+    doc = await fetchPublicJson(url.href, MAX_CIMD_DOCUMENT_BYTES, CIMD_FETCH_TIMEOUT_MS);
   } catch (e) {
     return { error: `could not fetch client_id document: ${e instanceof Error ? e.message : e}` };
   }
@@ -370,8 +456,6 @@ export async function resolveClient(clientId: string): Promise<{ client: ClientM
 export { redirectUriAllowed };
 
 // ── /register (RFC 7591) ──────────────────────────────────────────────────────
-
-const MAX_REDIRECT_URIS = 5;
 
 /** The pure half of registration validation. The rules mirror CIMD's: loopback
  *  http is allowed (native clients bind an ephemeral port at runtime), anything
@@ -390,13 +474,17 @@ export function validateRegistration(body: unknown): { redirectUris: string[]; c
     return { error: `redirect_uris may list at most ${MAX_REDIRECT_URIS} entries` };
   }
   for (const entry of rawUris) {
+    if (typeof entry !== "string" || entry.length > MAX_REDIRECT_URI_LENGTH) {
+      return { error: "redirect_uris must contain short strings" };
+    }
     let r: URL;
-    try { r = new URL(String(entry)); } catch { return { error: `invalid redirect_uri: ${String(entry)}` }; }
+    try { r = new URL(entry); } catch { return { error: `invalid redirect_uri: ${entry}` }; }
     if (isLoopback(r)) continue;
     if (r.protocol !== "https:") return { error: "non-loopback redirect_uris must use https" };
   }
 
   const clientName = typeof b.client_name === "string" ? b.client_name : undefined;
+  if (clientName && clientName.length > MAX_CLIENT_NAME_LENGTH) return { error: "client_name is too long" };
   return { redirectUris: rawUris.map((u) => String(u)), ...(clientName ? { clientName } : {}) };
 }
 
@@ -410,8 +498,10 @@ export async function handleRegister(req: Request): Promise<Response> {
 
   let body: unknown;
   try {
-    body = await req.json();
-  } catch {
+    const bytes = await readLimitedBody(req.body, MAX_OAUTH_BODY_BYTES);
+    body = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return bodyLimitResponse();
     return new Response(JSON.stringify({ error: "invalid_client_metadata", error_description: "Body must be JSON." }), {
       status: 400,
       headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
@@ -642,9 +732,16 @@ const htmlError = (message: string, status = 400): Response =>
 
 export async function handleAuthorize(req: Request, base: string): Promise<Response> {
   const url = new URL(req.url);
-  const form: { get(name: string): unknown } | null = req.method === "POST" ? await req.formData() : null;
-  const get = (k: string): string =>
-    (form ? (form.get(k) as string | null) : url.searchParams.get(k)) ?? "";
+  let form: URLSearchParams | null = null;
+  if (req.method === "POST") {
+    try {
+      form = await readFormBody(req);
+    } catch (error) {
+      if (error instanceof BodyTooLargeError) return bodyLimitResponse("html");
+      return htmlError("The authorization form could not be read.", 400);
+    }
+  }
+  const get = (k: string): string => (form ? form.get(k) : url.searchParams.get(k)) ?? "";
 
   const clientId = get("client_id");
   const redirectUri = get("redirect_uri");
@@ -757,13 +854,14 @@ export async function handleToken(req: Request, base: string): Promise<Response>
 
   // RFC 6749 §4.1.3 mandates form-urlencoded here. A JSON-only body parser
   // returning 415 is the single most common implementation bug in this flow.
-  let form: { get(name: string): unknown };
+  let form: URLSearchParams;
   try {
-    form = await req.formData();
-  } catch {
+    form = await readFormBody(req);
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return bodyLimitResponse();
     return tokenError("invalid_request", "Body must be application/x-www-form-urlencoded.");
   }
-  const get = (k: string): string => ((form.get(k) as string | null) ?? "");
+  const get = (k: string): string => form.get(k) ?? "";
   const grantType = get("grant_type");
   const store = loadStore();
 

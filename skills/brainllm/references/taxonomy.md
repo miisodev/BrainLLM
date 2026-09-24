@@ -32,11 +32,11 @@ Closed — `connect()` rejects anything not on this list. Pick the most specific
 
 ## Label Conventions
 
-Written by the server — you never set `#noteType`, `#status`, `#created`, `#updated`, `#closed`, `#archived` manually through the normal write path (`remember`/`revise`/`resolve`/`withdraw`/`recover`). The one sanctioned exception is `label(noteId, name, value?, remove?)` — a guarded direct edit for fixing a stray or drifted value; `#noteType` is refused there too (it's never editable post-creation). Documented here so you can read and filter on them in `recall()` and `search_notes()`.
+Written by the server — you never set `#noteType`, `#status`, `#created`, `#updated`, `#closed`, `#archived` manually through the normal write path (`remember`/`revise`/`resolve`/`withdraw`/`recover`). The one sanctioned exception is `label(noteId, name, value?, remove?)` — a guarded direct edit for fixing a stray or drifted value; an existing `#noteType` is refused, while `label()` can repair a note whose kind is missing. Documented here so you can read and filter on them in `recall()` and `search_notes()`.
 
 | Label | Values | Purpose |
 |---|---|---|
-| `#noteType` | `biography` `goals` `preferences` `responsibilities` `protocols` `diary` `session` `thread` `threadEntry` `user` `domain` `information` `sources` `log` | Kind — exactly one per note, set at creation, never edited after. `threadEntry` is never created directly — only as a thread's day-child |
+| `#noteType` | `biography` `goals` `preferences` `responsibilities` `protocols` `selfcorrection` `diary` `session` `thread` `threadEntry` `user` `domain` `information` `sources` `claim` `log` | Kind — exactly one per note, set at creation and immutable once present; a missing kind may be repaired explicitly. `threadEntry` is never created directly — only as a thread's day-child; `claim` is managed by `claim()` |
 | `#status` | `active` `dormant` `resolved` `superseded` `eternal` | Lifecycle state — threads age; `resolve()` sets terminal. `eternal` = lifecycle-exempt, never aged by the sweep — for user-curated permanent threads |
 | `#created` | ISO date | Set at creation (the user's local day) |
 | `#updated` | ISO date | Updated on every write |

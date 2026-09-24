@@ -6,7 +6,7 @@
 // universal tools (remember / revise / resolve / forget / connect).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { TriliumClient, type Note, relationSnippet, type RelationEdge } from "./trilium.js";
+import { TriliumClient, type Note, isOwnedAttribute, relationSnippet, type RelationEdge } from "./trilium.js";
 import { toText, getSection, LARGE_NOTE_CHARS } from "./normalize.js";
 
 export const txt = (obj: unknown) => ({
@@ -14,7 +14,7 @@ export const txt = (obj: unknown) => ({
 });
 
 export const labelOf = (n: Note, name: string) =>
-  n.attributes.find((a) => a.type === "label" && a.name === name)?.value;
+  n.attributes.find((a) => isOwnedAttribute(n, a) && a.type === "label" && a.name === name)?.value;
 
 export interface Stub {
   id: string;
@@ -50,13 +50,14 @@ export async function skim(
 
   return Promise.all(
     res.results.slice(0, limit).map(async (n) => {
-      const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+      const contentResult = await trilium.getNoteContentResult(n.noteId, n.type).catch(() => "");
+      const content = typeof contentResult === "string" ? contentResult : `[binary ${contentResult.mime}]`;
       const relations = relationSnippet(n);
       return {
         id: n.noteId, title: n.title, kind: labelOf(n, "noteType"), status: labelOf(n, "status") ?? undefined,
         updated: n.dateModified.slice(0, 10), preview: toText(content, 160), ...(relations ? { relations } : {}),
         // Inline attribute check — labelOf reads .value and a flag's value is empty.
-        ...(n.attributes.some((a) => a.type === "label" && a.name === "mandate") ? { mandate: true } : {}),
+        ...(n.attributes.some((a) => isOwnedAttribute(n, a) && a.type === "label" && a.name === "mandate") ? { mandate: true } : {}),
       };
     })
   );
@@ -67,6 +68,8 @@ export interface FullRead {
   title: string;
   kind?: string;
   content: string;
+  contentEncoding?: "base64";
+  mime?: string;
   relations?: RelationEdge[];
   /** section reads only */
   section?: string;
@@ -94,9 +97,18 @@ export async function readFull(
   id: string,
   opts: { section?: string; occurrence?: number } = {}
 ): Promise<FullRead> {
-  const [note, content] = await Promise.all([trilium.getNote(id), trilium.getNoteContent(id).catch(() => "")]);
+  const note = await trilium.getNote(id);
+  const contentResult = await trilium.getNoteContentResult(id, note.type).catch(() => "");
   const relations = relationSnippet(note);
   const base = { id, title: note.title, kind: labelOf(note, "noteType"), ...(relations ? { relations } : {}) };
+
+  if (typeof contentResult !== "string") {
+    if (opts.section) {
+      return { ...base, content: "", section: opts.section, matched: false, hint: "Binary content cannot be sectioned as text; use the raw content tool instead." };
+    }
+    return { ...base, content: contentResult.content, contentEncoding: "base64", mime: contentResult.mime };
+  }
+  const content = contentResult;
 
   if (!opts.section) {
     return {
@@ -130,14 +142,15 @@ export async function readFull(
 
 /** A short text preview of a note by id. */
 export async function preview(trilium: TriliumClient, id: string, len = 200): Promise<string> {
-  const content = await trilium.getNoteContent(id).catch(() => "");
-  return toText(content, len);
+  const content = await trilium.getNoteContentResult(id).catch(() => "");
+  return typeof content === "string" ? toText(content, len) : `[binary ${content.mime}]`;
 }
 
 /** A short text preview plus relation snippet — for singleton reads that want
  *  both without paying for the full content body (see readFull). */
 export async function previewWithRelations(trilium: TriliumClient, id: string, len = 200): Promise<{ preview: string; relations?: RelationEdge[] }> {
-  const [note, content] = await Promise.all([trilium.getNote(id).catch(() => null), trilium.getNoteContent(id).catch(() => "")]);
+  const [note, content] = await Promise.all([trilium.getNote(id).catch(() => null), trilium.getNoteContentResult(id).catch(() => "")]);
   const relations = note ? relationSnippet(note) : undefined;
-  return { preview: toText(content, len), ...(relations ? { relations } : {}) };
+  const previewText = typeof content === "string" ? toText(content, len) : `[binary ${content.mime}]`;
+  return { preview: previewText, ...(relations ? { relations } : {}) };
 }

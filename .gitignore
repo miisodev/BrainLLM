@@ -1,12 +1,20 @@
 .env
+.env.*
+!.env.example
 node_modules/
 dist/
 brainllm.json
+*.token
+*.oauth.json
 .claude/
 skills/*.zip
-*.oauth.json
 
 # Agent instruction files live on disk, not in the repo
 CLAUDE.md
 AGENTS.md
 GEMINI.md
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp

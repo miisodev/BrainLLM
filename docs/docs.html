@@ -33,6 +33,8 @@
   </div>
 </nav>
 
+<main>
+
 <section style="padding-top:56px">
   <div class="wrap docs-layout">
 
@@ -56,6 +58,7 @@
     </aside>
 
     <div class="docs-body">
+      <h1 class="sr-only">BrainLLM documentation</h1>
 
       <h2 id="quick-start">Quick start</h2>
       <p>BrainLLM needs a running TriliumNext instance and Bun 1.0+. It uses Bun APIs directly and does not run on Node.</p>
@@ -65,7 +68,7 @@
       <p>You can skip the token step by setting <code>TRILIUM_PASSWORD</code> instead — BrainLLM mints a token on first start and caches it.</p>
 
       <h3>2 · Install</h3>
-<pre class="term"><span class="c"># via npm (needs bun on PATH)</span>
+<pre class="term" tabindex="0" aria-label="Code example"><span class="c"># via npm (needs bun on PATH)</span>
 npx -y brainllm
 
 <span class="c"># or from source</span>
@@ -74,7 +77,7 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
 
       <h2 id="client">Client configuration</h2>
       <p>Add BrainLLM to your MCP client's config. The npm form is simplest:</p>
-<pre class="term">{
+<pre class="term" tabindex="0" aria-label="Code example">{
   <span class="a">"mcpServers"</span>: {
     <span class="a">"BrainLLM"</span>: {
       <span class="a">"command"</span>: <span class="g">"npx"</span>,
@@ -92,7 +95,7 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
       <p>It is safe to call anytime. It verifies an existing root live and only builds a fresh tree on a confirmed 404, so a network blip can never silently produce a duplicate brain.</p>
 
       <h2 id="skill">Teach the model to operate it</h2>
-      <p>The tools are deliberately terse — single-word verbs. The operational discipline lives in the bundled skill at <code>skills/brainllm/</code>. Copy it to <code>~/.claude/skills/brainllm</code> so Claude Code and Cowork load it.</p>
+      <p>The tools are deliberately terse — single-word verbs. The operational discipline lives in the bundled skill at <code>skills/brainllm/</code>. Copy it to <code>~/.claude/skills/brainllm</code> (or <code>%USERPROFILE%\.agents\skills\brainllm</code> on Windows) so Claude Code and Cowork load it.</p>
       <p>Without it a model can call every tool correctly and still produce an incoherent brain, because correctness of call is not correctness of practice.</p>
 
       <h2 id="env">Environment variables</h2>
@@ -104,10 +107,12 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
         <tr><td><code>BRAINLLM_MODE</code></td><td>—</td><td><code>core</code> (44 tools, default) or <code>full</code> (+33 raw ETAPI tools)</td></tr>
         <tr><td><code>BRAINLLM_TZ</code></td><td>—</td><td>IANA timezone for date stamping on hosted deploys</td></tr>
         <tr><td><code>PORT</code></td><td>—</td><td>Presence switches to HTTP-connector mode. Never set it for local stdio</td></tr>
-        <tr><td><code>MCP_AUTH_TOKEN</code></td><td>—</td><td>Bearer token required on <code>/mcp</code> in HTTP mode</td></tr>
+        <tr><td><code>MCP_AUTH_TOKEN</code></td><td>—</td><td>Bearer token required on every HTTP transport; HTTP mode fails closed without it or owner OAuth</td></tr>
+        <tr><td><code>BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP</code></td><td>—</td><td>Trusted-network-only escape hatch; never enable on a public interface</td></tr>
         <tr><td><code>BRAINLLM_CONFIG</code></td><td>—</td><td>Absolute <em>file</em> path for <code>brainllm.json</code> on persistent-volume deploys</td></tr>
         <tr><td><code>BRAINLLM_OWNER_PASSWORD</code></td><td>—</td><td>Turns on the OAuth 2.1 surface. Unset means OAuth is disabled entirely</td></tr>
         <tr><td><code>BRAINLLM_PUBLIC_URL</code></td><td>—</td><td>Override the public origin when a proxy rewrites Host</td></tr>
+        <tr><td><code>BRAINLLM_TRUST_PROXY</code></td><td>—</td><td>Trust forwarded host/protocol headers only when a trusted reverse proxy sets them</td></tr>
       </table>
 
       <h2 id="tools">Tool surface</h2>
@@ -116,9 +121,9 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
         <tr><th>Group</th><th>Tools</th></tr>
         <tr><td>Session lifecycle</td><td><code>start</code> · <code>day</code> · <code>session</code> · <code>remarks</code> · <code>close</code> · <code>backup</code></td></tr>
         <tr><td>Writing</td><td><code>remember</code> · <code>diary</code> · <code>split</code></td></tr>
-        <tr><td>Reading &amp; search</td><td><code>read</code> · <code>recall</code> · <code>domain</code> · <code>brain</code> · <code>assembly</code> · <code>template</code> · <code>graph</code> · <code>consistency</code></td></tr>
+        <tr><td>Reading &amp; search</td><td><code>read</code> · <code>recall</code> · <code>domain</code> · <code>brain</code> · <code>assembly</code> · <code>template</code> · <code>consistency</code></td></tr>
         <tr><td>Updating</td><td><code>revise</code> · <code>resolve</code> · <code>withdraw</code> · <code>recover</code> · <code>label</code> · <code>forget</code></td></tr>
-        <tr><td>Graph &amp; inspection</td><td><code>connect</code> · <code>explore</code> · <code>outline</code> · <code>inspect</code> · <code>diff</code></td></tr>
+        <tr><td>Graph &amp; inspection</td><td><code>connect</code> · <code>explore</code> · <code>graph</code> · <code>outline</code> · <code>inspect</code> · <code>diff</code></td></tr>
         <tr><td>Attachments</td><td><code>attach</code> · <code>detach</code></td></tr>
         <tr><td>Maintenance</td><td><code>addendum</code> · <code>maintain</code> · <code>claim</code> · <code>bootstrap</code></td></tr>
         <tr><td>Surface reads</td><td><code>master</code> · <code>llm</code> · <code>memory</code> · <code>knowledge</code> · <code>insights</code> — each with a <code>_recall</code> skim twin</td></tr>
@@ -126,16 +131,16 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
       <p>Every tool is classified read-only, write or destructive so your client can group its permission prompts. The default is unsafe-side: an unclassified tool is treated as a write, never a read.</p>
 
       <h2 id="kinds">Kinds and statuses</h2>
-      <p>Fourteen kinds: <code>biography</code> <code>goals</code> <code>preferences</code> <code>responsibilities</code> <code>protocols</code> <code>diary</code> <code>session</code> <code>thread</code> <code>threadEntry</code> <code>user</code> <code>domain</code> <code>information</code> <code>sources</code> <code>log</code>.</p>
+      <p>Sixteen kinds: <code>biography</code> <code>goals</code> <code>preferences</code> <code>responsibilities</code> <code>protocols</code> <code>selfcorrection</code> <code>diary</code> <code>session</code> <code>thread</code> <code>threadEntry</code> <code>user</code> <code>domain</code> <code>information</code> <code>claim</code> <code>sources</code> <code>log</code>.</p>
       <p>Five statuses: <code>active</code> · <code>dormant</code> · <code>resolved</code> · <code>superseded</code> · <code>eternal</code>. Only threads age; <code>eternal</code> is exempt from the sweep entirely.</p>
 
       <h2 id="protocol">Session protocol</h2>
-<pre class="term"><span class="c">START</span>   start()                    <span class="c">once, before responding</span>
+<pre class="term" tabindex="0" aria-label="Code example"><span class="c">START</span>   start()                    <span class="c">once, before responding</span>
         [day()]                    <span class="c">when start() flags a new day</span>
 <span class="c">DURING</span>  remember · diary · recall · domain · revise · connect …
 <span class="c">END</span>     session() → addendum() → maintain()
-        → <span class="a">remarks()</span> → <span class="a">diary()</span> → close()</pre>
-      <p><code>close()</code> refuses unless all five pre-close steps have run <em>and</em> <code>session → remarks → diary</code> holds. Gate state lives on today's session note, so it survives a restart. Pass <code>force=true</code> only when a step genuinely has nothing to log — bypassed steps are reported back, never silently skipped.</p>
+        → <span class="a">remarks()</span> → <span class="a">diary(body, identity="LLM · env · agent")</span> → close(summary, identity="LLM · env · agent")</pre>
+      <p><code>close()</code> refuses unless all five pre-close steps have run <em>and</em> <code>session → remarks → diary</code> holds. <code>diary()</code> and <code>close()</code> require the canonical identity line. Gate state lives on today's session note, so it survives a restart. Pass <code>force=true</code> only when a step genuinely has nothing to log — bypassed steps are reported back, never silently skipped.</p>
 
       <h2 id="deploy">Transports</h2>
       <table>
@@ -164,6 +169,8 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
     </div>
   </div>
 </section>
+
+</main>
 
 <footer>
   <div class="wrap foot">
