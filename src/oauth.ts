@@ -51,6 +51,11 @@ export const SCOPE = "brain";
 const AUTH_CODE_TTL_MS = 10 * 60 * 1000;        // 10 min — codes are single-use
 const ACCESS_TOKEN_TTL_S = 60 * 60;             // 1 hour
 const REFRESH_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+/** The consent page and its password form are one short browser transaction.
+ *  Five minutes is enough to read the screen, enter the password, and retry a
+ *  typo without turning a public, client-supplied redirect URI into a durable
+ *  bearer credential. */
+const CONSENT_TRANSACTION_TTL_S = 5 * 60;
 /** Claude allows 10s for discovery/authorize/token. Fetching the client's CIMD
  *  happens inside that budget, so it gets a fraction of it. */
 const CIMD_FETCH_TIMEOUT_MS = 5000;
@@ -124,14 +129,18 @@ interface AccessClaims {
 /** Access tokens are signed JWTs so validation is stateless — no store read on
  *  the hot path of every MCP request. Refresh tokens are opaque and stored,
  *  because rotation requires invalidating the old one. */
-function signJwt(claims: AccessClaims, secret: string): string {
+function signSignedClaims(claims: object & { exp: number }, secret: string): string {
   const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const payload = b64url(JSON.stringify(claims));
   const sig = b64url(createHmac("sha256", secret).update(`${header}.${payload}`).digest());
   return `${header}.${payload}.${sig}`;
 }
 
-export function verifyJwt(token: string, secret: string): AccessClaims | null {
+function signJwt(claims: AccessClaims, secret: string): string {
+  return signSignedClaims(claims, secret);
+}
+
+function verifySignedClaims(token: string, secret: string): Record<string, unknown> | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [header, payload, sig] = parts;
@@ -140,12 +149,94 @@ export function verifyJwt(token: string, secret: string): AccessClaims | null {
   if (sig.length !== expected.length) return null;
   if (!timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   try {
-    const claims = JSON.parse(b64urlDecode(payload).toString("utf8")) as AccessClaims;
+    const claims = JSON.parse(b64urlDecode(payload).toString("utf8")) as Record<string, unknown>;
     if (typeof claims.exp !== "number" || claims.exp * 1000 < Date.now()) return null;
     return claims;
   } catch {
     return null;
   }
+}
+
+export function verifyJwt(token: string, secret: string): AccessClaims | null {
+  const claims = verifySignedClaims(token, secret);
+  if (!claims ||
+      typeof claims.iss !== "string" ||
+      typeof claims.aud !== "string" ||
+      typeof claims.sub !== "string" ||
+      typeof claims.scope !== "string" ||
+      typeof claims.iat !== "number") return null;
+  return claims as unknown as AccessClaims;
+}
+
+interface AuthorizationRequest {
+  clientId: string;
+  clientName?: string;
+  redirectUri: string;
+  responseType: string;
+  codeChallenge: string;
+  challengeMethod: string;
+  state: string;
+  resource: string;
+  scope: string;
+}
+
+interface AuthorizationTransaction extends AuthorizationRequest {
+  kind: "authorization-consent";
+  iss: string;
+  iat: number;
+  exp: number;
+}
+
+/** Bind the already-validated OAuth request to this issuer for the life of the
+ *  consent form. The browser gets one opaque signed value instead of editable
+ *  copies of client_id, redirect_uri, PKCE, resource, scope and state. POST can
+ *  therefore trust the transaction without fetching the client's metadata a
+ *  second time — a remote WAF or outage cannot strand a form the owner already
+ *  reviewed, and a tampered hidden redirect can never become a Location header. */
+function issueConsentTransaction(request: AuthorizationRequest, base: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const transaction: AuthorizationTransaction = {
+    kind: "authorization-consent",
+    iss: base,
+    iat: now,
+    exp: now + CONSENT_TRANSACTION_TTL_S,
+    ...request,
+  };
+  return signSignedClaims(transaction, signingSecret());
+}
+
+function verifyConsentTransaction(ticket: string, base: string): AuthorizationRequest | null {
+  const claims = verifySignedClaims(ticket, signingSecret());
+  if (!claims ||
+      claims.kind !== "authorization-consent" ||
+      claims.iss !== base ||
+      typeof claims.clientId !== "string" ||
+      (claims.clientName !== undefined && typeof claims.clientName !== "string") ||
+      typeof claims.redirectUri !== "string" ||
+      typeof claims.responseType !== "string" ||
+      typeof claims.codeChallenge !== "string" ||
+      typeof claims.challengeMethod !== "string" ||
+      typeof claims.state !== "string" ||
+      typeof claims.resource !== "string" ||
+      typeof claims.scope !== "string") return null;
+
+  let redirect: URL;
+  try { redirect = new URL(claims.redirectUri); } catch { return null; }
+  if (redirect.protocol !== "http:" && redirect.protocol !== "https:") return null;
+  if (claims.responseType !== "code" || claims.challengeMethod !== "S256" || !claims.codeChallenge) return null;
+  if (claims.resource.replace(/\/+$/, "") !== resourceUri(base).replace(/\/+$/, "")) return null;
+
+  return {
+    clientId: claims.clientId,
+    ...(typeof claims.clientName === "string" ? { clientName: claims.clientName } : {}),
+    redirectUri: claims.redirectUri,
+    responseType: claims.responseType,
+    codeChallenge: claims.codeChallenge,
+    challengeMethod: claims.challengeMethod,
+    state: claims.state,
+    resource: claims.resource,
+    scope: claims.scope,
+  };
 }
 
 // ── Durable store ─────────────────────────────────────────────────────────────
@@ -350,6 +441,19 @@ interface ClientMetadata {
   redirect_uris: string[];
 }
 
+/** Claude's hosted connector has a fixed client identifier and callback, but
+ *  its metadata URL currently sits behind a browser-oriented WAF that returns
+ *  403/404 to conforming server-side CIMD fetchers. Treating this one exact
+ *  identifier as pre-registered is both narrower and more reliable than
+ *  weakening SSRF protection or impersonating a browser. The owner password is
+ *  still required, and the redirect remains the exact Anthropic callback. */
+const PRE_REGISTERED_CLIENTS: Record<string, ClientMetadata> = {
+  "https://claude.ai/oauth/client-metadata": {
+    client_id: "https://claude.ai/oauth/client-metadata",
+    redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+  },
+};
+
 /** Loopback redirects bind an ephemeral port at runtime, so RFC 8252 §7.3
  *  requires comparing them with the port ignored. Claude Code declares
  *  http://localhost/callback and http://127.0.0.1/callback and binds a random
@@ -434,6 +538,11 @@ export async function resolveClient(clientId: string): Promise<{ client: ClientM
         redirect_uris: registered.redirectUris,
       },
     };
+  }
+
+  const preRegistered = PRE_REGISTERED_CLIENTS[clientId];
+  if (preRegistered) {
+    return { client: { ...preRegistered, redirect_uris: [...preRegistered.redirect_uris] } };
   }
 
   let url: URL;
@@ -669,6 +778,41 @@ export function landingPage(base: string, oauthOn: boolean, sseOn: boolean): str
   );
 }
 
+const PAGE_SECURITY_DIRECTIVES = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; img-src 'self' data:";
+
+/** The consent page is unusual: the form posts to this origin, but the response
+ *  redirects to the OAuth client's already-validated callback. Chrome and Safari
+ *  enforce form-action across that redirect chain, so `form-action 'self'` alone
+ *  blocks the callback and leaves the owner staring on a page whose server did
+ *  return 302. Add only the exact validated callback origin, never a scheme-wide
+ *  grant or a client-supplied string. */
+function pageContentSecurityPolicy(redirectUri?: string): string {
+  let formAction = "'self'";
+  if (redirectUri) {
+    const origin = new URL(redirectUri).origin;
+    if (origin !== "null") formAction += ` ${origin}`;
+  }
+  return `${PAGE_SECURITY_DIRECTIVES}; form-action ${formAction}; style-src 'unsafe-inline'`;
+}
+
+function consentResponse(
+  transaction: string,
+  redirectUri: string,
+  clientHost: string,
+  verifiedHost: boolean,
+  error?: string,
+  status = 200
+): Response {
+  return new Response(consentPage({ transaction }, clientHost, error, verifiedHost), {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": pageContentSecurityPolicy(redirectUri),
+    },
+  });
+}
+
 export function consentPage(params: Record<string, string>, clientHost: string, error?: string, verifiedHost = true): string {
   const hidden = Object.entries(params)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
@@ -727,7 +871,13 @@ const htmlError = (message: string, status = 400): Response =>
   <p class="foot">Nothing was authorized. Close this window and start again from your client.</p>
 </div>`
     ),
-    { status, headers: { "Content-Type": "text/html; charset=utf-8" } }
+    {
+      status,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Security-Policy": pageContentSecurityPolicy(),
+      },
+    }
   );
 
 export async function handleAuthorize(req: Request, base: string): Promise<Response> {
@@ -741,79 +891,104 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
       return htmlError("The authorization form could not be read.", 400);
     }
   }
-  const get = (k: string): string => (form ? form.get(k) : url.searchParams.get(k)) ?? "";
 
-  const clientId = get("client_id");
-  const redirectUri = get("redirect_uri");
-  const responseType = get("response_type");
-  const codeChallenge = get("code_challenge");
-  const challengeMethod = get("code_challenge_method");
-  const state = get("state");
-  const resource = get("resource");
-  const scope = get("scope") || SCOPE;
+  let request: AuthorizationRequest;
+  let transaction: string;
 
-  if (!clientId || !redirectUri) return htmlError("Missing client_id or redirect_uri.");
+  if (form) {
+    // POST trusts only the server-signed transaction rendered by the GET. Never
+    // read a redirect_uri or PKCE value from an editable hidden field here.
+    transaction = form.get("transaction") ?? "";
+    const verified = verifyConsentTransaction(transaction, base);
+    if (!verified) {
+      return htmlError("This authorization request expired or was altered. Start again from your client.");
+    }
+    request = verified;
+  } else {
+    const get = (k: string): string => url.searchParams.get(k) ?? "";
+    const clientId = get("client_id");
+    const redirectUri = get("redirect_uri");
+    const responseType = get("response_type");
+    const codeChallenge = get("code_challenge");
+    const challengeMethod = get("code_challenge_method");
+    const state = get("state");
+    const resource = get("resource");
+    const scope = get("scope") || SCOPE;
 
-  const resolved = await resolveClient(clientId);
-  if ("error" in resolved) return htmlError(resolved.error);
-  if (!redirectUriAllowed(redirectUri, resolved.client.redirect_uris)) {
-    // Never redirect to an unvalidated URI — that is the open-redirect hole.
-    return htmlError("redirect_uri is not listed in the client's metadata document.");
+    if (!clientId || !redirectUri) return htmlError("Missing client_id or redirect_uri.");
+
+    const resolved = await resolveClient(clientId);
+    if ("error" in resolved) return htmlError(resolved.error);
+    if (!redirectUriAllowed(redirectUri, resolved.client.redirect_uris)) {
+      // Never redirect to an unvalidated URI — that is the open-redirect hole.
+      return htmlError("redirect_uri is not listed in the client's metadata document.");
+    }
+
+    // From here the redirect_uri is trusted, so protocol errors go back to the
+    // client as OAuth errors rather than being rendered as a dead-end page.
+    const fail = (error: string, description: string): Response =>
+      redirectWith(redirectUri, { error, error_description: description, iss: base, ...(state ? { state } : {}) });
+
+    if (responseType !== "code") return fail("unsupported_response_type", "Only response_type=code is supported.");
+    if (!codeChallenge || challengeMethod !== "S256") {
+      return fail("invalid_request", "PKCE with code_challenge_method=S256 is required.");
+    }
+    if (resource && resource.replace(/\/+$/, "") !== resourceUri(base).replace(/\/+$/, "")) {
+      return fail("invalid_target", `This server only issues tokens for ${resourceUri(base)}.`);
+    }
+
+    request = {
+      clientId,
+      ...(resolved.client.client_name ? { clientName: resolved.client.client_name } : {}),
+      redirectUri,
+      responseType,
+      codeChallenge,
+      challengeMethod,
+      state,
+      resource: resource || resourceUri(base),
+      scope,
+    };
+    transaction = issueConsentTransaction(request, base);
   }
 
-  // From here the redirect_uri is trusted, so protocol errors go back to the
-  // client as OAuth errors rather than being rendered as a dead-end page.
+  const { clientId, redirectUri, codeChallenge, state, resource, scope } = request;
+
+  // From here the redirect_uri came from a validated client document on GET, or
+  // from the HMAC-signed transaction on POST. Protocol errors can safely return
+  // to that exact client callback.
   const fail = (error: string, description: string): Response =>
     redirectWith(redirectUri, { error, error_description: description, iss: base, ...(state ? { state } : {}) });
-
-  if (responseType !== "code") return fail("unsupported_response_type", "Only response_type=code is supported.");
-  if (!codeChallenge || challengeMethod !== "S256") {
-    return fail("invalid_request", "PKCE with code_challenge_method=S256 is required.");
-  }
-  if (resource && resource.replace(/\/+$/, "") !== resourceUri(base).replace(/\/+$/, "")) {
-    return fail("invalid_target", `This server only issues tokens for ${resourceUri(base)}.`);
-  }
 
   // CIMD clients identify as a URL — its host is what the consent screen
   // shows, because DNS and TLS vouch for it. A /register client_id is an
   // opaque reg_ string, so parsing it as a URL throws; fall back to the
-  // client's self-declared name and let the page label it as such.
+  // client's registered name and let the page label it as self-reported.
   let clientHost: string;
   let verifiedHost = true;
   try {
     clientHost = new URL(clientId).host;
   } catch {
     verifiedHost = false;
-    clientHost = resolved.client.client_name ?? "a dynamically registered client";
+    clientHost = request.clientName ?? "a dynamically registered client";
   }
-  const carried: Record<string, string> = {
-    client_id: clientId, redirect_uri: redirectUri, response_type: responseType,
-    code_challenge: codeChallenge, code_challenge_method: challengeMethod, scope,
-    ...(state ? { state } : {}), ...(resource ? { resource } : {}),
-  };
 
-  // GET → show the form. POST → the user answered it.
+  // GET → issue the consent transaction and show the form. POST → consume it.
   if (!form) {
-    return new Response(consentPage(carried, clientHost, undefined, verifiedHost), {
-      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-    });
+    return consentResponse(transaction, redirectUri, clientHost, verifiedHost);
   }
 
-  if (get("decision") !== "approve") {
+  if (form.get("decision") !== "approve") {
     return fail("access_denied", "The owner denied the request.");
   }
-  if (!ownerPasswordMatches(get("password"))) {
-    return new Response(consentPage(carried, clientHost, "Incorrect password.", verifiedHost), {
-      status: 401,
-      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-    });
+  if (!ownerPasswordMatches(form.get("password") ?? "")) {
+    return consentResponse(transaction, redirectUri, clientHost, verifiedHost, "Incorrect password.", 401);
   }
 
   const store = loadStore();
   const code = randomBytes(32).toString("base64url");
   store.codes[code] = {
     clientId, redirectUri, codeChallenge, scope,
-    resource: resource || resourceUri(base),
+    resource,
     expiresAt: Date.now() + AUTH_CODE_TTL_MS,
   };
   saveStore();

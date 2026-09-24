@@ -28,5 +28,6 @@ describe("HTTP transport authentication wiring", () => {
     expect(source.match(/const denied = gate\(\);/g)?.length).toBe(1);
     expect(source).toContain("maxRequestBodySize: 50 * 1024 * 1024");
     expect(source).toContain("await entry.transport.close().catch(() => {})");
+    expect(source).toContain('if (k === "Content-Security-Policy" && res.headers.has(k)) continue');
   });
 });

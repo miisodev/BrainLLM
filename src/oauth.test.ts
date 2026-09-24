@@ -14,6 +14,7 @@ import {
   landingPage,
   handleRegister,
   handleAuthorize,
+  handleToken,
   validateRegistration,
   SCOPE,
 } from "./oauth.js";
@@ -145,6 +146,28 @@ describe("CIMD client resolution", () => {
     expect(await resolveClient("not-a-url")).toHaveProperty("error");
   });
 
+  test("resolves Claude's exact hosted client locally", async () => {
+    const resolved = await resolveClient(CID);
+    if (!("client" in resolved)) throw new Error(resolved.error);
+    expect(resolved.client.redirect_uris).toEqual(["https://claude.ai/api/mcp/auth_callback"]);
+  });
+
+  test("hosted Claude consent allows its validated callback through form-action", async () => {
+    const verifier = randomBytes(32).toString("base64url");
+    const url = new URL(`${BASE}/authorize`);
+    url.searchParams.set("client_id", CID);
+    url.searchParams.set("redirect_uri", "https://claude.ai/api/mcp/auth_callback");
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
+    url.searchParams.set("code_challenge_method", "S256");
+    url.searchParams.set("resource", `${BASE}/mcp`);
+    url.searchParams.set("scope", SCOPE);
+    const response = await handleAuthorize(new Request(url.href), BASE);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toContain("form-action 'self' https://claude.ai");
+    expect(await response.text()).toContain('name="transaction"');
+  });
+
   test("accepts a well-formed, self-referential, same-origin document", () => {
     const ok = validateClientDocument(CID, {
       client_id: CID,
@@ -253,6 +276,33 @@ describe("dynamic client registration", () => {
     token_endpoint_auth_method: "none",
   };
 
+  function authorizationUrl(clientId: string, verifier: string): string {
+    const url = new URL(`${BASE}/authorize`);
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", String(OPENCODE_METADATA.redirect_uris[0]));
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
+    url.searchParams.set("code_challenge_method", "S256");
+    url.searchParams.set("resource", `${BASE}/mcp`);
+    url.searchParams.set("scope", SCOPE);
+    url.searchParams.set("state", "state-123");
+    return url.href;
+  }
+
+  function transactionFrom(html: string): string {
+    const match = html.match(/name="transaction" value="([^"]+)"/);
+    if (!match) throw new Error("consent transaction missing");
+    return match[1]!;
+  }
+
+  function postConsent(fields: Record<string, string>): Request {
+    return new Request(`${BASE}/authorize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(fields),
+    });
+  }
+
   test("registers a public client and echoes the SDK's metadata shape", async () => {
     const res = await postRegister(OPENCODE_METADATA);
     expect(res.status).toBe(201);
@@ -311,18 +361,15 @@ describe("dynamic client registration", () => {
     const res = await postRegister(OPENCODE_METADATA);
     const { client_id } = await res.json() as { client_id: string };
     const verifier = randomBytes(32).toString("base64url");
-    const url = new URL(`${BASE}/authorize`);
-    url.searchParams.set("client_id", client_id);
-    url.searchParams.set("redirect_uri", "http://127.0.0.1:19876/mcp/oauth/callback");
-    url.searchParams.set("response_type", "code");
-    url.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
-    url.searchParams.set("code_challenge_method", "S256");
-
-    const page = await handleAuthorize(new Request(url.href), BASE);
+    const page = await handleAuthorize(new Request(authorizationUrl(client_id, verifier)), BASE);
     expect(page.status).toBe(200);
+    const csp = page.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toContain("form-action 'self' http://127.0.0.1:19876");
     const html = await page.text();
     expect(html).toContain("OpenCode");
     expect(html).toContain("self-reported");
+    expect(html).toContain('name="transaction"');
+    expect(html).not.toContain('name="redirect_uri"');
   });
 
   test("consent screen labels a registered client's name as self-reported", () => {
@@ -335,6 +382,82 @@ describe("dynamic client registration", () => {
     const registered = consentPage({ client_id: "reg_abc" }, "OpenCode", undefined, false);
     expect(registered).toContain("self-reported");
     expect(registered).not.toContain("DNS and TLS vouch for");
+  });
+
+  test("POST completes from the signed transaction and ignores editable OAuth fields", async () => {
+    const registered = await postRegister(OPENCODE_METADATA);
+    const { client_id } = await registered.json() as { client_id: string };
+    const verifier = randomBytes(32).toString("base64url");
+    const page = await handleAuthorize(new Request(authorizationUrl(client_id, verifier)), BASE);
+    const transaction = transactionFrom(await page.text());
+
+    const previousPassword = process.env.BRAINLLM_OWNER_PASSWORD;
+    process.env.BRAINLLM_OWNER_PASSWORD = "flow-test-owner-password";
+    try {
+      const wrong = await handleAuthorize(postConsent({
+        transaction,
+        password: "wrong-password",
+        decision: "approve",
+        // A hidden field added or edited after the owner saw the page must have
+        // no effect; only the signed redirect URI is ever used.
+        redirect_uri: "https://evil.example/steal",
+      }), BASE);
+      expect(wrong.status).toBe(401);
+      expect(wrong.headers.get("Location")).toBeNull();
+      expect(wrong.headers.get("Content-Security-Policy")).toContain("http://127.0.0.1:19876");
+      expect(await wrong.text()).toContain("OpenCode");
+
+      const approved = await handleAuthorize(postConsent({
+        transaction,
+        password: "flow-test-owner-password",
+        decision: "approve",
+        redirect_uri: "https://evil.example/steal",
+      }), BASE);
+      expect(approved.status).toBe(302);
+      const callback = new URL(approved.headers.get("Location") ?? "");
+      expect(`${callback.origin}${callback.pathname}`).toBe(String(OPENCODE_METADATA.redirect_uris[0]));
+      expect(callback.searchParams.get("state")).toBe("state-123");
+      expect(callback.searchParams.get("iss")).toBe(BASE);
+      const code = callback.searchParams.get("code");
+      expect(code).toBeTruthy();
+
+      const token = await handleToken(new Request(`${BASE}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code!,
+          code_verifier: verifier,
+          redirect_uri: String(OPENCODE_METADATA.redirect_uris[0]),
+        }),
+      }), BASE);
+      expect(token.status).toBe(200);
+      const issued = await token.json() as { access_token: string };
+      expect(validateAccessToken(issued.access_token, BASE)).toBe(true);
+    } finally {
+      if (previousPassword === undefined) delete process.env.BRAINLLM_OWNER_PASSWORD;
+      else process.env.BRAINLLM_OWNER_PASSWORD = previousPassword;
+    }
+  });
+
+  test("a missing, tampered, or wrong-issuer consent transaction is rejected locally", async () => {
+    const registered = await postRegister(OPENCODE_METADATA);
+    const { client_id } = await registered.json() as { client_id: string };
+    const verifier = randomBytes(32).toString("base64url");
+    const page = await handleAuthorize(new Request(authorizationUrl(client_id, verifier)), BASE);
+    const transaction = transactionFrom(await page.text());
+    const tampered = `${transaction.slice(0, -1)}${transaction.endsWith("A") ? "B" : "A"}`;
+
+    for (const [ticket, issuer] of [[undefined, BASE], [tampered, BASE], [transaction, "https://other.example"]] as const) {
+      const response = await handleAuthorize(postConsent({
+        ...(ticket ? { transaction: ticket } : {}),
+        password: "irrelevant",
+        decision: "approve",
+      }), issuer);
+      expect(response.status).toBe(400);
+      expect(response.headers.get("Location")).toBeNull();
+      expect(await response.text()).toContain("expired or was altered");
+    }
   });
 });
 
@@ -381,7 +504,7 @@ describe("consent screen", () => {
     expect(html).toContain("&quot;&gt;&lt;img");
   });
 
-  test("carries every param forward as a hidden field", () => {
+  test("the pure renderer carries only the fields it is given", () => {
     const html = consentPage(params, "claude.ai");
     for (const [k, v] of Object.entries(params)) {
       expect(html).toContain(`name="${k}"`);

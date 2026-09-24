@@ -3,6 +3,12 @@ import { isIP } from "node:net";
 import { request as httpsRequest } from "node:https";
 import type { IncomingMessage } from "node:http";
 
+/** Identify the authorization server honestly. Several client metadata CDNs
+ *  challenge requests with no User-Agent as generic bots; a truthful product
+ *  identifier is both more interoperable and less likely to look like traffic
+ *  spoofing a browser. */
+export const CIMD_USER_AGENT = "BrainLLM-CIMD/1.0 (+https://github.com/miisodev/BrainLLM)";
+
 /** RFC 1918/4193/loopback/link-local/documentation and other non-public space. */
 export function isNonPublicAddress(address: string): boolean {
   const value = address.trim().toLowerCase().replace(/^\[|\]$/g, "").split("%")[0];
@@ -172,7 +178,14 @@ async function fetchPinned(
     const hostname = target.url.hostname.replace(/^\[|\]$/g, "");
     const request = httpsRequest(target.url, {
       method: "GET",
-      headers: { Accept: "application/json", Host: target.url.host, Connection: "close" },
+      headers: {
+        Accept: "application/json",
+        // The body reader below is deliberately uncompressed and byte-bounded.
+        "Accept-Encoding": "identity",
+        "User-Agent": CIMD_USER_AGENT,
+        Host: target.url.host,
+        Connection: "close",
+      },
       agent: false,
       // The URL hostname remains the TLS SNI/certificate identity; lookup is
       // overridden so the socket can only connect to the address we checked.

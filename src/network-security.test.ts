@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assertPublicHttpsUrl, isNonPublicAddress } from "./network-security.js";
+import { assertPublicHttpsUrl, CIMD_USER_AGENT, isNonPublicAddress } from "./network-security.js";
 
 describe("CIMD network boundaries", () => {
   test("rejects private, loopback, link-local, documentation, and mapped addresses", () => {
@@ -29,5 +29,10 @@ describe("CIMD network boundaries", () => {
     await expect(assertPublicHttpsUrl("http://example.com/client")).rejects.toThrow("https");
     await expect(assertPublicHttpsUrl("https://127.0.0.1/client")).rejects.toThrow("non-public");
     await expect(assertPublicHttpsUrl("https://localhost/client")).rejects.toThrow("not public");
+  });
+
+  test("identifies CIMD requests honestly instead of impersonating a browser", () => {
+    expect(CIMD_USER_AGENT).toBe("BrainLLM-CIMD/1.0 (+https://github.com/miisodev/BrainLLM)");
+    expect(CIMD_USER_AGENT).not.toContain("Mozilla");
   });
 });

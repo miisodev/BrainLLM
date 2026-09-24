@@ -155,7 +155,7 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "12.4.0",
+    version: "12.4.1",
     icons: brandingIcons(origin),
   });
   // The two surfaces, composed here rather than nested inside registerTools —
@@ -230,7 +230,14 @@ if (port) {
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
   };
   const withCors = (res: Response): Response => {
-    for (const [k, v] of Object.entries({ ...CORS_HEADERS, ...SECURITY_HEADERS })) res.headers.set(k, v);
+    for (const [k, v] of Object.entries({ ...CORS_HEADERS, ...SECURITY_HEADERS })) {
+      // The OAuth handler owns a route-specific CSP: its validated external
+      // callback must be allowed in form-action, while every other response
+      // gets the locked-down default above. Never overwrite that route-specific
+      // policy here — doing so is what made v12.4 return 302s Chrome refused to follow.
+      if (k === "Content-Security-Policy" && res.headers.has(k)) continue;
+      res.headers.set(k, v);
+    }
     return res;
   };
 
