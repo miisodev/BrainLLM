@@ -66,6 +66,7 @@ else passed.push(`mcpName matches server name (${mcpName})`);
 const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const landing = readFileSync(new URL("../docs/index.html", import.meta.url), "utf8");
+const init = readFileSync(new URL("../src/init.ts", import.meta.url), "utf8");
 const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8")) as {
   name?: string;
   version?: string;
@@ -80,6 +81,7 @@ const versions: Array<[string, string | undefined]> = [
   ["README.md version badge", readme.match(/badge\/version-([0-9]+\.[0-9]+\.[0-9]+)-/)?.[1]],
   ["docs/index.html version pill", landing.match(/v([0-9]+\.[0-9]+\.[0-9]+)\s+·\s+open source/)?.[1]],
   ["package-lock.json", lock.version],
+  ["src/init.ts bootstrap banner", init.match(/BrainLLM \(v([0-9]+\.[0-9]+\.[0-9]+)\)/)?.[1]],
 ];
 const missing = versions.filter(([, value]) => !value).map(([name]) => name);
 if (missing.length) {
