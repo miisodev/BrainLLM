@@ -2,7 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { TriliumClient, type Note } from "./trilium.js";
+import { TriliumClient, type Note, isCollectionThread } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { txt, skim, readFull, labelOf } from "./tools-surface.js";
 import { toText, addendumIndex } from "./normalize.js";
@@ -12,16 +12,11 @@ export function registerMemoryTools(server: McpServer, trilium: TriliumClient, b
 
   server.tool(
     "memory",
-    `Read a Memory note in full by id — a thread or a session. A thread book returns its
-Context/Resolution plus a children index ({id, date, blocks[]}, newest first) instead of a
-flat body — the day-to-day content lives in those [yyyy-mm-dd] children, not the book. Each
-child is indexed by its ADDENDUM BLOCKS — marker, identification line, and lead — rather than a
-slice from the top of the body, which on a record note is the header and therefore identical on
-every child.
-
-Pass date="yyyy-mm-dd" to resolve straight to that day's child in the same call, or call
-memory() again with a child's id from the index. section="<heading>" reads one section instead
-of the whole body — use it on long sessions and consolidated thread Contexts.`,
+    `Read a Memory note by id — a thread or a session. A dated thread returns its Context and
+Resolution plus an index of its [yyyy-mm-dd] children (newest first), each listed by its
+addendum blocks; date="yyyy-mm-dd" resolves straight to one day. A collection thread returns its
+Context plus its titled entries (alphabetical, with a lead). Read a child with memory(<child id>).
+section="<heading>" reads one section.`,
     {
       id: z.string(),
       date: z.string().optional().describe("Thread books only: resolve directly to this day's child note (yyyy-mm-dd)"),
@@ -31,6 +26,26 @@ of the whole body — use it on long sessions and consolidated thread Contexts.`
     async ({ id, date, section, occurrence }) => {
       const note = await trilium.getNote(id).catch(() => null);
       if (!note || labelOf(note, "noteType") !== "thread") return txt(await readFull(trilium, id, { section, occurrence }));
+
+      // Collection threads: titled entries, alphabetical, each with a lead.
+      if (isCollectionThread(note)) {
+        const kids = await trilium
+          .searchNotes("#noteType=threadEntry", { ancestorNoteId: id, fastSearch: true, limit: 500 })
+          .catch(() => ({ results: [] as Note[] }));
+        const entries = await Promise.all(
+          kids.results
+            .filter((c) => c.parentNoteIds.includes(id))
+            .sort((a, z) => a.title.localeCompare(z.title))
+            .map(async (c) => ({
+              id: c.noteId,
+              title: c.title,
+              updated: labelOf(c, "updated") ?? c.dateModified.slice(0, 10),
+              preview: toText(await trilium.getNoteContent(c.noteId).catch(() => ""), 160),
+            }))
+        );
+        const full = await readFull(trilium, id, { section, occurrence });
+        return txt({ ...full, shape: "collection", entries });
+      }
 
       if (date) {
         const child = await trilium

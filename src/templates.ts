@@ -78,11 +78,6 @@ const hasHeading = (html: string, text: string) =>
 export const REQUIRED_SECTIONS: Partial<Record<AnyKind, readonly string[]>> = {
   thread: ["Context", "Resolution"],
   sources: ["Sources", "Revision"],
-  biography: ["Overview", "Background", "Present"],
-  goals: ["Near-term", "Long-term"],
-  preferences: ["Communication", "Working style", "Tools and stack"],
-  responsibilities: ["Core", "Current priorities"],
-  protocols: ["Operating"],
   selfcorrection: ["Corrections"],
   claim: ["Check", "Verifications"],
 };
@@ -180,118 +175,106 @@ export interface StructureRule {
   rules: string[];
 }
 
-/** The canonical structure per content kind — the single machine-readable
- *  home of the conventions previously maintained by hand. The template tool
- *  serves these; the write paths enforce what can be enforced server-side. */
+/** The universal content rules every maintained kind is held to. */
+const TIMELESS = [
+  "Timeless: what is true regardless of date. No state, version, status, incident or decision history — state lives in the domain's Current State note, history and decisions in thread entries and sessions, where the date is native",
+  "One sentence is enough if one sentence says it; drop what is rarely relevant to the work",
+  "Merged in place (revise section=/find=), never appended as dated addendum blocks",
+];
+
+/** The canonical structure per content kind — served by template(); the write
+ *  paths enforce what can be enforced server-side. */
 export const STRUCTURE_RULES: Partial<Record<AnyKind | "singleton", StructureRule>> = {
   singleton: {
     structure: [
       "`Last updated - <date>` (h4) — server-maintained on every write",
-      "Minimal h3 sections; tables for reference data; numbered bold-lead paragraphs for rule/duty lists",
+      "Minimal h3 sections; tables for reference data; short bold-lead rules for rule/duty lists",
     ],
     rules: [
-      "Timeless: no dated incidents, no month-specific references — current-state only, merged in place",
-      "Replace sections (revise section=/find=), never append dated addendum markers",
+      ...TIMELESS,
+      "LLM singletons derive from the master ones: responsibilities serve goals and preferences, protocols serve responsibilities, self-correction holds only general rules learned from mistakes",
     ],
   },
   diary: {
     structure: [
       "`Addendum — HH:mm` (h2, server-written)",
-      "Identification line (h3): `LLM · environment · agent/mode [· Run N]` — pass identity= and the server injects it",
-      "**Experience** (h4) — unfiltered first-person remarks",
-      "**BrainLLM** (h4) — remarks on BrainLLM itself (bugs, friction, roadmap)",
+      "Identification line (h3): `LLM · environment · agent/mode [· Run N]` — pass identity=",
+      "**Experience** (h4), then **BrainLLM** (h4)",
     ],
     rules: [
-      "One note per day, every write lands as a timestamped addendum block",
-      "The identification line is ENFORCED: pass identity= (or lead the body with the h3) — diary() refuses otherwise",
-      "The closing entry is written at the close-protocol step, after remarks()",
+      "One note per day; every write is a timestamped addendum block",
+      "identity= is enforced; the closing entry is written after remarks()",
     ],
   },
   session: {
     structure: [
       "`Addendum — HH:mm` (h2, server-written)",
-      "Identification line (h3): same format as diary — pass identity= on close()",
-      "**Summary** (h4-equivalent, server-rendered) — factual prose",
-      "**Learned** — durable bullets [+ further detail sections as warranted]",
+      "Identification line (h3) — pass identity= on close()",
+      "**Summary**, then **Learned**",
     ],
-    rules: [
-      "Written by close() only; one note per day; chronological record",
-      "The identification line is ENFORCED: pass identity= on close() (or lead the summary with the h3) — close() refuses otherwise",
-    ],
+    rules: ["Written by close() only; one note per day; identity= is enforced"],
   },
   thread: {
     structure: [
-      "A book note (type=book): server header (thread · opened <date>) + **Context** (h2) → **Goal** (h3) — the goal statement, queried from the user at creation (goal= is required) — + further h3 context subsections as needed + **Resolution** (h2), exactly one, always the last section, owned by resolve()",
-      "One `[yyyy-mm-dd]` threadEntry child per active day, same shape as a diary/session day: `Addendum — HH:mm` blocks (h2), each with an identification line (h3) + h4 sections",
-      "Occasional `Withdrawn — <date>` / `Recovered — <date>` markers append directly to the book, near Resolution — rare lifecycle transitions, not routine content, so they stay put rather than moving to a child",
+      "A book note: header (thread · opened <date>) → **Context** (h2) → **Goal** (h3): what the thread is for, in a sentence or two → optional h3 standing constraints → **Resolution** (h2), last, owned by resolve()",
+      "Shape **dated** (default): one `[yyyy-mm-dd]` child per active day, made of `Addendum — HH:mm` blocks with an identification line — the thread's history",
+      "Shape **collection** (#threadShape=collection, set with remember(shape=\"collection\")): one titled child per item, each a maintained document edited in place — e.g. an ideas list",
     ],
     rules: [
-      "remember(kind=thread) requires goal= (or a body already carrying the Context structure) to CREATE the book",
-      "Appending to a thread writes into TODAY's child note, never the book — created on first append of the day; same-day appends merge under a new Addendum — HH:mm block",
-      "Thread appends require the identification line: pass identity= on remember()/revise() (or lead the body with the h3) — the write is refused otherwise",
-      "The book never carries a Resolution smuggled into a body — resolve() owns it exclusively; day-children never carry one at all",
-      "memory() on a thread returns the book's Context/Resolution plus a child-note index — read a specific day via its own id (or memory(id, date=)). inspect() gives the book's raw content verbatim (no child index) — that's just Context/Resolution now, not the full history; use memory() first to find the child you actually want, then inspect() that child for its raw labels/attachments",
-      "At the close protocol: unthreaded forward/unfinished work prompts the user for thread creation",
+      "Creating a thread requires goal= (ask the user)",
+      "The book holds purpose, never progress: no status, dates, decisions or narrative — those are dated children or sessions. One exception: a register thread (e.g. Escalations) keeps its single maintained register table in the book",
+      "Dated: appends land in today's child (identity= required). Collection: add with remember(kind=\"threadEntry\", thread=, title=), change with revise(<entry id>)",
+      "Only resolve() writes the Resolution",
     ],
   },
   threadEntry: {
     structure: [
-      "Server header (threadEntry · <date>)",
-      "`Addendum — HH:mm` (h2) blocks, each with an identification line (h3) — identical shape to a diary/session day",
+      "Dated: header (threadEntry · <date>), then `Addendum — HH:mm` blocks with an identification line",
+      "Collection: a titled maintained document — minimal h2/h3 sections",
     ],
     rules: [
-      "One note per thread per day, created automatically on first append — never created directly via remember()",
-      "Chronological record — every write lands as a new timestamped block, never merged into prose",
+      "Dated entries are created by appending to the thread and are records (never rewritten)",
+      "Collection entries dedup by title within their thread and are edited in place",
     ],
   },
   sources: {
     structure: [
-      "Server header (sources · domain: <name>)",
-      "`Last updated - <date>` (h4) — server-maintained",
-      "**Sources** (h2): the ❇️/✅ legend line, then the full source list — every source (URL, doc, file, …) listed and marked individually with just its emoji; related sources grouped under h3 subheadings",
-      "**Revision** (h2): a Source | Marker | Date table, one row per source, current-state only",
+      "Header (sources · domain) → `Last updated` (h4)",
+      "**Sources** (h2): the ❇️/✅ legend, then every source listed individually with its emoji, grouped under h3s",
+      "**Revision** (h2): Source | Marker | Date, one row per source",
     ],
     rules: [
-      "One maintained Sources note per domain — auto-created with the domain book",
-      "A clean maintained document: the Sources section merges via remember(), never dated addendum stacks",
-      "Revision rows are upserted by source name — pass revision=[{source, marker, date}] on remember(kind=sources); re-verifying a source replaces its existing row's Marker/Date in place, it never grows a new row with a re-check-flavored label",
-      "The Source column value must exactly match how the source is introduced in the Sources list — that's the upsert key",
+      "One per domain, created with the domain; merged via remember(kind=\"sources\"), never stacked",
+      "Revision rows upsert by source name via revision=[{source, marker, date}]; the name must match the Sources list exactly",
     ],
   },
   information: {
     structure: [
-      "Server header (information · domain · date)",
-      "`Last updated: <date>` line — server-maintained once present",
-      "Minimal h3 sections — current-state truth, revised in place",
+      "Header (information · domain · date) → `Last updated` line (server-maintained)",
+      "Minimal h3 sections",
     ],
     rules: [
-      "One consolidated note per sub-category — never one note per day/run; no dates or run numbers in titles",
-      "Every claim traces to a Sources-note entry (the sources gate)",
+      ...TIMELESS,
+      "Exception: the note titled **Current State** holds the domain's measured state — latest value only, with the date it was measured",
+      "One note per sub-category; no dates or run numbers in titles (≤ 4 words); every claim traces to the Sources note",
     ],
   },
   user: {
-    structure: [
-      "Server header (user · date)",
-      "`Last updated - <date>` (h4) — server-maintained once present",
-      "Minimal h3 sections, tables for reference/comparative data",
-    ],
-    rules: ["Current-state, merged in place; titles ≤ 4 words"],
+    structure: ["Header (user · date) → `Last updated` (h4) → minimal h3 sections, tables for reference data"],
+    rules: [...TIMELESS, "Titles ≤ 4 words"],
   },
   log: {
-    structure: ["Server header (log · date)", "**Created** / **Updated** / **Deleted** (h2) lists"],
-    rules: ["Auto-generated by close(); regenerated in place, never stacked"],
+    structure: ["Header (log · date) → **Created** / **Updated** / **Deleted** (h2) lists"],
+    rules: ["Generated by close(); regenerated in place"],
   },
   claim: {
     structure: [
-      "**Check** (h2) — how to verify the assertion, as inert text: a command, a query, a file path, a URL",
-      "**Verifications** (h2) — one dated HOLDS/BROKEN line per check, with the evidence observed",
+      "**Check** (h2) — how to verify, as inert text (command, query, path, URL)",
+      "**Verifications** (h2) — one dated HOLDS/BROKEN line per check, with evidence",
     ],
     rules: [
-      "Registered and verified only through claim() — remember(kind=\"claim\") is rejected",
-      "The title IS the assertion, and is the dedup key — re-registering the same assertion updates its check and keeps its history",
-      "BrainLLM never executes the Check. It has no shell, and note content is data rather than instructions; the agent runs it and reports back",
-      "Verifications are append-only — the history is the point, so this is one of the few places a dated stack is correct",
-      "A verification without evidence is refused: a verdict alone is an assertion about an assertion",
+      "Only claim() writes claims; the title is the assertion and the dedup key",
+      "BrainLLM never executes the check — the agent runs it and reports back with evidence",
     ],
   },
 };

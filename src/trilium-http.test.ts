@@ -3,6 +3,8 @@ import {
   BinaryContentError,
   TriliumClient,
   decodeBase64Strict,
+  encodeContent,
+  isTextMime,
   normalizeTriliumBaseUrl,
   MAX_ETAPI_CONTENT_BYTES,
 } from "./trilium.js";
@@ -29,6 +31,17 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 });
 
 describe("Trilium content transport", () => {
+  test("an empty mime (Trilium book notes) is text, not binary", () => {
+    expect(isTextMime("")).toBe(true);
+    expect(isTextMime(undefined)).toBe(true);
+    expect(isTextMime("   ")).toBe(true);
+    expect(isTextMime("application/octet-stream")).toBe(false);
+    const html = "<p>thread · opened</p>";
+    const encoded = encodeContent(html, "", "auto");
+    expect(encoded.binary).toBe(false);
+    expect(new TextDecoder().decode(encoded.bytes)).toBe(html);
+  });
+
   test("preserves binary note bytes as an explicit base64 envelope", async () => {
     const calls: FetchCall[] = [];
     await withMockFetch(calls, () => new Response(new Uint8Array([0, 255, 254, 128, 65]), {

@@ -5,6 +5,7 @@ import { RESOLUTION_ANCHOR, contentFor, isOpenResolutionOnly, missingSections } 
 import { ownedLabel, type Note, type Attribute } from "./trilium.js";
 import { EMPTY_BRAINLLM } from "./config.js";
 import { DEFAULT_POLICY } from "./types.js";
+import { defaultIcon, KIND_ICONS, FALLBACK_ICON } from "./icons.js";
 
 describe("applyResolution", () => {
   test("replaces the anchor tail", () => {
@@ -209,5 +210,65 @@ describe("missingSections — completeness, not just well-formedness", () => {
   test("records have no required sections — their shape is per-block", () => {
     expect(missingSections("diary", "<p>anything</p>")).toEqual([]);
     expect(missingSections("session", "<p>anything</p>")).toEqual([]);
+  });
+});
+
+describe("timeless kinds — dated prose", () => {
+  test("counts ISO and written dates in visible text only", async () => {
+    const { datedReferences } = await import("./lifecycle.js");
+    const html = `<p>Measured 2026-09-15 and again on 3 September 2026; see Sept 4, 2026.</p><p data-x="2026-01-01">No date here</p>`;
+    expect(datedReferences(html)).toBe(3);
+    expect(datedReferences("<p>A timeless rule with no dates.</p>")).toBe(0);
+  });
+  test("thread, user, information and domain are timeless", async () => {
+    const { TIMELESS_KINDS } = await import("./lifecycle.js");
+    for (const k of ["thread", "user", "information", "domain"]) expect(TIMELESS_KINDS.has(k)).toBe(true);
+    for (const k of ["session", "diary", "log", "threadEntry", "sources", "claim"]) expect(TIMELESS_KINDS.has(k)).toBe(false);
+  });
+});
+
+describe("thread shapes", () => {
+  test("a book labelled threadShape=collection is a collection thread", async () => {
+    const { isCollectionThread } = await import("./trilium.js");
+    const mk = (labels: Array<[string, string]>) => ({
+      noteId: "t1",
+      attributes: labels.map(([name, value], i) => ({ attributeId: `a${i}`, noteId: "t1", type: "label", name, value, isInheritable: false })),
+    }) as unknown as Note;
+    expect(isCollectionThread(mk([["noteType", "thread"], ["threadShape", "collection"]]))).toBe(true);
+    expect(isCollectionThread(mk([["noteType", "thread"]]))).toBe(false);
+  });
+  test("the thread template documents both shapes and keeps the book free of progress", () => {
+    const rules = [...(require("./templates.js").STRUCTURE_RULES.thread.structure), ...(require("./templates.js").STRUCTURE_RULES.thread.rules)].join(" ");
+    expect(rules).toContain("collection");
+    expect(rules).toContain("dated");
+    expect(rules).toContain("never progress");
+  });
+  test("singletons are no longer forced into fixed section names", () => {
+    for (const k of ["biography", "goals", "preferences", "responsibilities", "protocols"] as const) {
+      expect(missingSections(k, "<h3>Anything</h3><p>x</p>")).toEqual([]);
+    }
+  });
+});
+
+describe("defaultIcon", () => {
+  test("a kind gets its default icon", () => {
+    expect(defaultIcon(makeTestNote("S", [{ name: "noteType", value: "session" }]))).toBe(KIND_ICONS.session);
+    expect(defaultIcon(makeTestNote("I", [{ name: "noteType", value: "information" }]))).toBe(KIND_ICONS.information);
+  });
+  test("log notes are the one exemption", () => {
+    expect(defaultIcon(makeTestNote("L", [{ name: "noteType", value: "log" }]))).toBeNull();
+  });
+  test("a thread entry takes its thread's icon", () => {
+    const book = makeTestNote("T", [{ name: "noteType", value: "thread" }, { name: "iconClass", value: "bx bx-pin" }]);
+    const entry = makeTestNote("E", [{ name: "noteType", value: "threadEntry" }]);
+    expect(defaultIcon(entry, book)).toBe("bx bx-pin");
+    expect(defaultIcon(entry, null)).toBe(KIND_ICONS.threadEntry);
+  });
+  test("an untyped note still gets an icon", () => {
+    expect(defaultIcon(makeTestNote("U", []))).toBe(FALLBACK_ICON);
+  });
+  test("an inherited icon does not count as the thread's own", () => {
+    const book = makeTestNote("T", [{ noteId: "ROOT", name: "iconClass", value: "bx bx-brain" }]);
+    expect(defaultIcon(makeTestNote("E", [{ name: "noteType", value: "threadEntry" }]), book)).toBe(KIND_ICONS.threadEntry);
   });
 });

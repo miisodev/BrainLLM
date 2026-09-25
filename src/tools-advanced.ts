@@ -172,7 +172,7 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "undelete_note",
-    "Recover a recently Trilium-deleted note from Trilium's trash. canBeUndeleted must be true (check note_history). Distinct from recover() which restores BrainLLM-archived notes. Re-applies the BrainLLM label set for the container it lands in — the restore itself does not bring attributes back, and a note without #noteType is invisible to every read path.",
+    `Restore a note deleted in Trilium (check note_history for canBeUndeleted) and re-apply its BrainLLM labels. For BrainLLM-archived notes use recover().`,
     { noteId: z.string() },
     async ({ noteId }) => {
       await trilium.undeleteNote(noteId);
@@ -518,7 +518,7 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "create_backup",
-    "Trigger a named Trilium database backup. ETAPI confirms the logical request completed but does not expose the resulting file path or format (it may be .db or .tnbackup). Use a descriptive name for milestone snapshots (e.g. 'before-migration').",
+    `Named Trilium database backup (raw). The resulting file path is not exposed.`,
     {
       name: z.string().optional().describe("Backup file name without .db extension (default: brainllm-{today})"),
       date: z.string().optional().describe("ISO date used in the default name when name is omitted (default: today)"),

@@ -143,7 +143,11 @@ export class BinaryContentError extends Error {
 }
 
 export function isTextMime(mime: string | undefined): boolean {
-  const value = (mime ?? "text/plain").split(";", 1)[0].trim().toLowerCase();
+  // A blank mime falls back to text, not just a missing one: Trilium reports
+  // an EMPTY mime on book notes (every thread book created before V12.4), and
+  // treating "" as binary made every content write to those books fail with
+  // "content is not standard RFC 4648 base64".
+  const value = (mime ?? "").split(";", 1)[0].trim().toLowerCase() || "text/plain";
   return value.startsWith("text/") || new Set([
     "application/json", "application/ld+json", "application/xml", "application/javascript",
     "application/x-javascript", "application/sql", "image/svg+xml",
@@ -259,6 +263,13 @@ export function ownedLabel(note: Note, name: string): string | undefined {
   return note.attributes.find(
     (a) => a.type === "label" && a.name === name && isOwnedAttribute(note, a)
   )?.value;
+}
+
+/** A thread book's shape: "dated" (default — one [yyyy-mm-dd] child per active
+ *  day, appended to) or "collection" (one titled child per item, each a
+ *  maintained document edited in place). Carried as #threadShape on the book. */
+export function isCollectionThread(note: Note): boolean {
+  return ownedLabel(note, "threadShape") === "collection";
 }
 
 export interface RelationEdge {

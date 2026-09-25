@@ -14,6 +14,7 @@ import type { AnyKind } from "./types.js";
 import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, sectionProfile, escapeQueryRegex, repairDoubleEscaping, classifyDoubleEscape, LARGE_NOTE_CHARS } from "./normalize.js";
 import { RESOLUTION_ANCHOR, missingSections } from "./templates.js";
 import { localToday } from "./time.js";
+import { ensureIcon, defaultIcon } from "./icons.js";
 
 // ── Structural protection ──────────────────────────────────────────────────────
 
@@ -92,6 +93,18 @@ function isoDaysAgo(days: number): string {
  *  acknowledgement label would bump that and instantly invalidate itself. */
 function reviewKey(n: Note): string {
   return n.blobId ?? n.dateModified;
+}
+
+/** Kinds that hold timeless knowledge: no state, version or decision history.
+ *  A domain's "Current State" information note is the one exception. */
+export const TIMELESS_KINDS = new Set(["thread", "user", "information", "domain"]);
+/** Dated references at or above which a timeless note is flagged. */
+export const DATED_PROSE_LIMIT = 4;
+const MONTHS = "Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?";
+const DATED_REF = new RegExp(`\\b20\\d\\d-\\d\\d-\\d\\d\\b|\\b\\d{1,2} (?:${MONTHS}) 20\\d\\d\\b|\\b(?:${MONTHS}) \\d{1,2},? 20\\d\\d\\b`, "g");
+/** Count dated references in a note's visible text. */
+export function datedReferences(html: string): number {
+  return (toText(html, Number.MAX_SAFE_INTEGER).match(DATED_REF) ?? []).length;
 }
 
 /** How many notes deep's structural lint will read in full. Bounded because it
@@ -201,6 +214,25 @@ export async function sweep(
       await trilium.addLabel(n.noteId, "archived", "");
     }
     report.transitions.push(`archived: ${n.title} (thread, dormant past grace)`);
+  }
+
+  // ── Icons ───────────────────────────────────────────────────────────────────
+  // Every note except a log carries an icon. Creation paths set one; this
+  // backfills whatever arrived without (create_note, the Trilium UI, older
+  // notes). Books before entries, so an entry can take its thread's icon.
+  const iconless = await trilium
+    .searchNotes("#!iconClass #noteType != log", { ancestorNoteId: cfg.root, includeArchivedNotes: true, limit: 1000 })
+    .then((r) => r.results)
+    .catch(() => [] as Note[]);
+  if (iconless.length) {
+    report.scanned += iconless.length;
+    const entryLast = [...iconless].sort((a, b) => Number(ownedLabel(a, "noteType") === "threadEntry") - Number(ownedLabel(b, "noteType") === "threadEntry"));
+    let set = 0;
+    for (const n of entryLast) {
+      if (dryRun) { if (defaultIcon(n)) set++; continue; }
+      if (await ensureIcon(trilium, n.noteId, n)) set++;
+    }
+    if (set) report.fixed.push(`icons: ${dryRun ? "would set" : "set"} a default icon on ${set} note${set === 1 ? "" : "s"} that had none`);
   }
 
   // ── Unlabeled-node sweep ────────────────────────────────────────────────────
@@ -531,6 +563,21 @@ export async function sweep(
     if (structure.duplicateHeadings.length) {
       report.flagged.push(`duplicate heading: ${n.title} [${n.noteId}] — '${structure.duplicateHeadings.join("', '")}' repeated in one note; merge with revise(section=…, mode=replace) or target one with occurrence=`);
     }
+    // Timeless kinds carry no state, version or decision history. Dated
+    // references are the tell: state belongs in the domain's Current State
+    // note, history in a thread entry or session, where the date is native.
+    const kindHere = ownedLabel(n, "noteType");
+    const isCurrentState = kindHere === "information" && /^current state$/i.test(n.title.trim());
+    if (kindHere && TIMELESS_KINDS.has(kindHere) && !isCurrentState) {
+      const dated = datedReferences(content);
+      if (dated >= DATED_PROSE_LIMIT) {
+        report.flagged.push(
+          `dated prose: ${n.title} [${n.noteId}] — ${dated} dated references in a timeless ${kindHere} note. ` +
+          `Keep what is true regardless of date; move state to the domain's Current State and history or decisions to a thread entry.`
+        );
+      }
+    }
+
     // Completeness, not just well-formedness. The lint reads the whole note
     // here anyway, so checking it against the section set its own kind
     // requires costs nothing extra — and catches the class that was entirely
@@ -945,7 +992,7 @@ async function hygienePasses(
       .then((r) => r.results)
       .catch(() => [] as Note[]);
     for (const n of heavy) {
-      if (!eligible(n)) continue;
+      if (!eligible(n) || ownedLabel(n, "threadShape") === "collection") continue; // a collection's size is its content, not history
       report.flagged.push(`consolidate: ${n.title} [${n.noteId}] — ${n.childNoteIds.length} day-children. Fold what the thread has ESTABLISHED into its Context section with revise(section="Context"), so a successor reads the conclusion instead of walking the history.`);
     }
   }

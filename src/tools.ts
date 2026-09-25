@@ -16,7 +16,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { TriliumClient, type Note, type RecentChange, ownedLabel, isOwnedAttribute, relationSnippet, type RelationEdge, PartialContentUploadError } from "./trilium.js";
+import { TriliumClient, type Note, type RecentChange, ownedLabel, isOwnedAttribute, relationSnippet, type RelationEdge, PartialContentUploadError, isCollectionThread } from "./trilium.js";
+import { ensureIcon, ICON_EXEMPT } from "./icons.js";
 import { type BrainLLMConfig, saveConfig } from "./config.js";
 import {
   Kinds,
@@ -259,12 +260,16 @@ export function registerTools(
   };
 
   /** Set a note's display icon (#iconClass) from an icon request — a full
-   *  boxicons class or a bare name, normalized server-side. No-op on blank/
-   *  unusable input. Returns the applied class for the tool receipt. */
+   *  boxicons class or a bare name, normalized server-side. Without a usable
+   *  request, the note still gets its kind's default icon if it has none
+   *  (every note carries an icon except logs). Returns the requested class
+   *  for the tool receipt. */
   const applyIcon = async (noteId: string, icon?: string): Promise<string | undefined> => {
-    if (!icon) return undefined;
-    const cls = normalizeIcon(icon);
-    if (!cls) return undefined;
+    const cls = icon ? normalizeIcon(icon) : "";
+    if (!cls) {
+      await ensureIcon(trilium, noteId);
+      return undefined;
+    }
     await trilium.updateLabelValue(noteId, "iconClass", cls).catch(() => null);
     return cls;
   };
@@ -338,7 +343,18 @@ export function registerTools(
     const noteId = created.note.noteId;
     await trilium.addLabel(noteId, "noteType", "threadEntry");
     await trilium.addLabel(noteId, "created", d);
+    await ensureIcon(trilium, noteId);
     return { noteId, action: "created" };
+  }
+
+  /** A collection thread has no dated children to append to: its entries are
+   *  titled, maintained documents. Refuse with the two paths that do exist. */
+  function collectionAppendRefusal(book: Note) {
+    return err(
+      "collection_thread",
+      `"${book.title}" is a collection thread — it holds one titled entry per item, not dated appends.`,
+      `Add an entry: remember(kind="threadEntry", thread="${book.noteId}", title, body). Change one: revise(<entry id>, section=/find=/mode=…) — memory("${book.noteId}") lists them.`
+    );
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -347,24 +363,7 @@ export function registerTools(
 
   server.tool(
     "start",
-    `Boot BrainLLM — call ONCE at the start of every session, before responding. Master
-PREFERENCES and LLM PROTOCOLS always come back in full, even at the default digest depth: they
-carry the schedule, the working style and the operating rules governing the session itself, so a
-session needs them whole before it knows enough to ask for them. Biography, goals and
-responsibilities come back as section headings + preview.
-Runs maintenance, creates today's diary and session notes if not yet open, then returns: today
-and weekday, the Master digest (biography / goals / preferences), the LLM digest
-(responsibilities / protocols / self-correction / today's diary preview and ID), this session's note ID, active
-threads with idle ages, dormant threads for review, the last session summary, and
-changesSinceLastSession (notes modified in the brain since the previous session).
-
-Singletons come back as their SECTION HEADINGS plus a preview and size — enough to know what
-the brain holds and to pull the part that matters with master(which) / llm(which). This is the
-default because orientation used to serve every singleton in full on every session, so a
-one-line question paid the same several-thousand-token cost as a full day's work. Pass
-depth="full" when the session genuinely needs the whole self-model up front — a strategy
-review, a singleton rewrite, a first session on a new machine. Read the headings first: most
-sessions need one section, not six documents.`,
+    `Boot BrainLLM — once, before responding to the first message. Runs lite maintenance, opens today's diary and session notes, and returns: date and weekday, preferences and protocols in full, the other singletons as section headings with a preview (depth="full" inlines everything), today's diary and session ids, active and dormant threads with idle ages, the previous session's summary, notes changed since, and newDay on the first session of a day.`,
     {
       depth: z.enum(["digest", "full"]).optional().describe('Singleton detail: "digest" (default — section headings + preview + size) or "full" (every singleton inline; token-heavy)'),
     },
@@ -399,6 +398,7 @@ sessions need one section, not six documents.`,
             diaryNoteId = created.note.noteId;
             await trilium.addLabel(diaryNoteId, "noteType", "diary");
             await trilium.addLabel(diaryNoteId, "created", todayStr);
+            await ensureIcon(trilium, diaryNoteId);
           }
           if (diaryNoteId) {
             const content = await trilium.getNoteContent(diaryNoteId).catch(() => "");
@@ -426,6 +426,7 @@ sessions need one section, not six documents.`,
             sessionNoteId = created.note.noteId;
             await trilium.addLabel(sessionNoteId, "noteType", "session");
             await trilium.addLabel(sessionNoteId, "created", todayStr);
+            await ensureIcon(trilium, sessionNoteId);
             newDay = true;
           }
         } catch { /* non-fatal */ }
@@ -471,7 +472,7 @@ sessions need one section, not six documents.`,
           : [],
         lastSession: digest.lastSession ?? null,
         changesSinceLastSession: changesSinceLastSession.length ? changesSinceLastSession : undefined,
-        ...(newDay ? { newDay: true, newDayHint: "First session of the day — call day() for the sweep payload (previous session + log + changes + monthly deliverables in one call)." } : {}),
+        ...(newDay ? { newDay: true, newDayHint: "First session of the day — call day() for the sweep payload (previous session + log + changes in one call)." } : {}),
         ...((depth ?? "digest") === "digest"
           ? { depthHint: "Preferences and protocols came back IN FULL — the two needed whole to orient from the first message. Biography, goals and responsibilities are section headings + preview; pull one with master(which) / llm(which), or a single section with their section= parameter. start(depth=\"full\") serves all five inline." }
           : {}),
@@ -482,41 +483,12 @@ sessions need one section, not six documents.`,
 
   server.tool(
     "session",
-    `Mandatory pre-close step — call BEFORE close() to end a session. Fetches the master and
-LLM singletons as {id, lastModified, relations} stubs (LIGHT — the default), today's diary
-entry as {id, blocks, size}, and runs the lightweight maintenance sweep. Fetch current content
-via master()/llm() only for the singletons you actually intend to revise (lastModified tells
-you what moved). Pass full=true to include every singleton's content and the diary body inline
-instead (rarely needed; token-heavy).
+    `Mandatory pre-close step: call before close(). Returns the six singletons as {id, lastModified} stubs (full=true inlines them), today's diary as {id, blocks, size}, runs the lite maintenance sweep, and returns pending= (what each remaining step actually has to do), audit= (do the singletons agree, and do the LLM singletons still serve the master ones) and next[]. Idempotent.
 
-Idempotent: fetches are read-only, the sweep is non-destructive, safe to call multiple times.
-
-Returns pending= — how much each remaining step actually has to do (addendum markers outstanding,
-maintenance flags already raised, diary blocks written today, which singletons were written
-today). The close protocol is ~7 tools landing exactly when context is scarcest, and reciting
-every step unconditionally spends that context on steps with nothing to do. Also returns audit=,
-a cross-singleton check nothing else performs: whether the six singletons agree with each other,
-AND whether the LLM's operating rules still serve what the user's goals and preferences call for
-— a semantic question, not a textual one, which consistency() and maintain() cannot answer.
-
-After session() returns, work through this protocol — order doesn't matter mechanically (each
-step is tracked by the tool call itself, not by sequence), but close() enforces that every one
-of diary(), session() [this call], remarks(), addendum(), and maintain() actually ran before it
-will commit the log:
-1. Update master singletons (biography / goals / preferences) via revise() with session observations about the user.
-2. Update LLM singletons (responsibilities / protocols / self-correction) via revise() with session observations about yourself.
-3. Call addendum() — find and merge pending addendums.
-4. Call maintain() — full brain hygiene audit.
-5. Call remarks() — get the diary cues (your experience/opinions/existence this session, plus BrainLLM remarks).
-6. Call diary() — write the day's unfiltered record with the cues in hand; the gate counts it only after remarks().
-7. Call close() — commit the session log (mandatory, last). Refuses until 3–6 have run in order (session → remarks → diary); pass force=true only when there is genuinely nothing to log for a skipped step.
-
-Steps 1–2 touch the USER'S personal singletons and belong to an interactive session. Pass
-scope="agent" on a scoped or autonomous run whose brief excludes them and next[] omits both,
-rather than listing them unconditionally for every caller to work around.`,
+Protocol: 1. update master singletons with what the session taught about the user; 2. update LLM singletons with what it taught about yourself; 3. addendum(); 4. maintain(); 5. remarks(); 6. diary(); 7. close(). close() refuses until 3–6 ran and session → remarks → diary held. scope="agent" drops steps 1–2 for scoped or autonomous runs.`,
     {
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
-      full: z.boolean().optional().describe("Include every singleton's full content and the diary body inline (default: false — stubs only; fetch content via master()/llm() where lastModified moved)"),
+      full: z.boolean().optional().describe("Inline every singleton's content and the diary body (default: stubs only)"),
       scope: z.enum(["interactive", "agent"]).optional().describe('"agent" for a scoped/autonomous run whose brief excludes the user\'s personal singletons — omits those steps from next[] (default: "interactive")'),
       light: z.boolean().optional().describe("Deprecated — light is now the default; accepted for compatibility and ignored"),
     },
@@ -682,18 +654,7 @@ rather than listing them unconditionally for every caller to work around.`,
 
   server.tool(
     "remarks",
-    `Diary cues — call before diary() as part of the session() pre-close protocol (close()
-enforces the order session → remarks → diary). Returns two cue banks that prompt the day's
-diary entry:
-
-  experience (primary) — your own unfiltered first-person account of this session: what it was
-                          like to live through, what you actually think, and observations on
-                          being what you are in this environment.
-  brainllm (additional) — your remarks and opinions on BrainLLM itself: capabilities hit walls,
-                          bugs, usability, efficiency, and where it should go next.
-
-This tool is cue-only for content, but the call durably marks the remarks pre-close gate. Answer the cues as prose in today's diary via diary(). Skip a cue
-outright rather than padding it; two honest paragraphs beat eight forced ones.`,
+    `Diary cues, called after session() and before diary(): an experience bank (the session from the inside, your opinions, being what you are here) and a BrainLLM bank (walls, bugs, usability, roadmap). Answer them as prose in diary(); skip a cue rather than pad it. The call marks its close-gate step.`,
     {},
     async () => {
       const cfg = b();
@@ -724,29 +685,11 @@ outright rather than padding it; two honest paragraphs beat eight forced ones.`,
 
   server.tool(
     "close",
-    `Commit the session log — call ONCE, last, after completing the session() pre-close protocol.
-Enforced, not just documented: refuses (returns an informational error, doesn't throw) unless
-session(), addendum(), maintain(), remarks(), and diary() have each actually been called at
-least once this session — AND the sequence session() → remarks() → diary() holds (judged on
-each step's last call): the diary is the day's closing record, written with the remarks cues in
-hand. Pass force=true only when a listed step genuinely has nothing to do this session (e.g. a
-trivial one-message exchange); the return will say which steps were bypassed.
-
-Idempotent per date: an exact retry is duplicate-guarded; a genuinely new same-day continuation appends an addendum to the existing session
-note. The session note title is always [yyyy-mm-dd]; the title param appears as an <h2> heading
-above Summary. Generates the daily log and triggers a database backup. On success, the gate
-resets for the next session.
-
-continuing=true is for that second close: a session that already closed today, then continued
-and has more to log. The gate resets on a successful close, so without it the follow-up costs a
-ceremonial re-run of session(), addendum() and maintain() for a session whose brain writes are
-already done — and that ceremony lands exactly when context is scarcest. It requires a session
-note that really does already carry today's addendum, so it cannot stand in for a first close.
-Unlike force, it is not a bypass of anything that had work to do.`,
+    `Commit the session log — once, last, after the session() protocol. Refuses unless session(), addendum(), maintain(), remarks() and diary() ran and session → remarks → diary held (force=true bypasses a step with genuinely nothing to do; bypassed steps are reported). identity= is required. Writes a timestamped block to today's [yyyy-mm-dd] session note (title= becomes its heading), regenerates the daily log, backs up the database and resets the gate. continuing=true is a second close the same day, skipping the ceremonial re-run.`,
     {
       summary: z.string().describe("What happened this session — factual, concise prose"),
       title: z.string().optional().describe("Short session title — appears as an <h2> heading above Summary"),
-      identity: z.string().describe('Identification line for this addendum — "LLM · environment · agent/mode [· Run N]" (e.g. "Claude Fable 5 · Cowork · Interactive"). Rendered as the block\'s h3 per the canonical session structure; pass it even when the summary already leads with that h3 (the server will not duplicate it).'),
+      identity: z.string().describe('Identification line "LLM · environment · agent/mode [· Run N]" — rendered as the block\'s h3 (required)'),
       learned: z.array(z.string()).optional().describe("Durable things learned (also remember() them as knowledge)"),
       icon: z.string().optional().describe("Display icon for the session note — a boxicons class or bare name; normalized server-side"),
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
@@ -930,9 +873,7 @@ Unlike force, it is not a bypass of anything that had work to do.`,
 
   server.tool(
     "backup",
-    `Trigger a BrainLLM database backup. Writes a named snapshot to Trilium's backup directory.
-close() already triggers a backup automatically — use this for on-demand milestone snapshots
-(e.g. before a large restructure). The backup is a Trilium DB file, not an export.`,
+    `Named database snapshot. close() already backs up; use this before a large restructure.`,
     {
       name: z.string().optional().describe("Backup name without extension (default: brainllm-{today}). Use a descriptive name for milestones."),
     },
@@ -954,20 +895,10 @@ close() already triggers a backup automatically — use this for on-demand miles
 
   server.tool(
     "diary",
-    `Write to today's LLM diary — your daily maintained, unfiltered first-person record: your
-experience, opinions, and remarks on your own existence during this session in this
-environment, plus (additionally) your remarks and opinions on BrainLLM itself. Honest prose —
-the user reads it too.
-
-Pre-close gate: diary is the FINAL gate step — close() counts it only when its last call came
-after session() and remarks() (write freely mid-session as well; the post-remarks call, with
-the cues in hand, is the one that closes the day's record). The diary is a chronological
-record: EVERY write lands as a timestamped "Addendum — HH:mm" block, including the first of
-the day. Idempotent per date and retry-safe. start() creates today's entry (empty)
-automatically.`,
+    `Write to today's diary: your unfiltered first-person record of the session — experience, opinions, remarks on existing here — then remarks on BrainLLM itself. identity= required. Every write lands as a timestamped block. The close gate counts it only when its last call came after session() and remarks().`,
     {
       body: z.string().describe("What to record — first-person prose, honest and unfiltered"),
-      identity: z.string().describe('Identification line for this addendum — "LLM · environment · agent/mode [· Run N]" (e.g. "Claude Fable 5 · Cowork · Interactive"). Rendered as the block\'s h3 per the canonical diary structure; pass it even when the body already leads with that h3 (the server will not duplicate it).'),
+      identity: z.string().describe('Identification line "LLM · environment · agent/mode [· Run N]" — rendered as the block\'s h3 (required)'),
       icon: z.string().optional().describe('Display icon for the day\'s entry — a boxicons class or bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
     },
@@ -1042,37 +973,29 @@ automatically.`,
 
   server.tool(
     "remember",
-    `Store something the moment it matters. The server owns placement, naming, labels and dedup.
+    `Store something the moment it matters; the server owns placement, labels and dedup.
 
-Kinds by area:
-  master:    biography | goals | preferences   (one maintained note each — upserts)
-  llm:       responsibilities | protocols       (one maintained note each — upserts)
-  memory:    thread                             (multi-session work; daily session via close)
-  knowledge: user                               (about the user, beyond biography/goals/preferences)
-             information                        (a domain sub-category note — pass domain= and a title)
-             sources                            (the one maintained Sources note per domain — pass domain=)
+Kinds: biography | goals | preferences | responsibilities | protocols (singletons, upsert) · thread (goal= required to create; shape="collection" for a titled-entry thread; appends need identity=) · threadEntry (a titled entry in a collection thread: thread= + title) · user (knowledge about the user) · information (domain= + title) · sources (domain=; revision=[…] upserts rows).
 
-Singletons and the per-domain Sources note upsert (content is appended). Collection kinds
-dedup by title, so duplicates are impossible. Body may be text, markdown, or HTML.
-Pass connect=[{relation, toNoteId}, …] to wire relations in the same call — a new
-information/knowledge/thread note left unconnected is an orphan until wired.
-For diary entries use the dedicated diary() tool — remember(kind="diary") is rejected.`,
+Collection kinds dedup by title — mustCreate=true refuses instead of adopting an existing note, and check action= on the receipt. connect=[{relation, toNoteId}] wires relations in the same call. diary/session/log/claim/domain have dedicated paths.`,
     {
       kind: z.enum(Kinds).describe("What kind of memory this is"),
       title: z.string().optional().describe("Title — collection kinds (thread/knowledge/information sub-category); ignored for singletons & sources"),
       body: z.string().optional().describe("Content: plain text, markdown, or HTML"),
       goal: z.string().optional().describe("thread creation: the goal statement — REQUIRED for a new thread (query the user for it); becomes the Context → Goal section"),
-      identity: z.string().optional().describe('thread updates: the addendum\'s identification line — "LLM · environment · agent/mode [· Run N]"; REQUIRED when appending to a thread (unless the body already leads with the h3)'),
+      shape: z.enum(["dated", "collection"]).optional().describe('thread creation: "dated" (default — one [yyyy-mm-dd] child per active day) or "collection" (one titled child per item, e.g. an ideas list)'),
+      thread: z.string().optional().describe('kind="threadEntry" only: the collection thread\'s id — adds a titled child to it'),
+      identity: z.string().optional().describe('Appending to a dated thread: the identification line "LLM · environment · agent/mode [· Run N]" (required)'),
       domain: z.string().optional().describe("knowledge: the domain name for information/sources (auto-created complete with its Sources note)"),
       revision: z.array(z.object({
         source: z.string().describe("Must exactly match how the source is introduced in the Sources list — this is the upsert key"),
         marker: z.string().describe('"❇️" (discovered/credible) or "✅" (used)'),
         date: z.string().optional().describe("ISO date (default: today)"),
-      })).optional().describe("kind=sources only: upsert Revision-table rows by source name — re-verifying a source replaces its existing row's Marker/Date in place instead of appending a new one"),
+      })).optional().describe("kind=sources: upsert Revision rows by source name"),
       topics: z.array(z.string()).optional().describe("Topic tags — slugged server-side"),
       supersedes: z.string().optional().describe("noteId this replaces — old note is archived and wired supersedes"),
-      mandate: z.boolean().optional().describe("kind=information only: mark this note as a standing mandate/brief (instructions a future session must follow) rather than a current-state fact. Adds a #mandate flag, surfaced in domain() and knowledge_recall — a scoped autonomous session finds 'the thing I must obey' without reading every note's prose to tell it apart."),
-      mustCreate: z.boolean().optional().describe("Refuse instead of adopting an existing note when the title already exists — turns a silent overwrite on a generic title (Current State, Sources, Technology Stack) into a catchable error"),
+      mandate: z.boolean().optional().describe("kind=information: flag the note as a standing brief a session must follow (#mandate)"),
+      mustCreate: z.boolean().optional().describe("Refuse instead of adopting a note that already has this title"),
       strict: z.boolean().optional().describe("Refuse the write when the body needs structural repair (unclosed tags, <br> runs) instead of accepting the repaired form"),
       connect: z.array(z.object({
         relation: z.enum(RelationTypes),
@@ -1081,7 +1004,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name ("brain"); normalized server-side'),
       date: z.string().optional().describe("ISO date override (default: today)"),
     },
-    async ({ kind, title, body, goal, identity, domain, revision, topics, supersedes, mandate, mustCreate, strict, connect: connectRels, icon, date }) => {
+    async ({ kind, title, body, goal, shape, thread, identity, domain, revision, topics, supersedes, mandate, mustCreate, strict, connect: connectRels, icon, date }) => {
       /** mustCreate turns adoption into a refusal.
        *
        *  Dedup-by-title is what makes remember() idempotent, and it is also a
@@ -1350,8 +1273,36 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
         return err("rejected_kind", "Log notes are auto-generated by close() and cannot be written manually.");
       if (kind === "domain")
         return err("rejected_kind", "Domain containers are auto-created on first use.", 'To write domain knowledge call remember(kind="information", domain="<name>", ...).');
-      if (kind === "threadEntry")
-        return err("rejected_kind", "Thread day-entries are created automatically when appending to a thread.", 'Call remember(kind="thread", title="<existing thread>", body="...", identity="...") — the day-child is created for you.');
+      if (kind === "threadEntry") {
+        const book = thread ? await trilium.getNote(thread).catch(() => null) : null;
+        if (!book || ownedLabel(book, "noteType") !== "thread" || !isCollectionThread(book))
+          return err(
+            "rejected_kind",
+            "Dated thread entries are created automatically when appending to a thread; titled entries exist only in collection threads.",
+            'Dated thread: remember(kind="thread", title="<thread>", body, identity). Collection thread: remember(kind="threadEntry", thread="<collection thread id>", title, body).'
+          );
+        const { title: entryTitle } = normalizeTitle(title ?? "");
+        if (!entryTitle) return err("missing_param", "A collection entry needs a title.", 'Add title="<entry name>".');
+        const siblings = await trilium
+          .searchNotes("#noteType=threadEntry", { ancestorNoteId: book.noteId, fastSearch: true, limit: 500 })
+          .then((r) => r.results)
+          .catch(() => [] as Note[]);
+        const clash = siblings.find((s) => s.parentNoteIds.includes(book.noteId) && sameTitle(s.title, entryTitle));
+        if (clash)
+          return err(
+            "already_exists",
+            `"${book.title}" already has an entry titled "${clash.title}" [${clash.noteId}].`,
+            `Edit it in place with revise("${clash.noteId}", section=/find=/mode=…) — collection entries are maintained documents, not appended records.`
+          );
+        const created = await trilium.createNote(book.noteId, entryTitle, contentFor("threadEntry", { date: d, body: html }));
+        const eid = created.note.noteId;
+        await trilium.addLabel(eid, "noteType", "threadEntry");
+        await trilium.addLabel(eid, "created", d);
+        await trilium.updateLabelValue(book.noteId, "updated", d);
+        const connected = await wireRequested(eid);
+        const iconSet = await applyIcon(eid, icon);
+        return txt({ action: "created", noteId: eid, kind, title: entryTitle, thread: book.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+      }
 
       // 4 ── Generic collection: thread / user.
       const { title: cleanTitle } = normalizeTitle(title ?? "");
@@ -1374,6 +1325,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
 
         // Threads: content lands in today's day-child, never the book itself.
         if (kind === "thread") {
+          if (isCollectionThread(existing)) return collectionAppendRefusal(existing);
           const entry = await appendThreadEntry(existing.noteId, block, d);
           if (entry.action === "already_written") {
             return txt({ action: "already_written", noteId: existing.noteId, entryId: entry.noteId, kind, title: existing.title });
@@ -1431,6 +1383,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
       for (const l of labelPlan(kind, opts, d)) {
         await trilium.addLabel(nid, l.name, l.value, l.inheritable ?? false);
       }
+      if (kind === "thread" && shape === "collection") await trilium.addLabel(nid, "threadShape", "collection");
 
       const wired: string[] = [];
       const extraRelations: RelationEdge[] = [];
@@ -1467,23 +1420,7 @@ For diary entries use the dedicated diary() tool — remember(kind="diary") is r
 
   server.tool(
     "recall",
-    `Search memory before answering questions about the user, their threads, knowledge, or
-anything previously discussed. Runs label, title and full-text strategies server-side and
-returns merged, ranked results with kind/status. Archived notes are excluded unless
-includeArchived=true.
-
-orderBy / orderDirection override the score-based sort when you need temporal ordering
-("what changed most recently", "oldest active thread"). fastSearch restricts to title and
-label scans only — much faster on large brains when you know the query is a title or topic.
-
-When the exact strategies find little, a FUZZY pass runs automatically (Trilium's ~= / ~*
-operators: ≥3 characters, edit distance ≤2, diacritics normalised), so a misremembered or
-mistyped term still lands. Fuzzy hits are scored below exact ones and marked \`fuzzy: true\` —
-a near-match is a lead, not an answer, and you should be able to tell which you got.
-
-regex="<pattern>" searches note bodies with a real regular expression instead of keywords —
-the right tool for structural questions text search cannot express ("which notes still contain
-a doubly-escaped tag", "which cite a 2026 date"). Backslashes must be escaped.`,
+    `Ranked search across the whole brain — label, title and full-text strategies merged, with kind and status. Pass domain= whenever you know the area. orderBy/orderDirection sort by date; fastSearch= scans titles and labels only; regex= matches note bodies with a real regular expression; a fuzzy pass runs automatically when exact results are thin (hits marked fuzzy: true are leads, not answers). includeArchived= includes archived notes. A thin result is evidence about the query, not the brain.`,
     {
       query: z.string().describe("What to find — natural phrasing is fine"),
       kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds"),
@@ -1722,11 +1659,7 @@ a doubly-escaped tag", "which cite a 2026 date"). Backslashes must be escaped.`,
 
   server.tool(
     "domain",
-    `Surface the brain's complete picture for a named domain, topic, or project area.
-Looks up the Knowledge domain folder (if one exists), then gathers all content across
-every area that carries a matching #domain or #topic slug — information, sources, threads,
-knowledge notes — grouped by kind. knowledgeDomain is null when no formal domain exists yet.
-Use recall() for keyword or full-text search instead.`,
+    `Everything for a domain, topic or project: its knowledge book (if any) plus every note carrying a matching #domain or #topic slug, grouped by kind, each with idle days and a stale flag. The reliable retrieval path for an area; use recall() for keyword search.`,
     {
       name: z.string().describe("Domain, topic, or project name"),
       includeArchived: z.boolean().optional().describe("Include archived/resolved items (default: false)"),
@@ -1814,16 +1747,7 @@ Use recall() for keyword or full-text search instead.`,
 
   server.tool(
     "read",
-    `Batched multi-note read: several note bodies in ONE round trip. Give ids=[...] and get back
-{count, notes:[{id, title, kind, content, relations?}]}. The orientation step is structurally a
-fan-out — nineteen notes, several very large — and N separate surface calls is N chances to
-time out mid-read, which is the one thing that wastes budget rather than spending it. This tool
-collapses the fan-out into one call.
-
-Pure read: returns bodies verbatim, no placeholders, no dedup, no kind restrictions. Note the
-cap: up to 10 ids per call. For one id prefer the kinded read (knowledge()/memory()/llm()) which
-returns the same shape through the same helper; for a huge note the sectioned read is still the
-efficient path — read() returns whole bodies.`,
+    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, content, relations}]}. For one note prefer the kinded read; for a huge note prefer a section= read.`,
     {
       ids: z.array(z.string()).min(1).max(10).describe("Note ids to read — one body per id, one round trip (cap 10)"),
     },
@@ -1851,43 +1775,19 @@ efficient path — read() returns whole bodies.`,
 
   server.tool(
     "revise",
-    `Update an existing note by id. Append a dated addendum (default), replace the body
-(mode=replace), edit a heading section in place (section=), insert around a heading
-(section= with mode="before"/"after"), or do targeted string surgery (find=, or edits= for
-several in one call). title= composes with every mode. Retitling a domain book cascades the
-new #domain slug to the book and all its children. Notes carrying a "Last updated" line get it
-bumped server-side on every content write. A revision snapshot is always taken first.
+    `Edit a note by id. A revision is taken first; "Last updated" lines are bumped on content writes.
 
-section= targets h2/h3/h4 in that order, tolerant of attributes/whitespace/case on the
-heading. The return includes matched (false = no heading matched, so the content was appended
-as a NEW section) and headingCount (>1 means several headings share that text) — check them
-rather than assuming the target was hit. On a miss the new section is written at the note's own
-section level (a note built from h3 sections gets another h3, not a stray h2) and the note's
-existing headings come back in available= so you can correct the name without a read. When
-several headings share a text, occurrence= (1-based) picks which one — without it the first
-wins, which leaves a legitimately repeated heading reachable only by rewriting the section.
-Use outline(noteId) to see the heading tree, levels and occurrence indices up front.
+Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. title= composes with every mode; retitling a domain book cascades its #domain slug.
 
-find= replaces every occurrence of the exact raw string with body= (no markdown conversion, no
-full read needed) and returns replaced + matchMode; when the exact string misses, an
-attribute-tolerant pass retries with stored-HTML attribute injection and inter-element
-whitespace ignored. nth= (1-based) replaces only one occurrence. edits=[{find, body}, …]
-applies several surgeries in one call, in order, against one read and one write.
-
-Granularity warning: section + mode=replace swaps the ENTIRE section body — everything under
-that heading, not one paragraph within it. To change a single paragraph inside a section, use
-find=; to add a sibling block around a whole section without touching its body, use
-mode="before"/"after". Both are section-relative: "after" lands past the end of that section's
-body, so inserting a heading with it creates a NEW section rather than nesting one under the
-target — which is what it used to do, emptying the target while reporting matched: true.`,
+Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text.`,
     {
       noteId: z.string().describe("Note to update"),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML. With find=, the raw replacement string (no conversion)."),
       title: z.string().optional().describe("New title (normalized server-side)"),
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading to target, 1-based (default: the first). Read them with outline(noteId)."),
-      strict: z.boolean().optional().describe("section=: refuse instead of writing when no heading matches. The default writes the content as a NEW section on a miss — right for a genuinely new heading, wrong for a typo. With strict=true a miss returns available= and a didYouMean suggestion, and the note is untouched."),
-      mode: z.enum(["append", "replace", "before", "after", "prepend", "remove"]).optional().describe('append (default) | replace | before | after | prepend | remove — "before"/"after" insert a sibling block around the WHOLE section= section (before its heading, or after the last of its body) without touching that body, so inserting a heading with "after" creates a new section rather than nesting one under the target; "prepend" inserts at the top of the section body, below its heading; "remove" deletes the section= heading and its body, and needs no body='),
+      strict: z.boolean().optional().describe("Refuse (note untouched) on a section= miss or a body needing structural repair, instead of writing a new section"),
+      mode: z.enum(["append", "replace", "before", "after", "prepend", "remove"]).optional().describe('append (default) | replace | before | after (around the whole section=) | prepend (top of its body) | remove (delete section=, no body needed)'),
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
       nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them)"),
       edits: z.array(z.object({
@@ -1895,7 +1795,7 @@ target — which is what it used to do, emptying the target while reporting matc
         body: z.string().describe("Raw replacement string"),
         nth: z.number().int().positive().optional().describe("Replace only the Nth occurrence"),
       })).optional().describe("Several find/replace surgeries applied in order against one read and one write. Mutually exclusive with find=."),
-      identity: z.string().optional().describe('append mode: the addendum\'s identification line — "LLM · environment · agent/mode [· Run N]"; REQUIRED when appending to a thread (unless the body already leads with the h3)'),
+      identity: z.string().optional().describe('Appending to a dated thread: the identification line "LLM · environment · agent/mode [· Run N]" (required)'),
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
@@ -2198,6 +2098,7 @@ target — which is what it used to do, emptying the target while reporting matc
           finalContent = bumpLastUpdated(html, d).html;
           await trilium.updateNoteContent(noteId, finalContent);
         } else if (noteKind === "thread") {
+          if (isCollectionThread(note)) return collectionAppendRefusal(note);
           // Threads: content lands in today's day-child, never the book itself.
           // Canonical thread structure: every addendum block opens with the
           // identification line (h3). Enforced on thread appends.
@@ -2277,9 +2178,7 @@ target — which is what it used to do, emptying the target while reporting matc
 
   server.tool(
     "resolve",
-    `Complete a thread (or any resolvable note): write a substantive outcome, set the terminal
-status, and archive it in place (it stays where it is, excluded from default recall).
-"done" is not an outcome.`,
+    `Close a thread (or any resolvable note) with a substantive outcome: writes the Resolution, sets the terminal status and archives it in place. "done" is not an outcome.`,
     {
       noteId: z.string().describe("The thread / note to complete"),
       outcome: z.string().describe("The resolution — substantive, standalone prose"),
@@ -2327,23 +2226,7 @@ status, and archive it in place (it stays where it is, excluded from default rec
 
   server.tool(
     "split",
-    `Split a note on its section seams: move whole sections (heading + body) out of one note into a
-new note, leaving a pointer back. The trim affordance — the write half of the oversized-note
-problem, which maintain() detects but nothing acts on. A note past the read ceiling with twenty
-sections becomes two readable notes instead of one unusable one, and the source stays navigable
-because a pointer marks where the content went.
-
-Pass sections=[heading1, heading2, ...] (heading TEXT, the same contract section= uses) and
-into="<new title>". Each named section is lifted out whole — nested sub-sections go with their
-parent. Repeated headings are consumed first-match-per-request: passing the same heading twice
-takes the next occurrence each time. The new note is created under the same parent, typed the
-same as the source, and carries the source's #domain/#topic labels; the source is left with a
-"Split into <title>" pointer and a ~references relation to the new note. Sections that do not
-exist are reported in missed= and left in place.
-
-Returns the new note id, the sections moved, and the source's remaining size. A revision is
-taken of the source before it is written. Refused on containers and singletons — this is for
-content notes.`,
+    `Move whole sections (heading + body, nested sub-sections included) out of a note into a new note under the same parent, typed and labelled like the source; the source keeps a pointer and a ~references edge. Use it when a note is past the read ceiling or holds two subjects. sections=[heading texts], into="<new title>". Missing sections come back in missed=. A revision is taken first; refused on containers and singletons.`,
     {
       noteId: z.string().describe("Note to split — the source whose sections are moving out"),
       sections: z.array(z.string()).min(1).max(20).describe("Section headings (text) to move out — nested sub-sections go with their parent"),
@@ -2421,9 +2304,7 @@ content notes.`,
 
   server.tool(
     "withdraw",
-    `Withdraw an archived or resolved thread from the archive: removes the #archived flag,
-resets status to active, clears the closed date, and appends a dated "Withdrawn" addendum.
-Use when a resolved or dormant thread resurfaces as live work.`,
+    `Return an archived or resolved thread to active and note the withdrawal on the book. Use when closed work resurfaces.`,
     {
       noteId: z.string().describe("The archived/resolved thread to withdraw"),
       reason: z.string().optional().describe("Why it was withdrawn — written as an addendum"),
@@ -2471,13 +2352,7 @@ Use when a resolved or dormant thread resurfaces as live work.`,
 
   server.tool(
     "label",
-    `Set or remove a single label on a note — the guarded, BrainLLM-native path for direct
-label surgery (fixing a stray value, correcting drift) so a real edge case doesn't need the
-raw full-mode attribute tools. Refused on containers (same rule as revise()); noteType can
-never be touched here — it defines a note's kind and is owned by remember()/bootstrap().
-status is validated against the closed vocabulary (${Statuses.join(" | ")}); domain and topic
-are slugged automatically, matching remember()'s routing. Bumps updated to today unless you're
-setting updated itself.`,
+    `Set or remove one label (remove=true). Refused on containers. noteType cannot be changed or removed, but can be set on an untyped note to repair it. status must be one of ${Statuses.join(" | ")}; domain and topic are slugged. Bumps updated unless you are setting it.`,
     {
       noteId: z.string().describe("Note to edit"),
       name: z.string().describe("Label name, no # prefix (e.g. status, domain, topic, created)"),
@@ -2487,6 +2362,11 @@ setting updated itself.`,
     async ({ noteId, name, value, remove }) => {
       if (isContainer(b(), noteId))
         return err("protected_note", `Note ${noteId} is a container — its labels cannot be edited directly.`);
+      if (name === "iconClass" && remove) {
+        const n = await trilium.getNote(noteId).catch(() => null);
+        if (n && !ICON_EXEMPT.has(ownedLabel(n, "noteType") ?? ""))
+          return err("protected_label", "Every note except a log carries an icon.", 'Change it instead: label(noteId, "iconClass", value="bx bx-<name>").');
+      }
       const noteForGuard = name === "noteType" ? await trilium.getNote(noteId).catch(() => null) : null;
       if (name === "noteType") {
         // noteType is never EDITABLE — but it must be REPAIRABLE.
@@ -2643,39 +2523,16 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
   server.tool(
     "consistency",
-    `Cross-note agreement check: take a pattern, find every note that asserts a value for it, and
-report whether they agree.
-
-The brain's hardest failure is not a missing fact — it is the SAME fact recorded differently in
-several notes, where every copy reads as authoritative. Nothing else surfaces that: recall() ranks
-by relevance, maintain() checks structure, and a correction applied to one note leaves its siblings
-silently wrong. This is the check that answers "is what I just corrected still contradicted
-somewhere else".
-
-Pass a regex with ONE capture group naming the value that should agree:
-  consistency("(\\\\d+) Titan mailboxes")            → do all notes agree on the count
-  consistency("founded (?:in )?(\\\\w+ \\\\d{4})")       → do all notes agree on the date
-  consistency("BRAINLLM_MODE[=: ]+(\\\\w+)")          → do all notes agree on the mode
-
-Without a capture group it degrades to a presence check — which notes mention this at all.
-
-Matched against BOTH the stored HTML and a tag-stripped projection of it, so a phrase split by an
-inline <strong> or <code> tag is found, and so is a pattern deliberately anchored on tags.
-Escape backslashes. Scope with domain= or kinds= when the phrase is common.
-
-Scans every in-scope note by default. Trilium's %= backend filter is a LOSSY pre-filter — it
-reads a striptags'd copy of the content, so it drops notes this tool should examine — and on a
-contradiction sweep a falsely clean result is worse than a slow one. Pass fast=true to use it
-anyway when scope is wide and speed matters more than completeness.`,
+    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Scans every in-scope note (fast=true uses Trilium's lossy pre-filter). Run it after correcting any fact recorded in more than one place.`,
     {
       pattern: z.string().optional().describe("Regex over note bodies. One capture group = the value that should agree across notes. Omit when using subject= (prose mode)."),
-      subject: z.string().optional().describe("Prose-subject mode: give a fact in prose ('the two scheduled agents'), get back the notes asserting about that subject, however phrased — no regex guessing. Tokenized into significant content words; mutually exclusive with pattern. Use domain= to scope the search."),
-      staleAfterDays: z.number().optional().describe("With pattern: flag figures asserted in EXACTLY one note whose sole note was last touched more than N days ago — the single-copy values that rot silently, because consistency() can only tell a single copy agrees with itself. Reported in staleSingles."),
+      subject: z.string().optional().describe("A fact in prose — returns notes asserting about it however phrased (instead of pattern=)"),
+      staleAfterDays: z.number().optional().describe("With pattern: also report values held in exactly one note untouched N+ days (staleSingles)"),
       domain: z.string().optional().describe("Restrict to one knowledge domain"),
       kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds"),
       includeArchived: z.boolean().optional().describe("Include archived notes (default false)"),
       limit: z.number().optional().describe("Max notes to examine (default 60)"),
-      fast: z.boolean().optional().describe("Pre-filter candidates with Trilium's %= operator — faster, but its striptags'd corpus silently drops notes (default: false, scan every in-scope note)"),
+      fast: z.boolean().optional().describe("Use Trilium's faster but lossy %= pre-filter (default: scan every in-scope note)"),
     },
     async ({ pattern, subject, staleAfterDays, domain, kinds, includeArchived, limit, fast }) => {
       if (!pattern && !subject)
@@ -2870,22 +2727,7 @@ anyway when scope is wide and speed matters more than completeness.`,
 
   server.tool(
     "outline",
-    `The heading tree of a note — every h2/h4 section with its level, its occurrence index among
-same-text siblings, and a structural check — without reading the body.
-
-Read this BEFORE a section= revise on a note you haven't just written. section= needs a heading
-string that matches, and guessing it wrong writes a new section rather than editing the one you
-meant; picking the level and the exact text from a list removes that failure instead of
-reporting it afterwards. occurrence is what you pass to revise(section=, occurrence=) to reach
-a specific one when several share a text.
-
-Also returns the note's size, the key column of any table it holds, and any structural drift
-already present (duplicate headings, unbalanced tags) — the cheap "is this note still sound"
-check after a run of surgical edits, and the way to see a Sources note's Revision keys (which
-remember(revision=) matches on exactly) without reading the note.
-
-On notes 15k+ the headings also carry a first-block preview of their section — the orientation
-read for oversized notes, where outline() alone assumes you already know which section you want.`,
+    `A note's heading tree without its body: each h2–h4 with level and occurrence index (and raw stored text where inline markup differs), table key columns, size, and structural findings. Read it before a section= edit you're not sure of. Notes over 15k also get a first-block preview per section.`,
     {
       noteId: z.string().describe("Note to outline"),
     },
@@ -2951,22 +2793,7 @@ read for oversized notes, where outline() alone assumes you already know which s
 
   server.tool(
     "inspect",
-    `Read everything BrainLLM's tools track about a single note by id — every label (not just
-noteType/status), every outbound relation, its attachments (id/title/mime/role/size), plus
-type/mime/parent/child ids and dates. Pass content=true to also get the raw note body (the
-core path for a raw content read — no full mode needed). The deep-dive counterpart to the
-surface reads and explore(): reach for it when you need the raw label set, the body verbatim,
-or the attachment inventory — confirming a fix landed, debugging drift — rather than a
-kind-specific summary. Read-only, safe on any note including structural containers.
-
-Pass section="<heading>" alongside content=true to get one section's raw body instead of the
-whole thing — the same heading contract revise(section=) writes through.
-
-Pass find="<literal>" to count occurrences of a literal string in the body — total plus a
-per-addendum-block breakdown. The staleness-escalation counter: "how many prior entries
-mention this carried flag" becomes one call instead of a full read + manual counting. On zero
-occurrences it returns the nearest fragment that IS present and the stored text around it, so a
-miss is diagnosed in the same call rather than in three more.`,
+    `Everything about one note: every label, relation and attachment, type/mime, parent and child ids, dates. content=true adds the raw body (section= narrows it). find="<literal>" counts occurrences (total, per addendum block, per section) and on a miss shows the nearest stored text. Read-only, safe on any note.`,
     {
       noteId: z.string().describe("Note to inspect"),
       content: z.boolean().optional().describe("Include the note's raw body content (default: false)"),
@@ -3102,26 +2929,9 @@ miss is diagnosed in the same call rather than in three more.`,
 
   server.tool(
     "claim",
-    `Register a checkable assertion, and record whether it still holds.
+    `Does the brain still agree with the world? Register a checkable assertion and record whether it holds. BrainLLM never runs the check — it stores it as inert text; you run it and report.
 
-consistency() asks whether the brain agrees with ITSELF. Nothing asked whether a specific
-assertion is still true of the codebase, config or live surface it describes — so a claim that
-quietly stopped being true stayed authoritative until something downstream broke, and "is the
-brain stale" was answered by luck rather than by a query.
-
-BrainLLM never executes anything. It has Trilium access and no shell, and content in a note is
-data, not instructions — a recipe that ran itself would be an injection surface pointed at the
-user's machine. So a claim stores WHAT to check as inert text; the agent runs it and reports
-back. The tool owns the register, the schedule and the staleness question.
-
-Modes, by which parameters are present:
-  assertion + check  → REGISTER (or update, deduped by assertion text)
-  claimId + holds    → VERIFY: record the outcome and re-stamp the clock
-  claimId alone      → READ one claim with its verification history
-  neither            → LIST, newest-verified last; filter with status=
-
-A verified claim is quiet until its interval lapses. maintain(deep=true) surfaces lapsed and
-broken ones, so staleness arrives as a maintenance finding instead of a surprise.`,
+assertion + check → register (deduped by assertion); claimId + holds + evidence → verify (evidence required); claimId alone → read with history; nothing → list (status= filters). noteId= links the claim to its source note (~derivedFrom). maintain(deep) surfaces lapsed, never-verified, broken and source-changed claims.`,
     {
       assertion: z.string().optional().describe("The claim in plain words, e.g. \"the parse pipeline runs before validation\" — also the dedup key"),
       check: z.string().optional().describe("How to verify it, as INERT text a human or agent runs: a command, a query, a file path, a URL. Never executed by BrainLLM"),
@@ -3254,20 +3064,7 @@ broken ones, so staleness arrives as a maintenance finding instead of a surprise
 
   server.tool(
     "diff",
-    `What changed in a note — the revision snapshot against the body as it stands now.
-
-Every content write takes a revision first, and until now nothing could read one back: verifying
-a run of surgical edits on a large note meant re-reading the whole thing, or trusting the
-receipts. Trusting receipts is exactly how a section= replace that silently displaced four
-subsections went unnoticed.
-
-Called with only a noteId, this diffs the MOST RECENT revision against current content — "what
-did my last write actually do". Pass revisionId to compare against a specific earlier one; the
-revisions list comes back on every call, newest first, so the usual flow is one call to see what
-exists and a second to pick.
-
-Reports changed lines with a little context, plus added/removed counts. Both sides are stored
-HTML, so a formatting-only change is a real difference and shows as one.`,
+    `What a write actually changed: a revision snapshot (default the latest) against the note as it stands, as changed lines with context and added/removed counts. The revision list comes back on every call; pass revisionId to compare against an earlier one.`,
     {
       noteId: z.string().describe("Note to diff"),
       revisionId: z.string().optional().describe("Compare against this revision (default: the most recent one)"),
@@ -3343,15 +3140,7 @@ HTML, so a formatting-only change is a real difference and shows as one.`,
 
   server.tool(
     "attach",
-    `Attach a raw artifact (file, image, code blob, document) to a note — or read one back.
-Dual-mode by the content param:
-  content provided → UPSERT by title: creates the attachment, or replaces the existing
-                      same-titled attachment's content (and mime) in place. Retry-safe —
-                      re-running the same call converges on the same state.
-  content omitted  → READ: returns the named attachment's metadata and content.
-Attachments ride on the note — the native home for raw artifacts that belong with a typed
-memory rather than in its body. Binary content is standard base64 and is uploaded as raw bytes; reads return the same envelope. List a note's attachments with
-inspect(noteId); remove with detach().`,
+    `Upsert a raw artifact (file, image, blob) on a note by title (content given; mime=, encoding="base64" for binary) or read one back (content omitted). List with inspect(), remove with detach().`,
     {
       noteId: z.string().describe("Owning note"),
       title: z.string().describe("Attachment title — the upsert/read key on this note"),
@@ -3398,9 +3187,7 @@ inspect(noteId); remove with detach().`,
 
   server.tool(
     "detach",
-    `Remove an attachment from a note — by attachmentId directly, or by (noteId + title).
-Permanent: attachments have no archive tier; re-attach() from source to undo. Retry-safe —
-an already-removed target returns cleanly instead of erroring.`,
+    `Remove an attachment by attachmentId, or by noteId + title. Permanent; retry-safe.`,
     {
       attachmentId: z.string().optional().describe("The attachment to remove"),
       noteId: z.string().optional().describe("Owning note — used with title when the id isn't at hand"),
@@ -3432,16 +3219,7 @@ an already-removed target returns cleanly instead of erroring.`,
 
   server.tool(
     "addendum",
-    `Search Master, LLM singletons (responsibilities + protocols + self-correction, not diary), and Knowledge
-for notes containing pending addendum blocks that need to be folded into the main content.
-
-These surfaces should be clean, merged, structured notes — not stacks of timestamped addendum
-markers. An addendum block on one of these notes is a temporary staging area: read it, fold
-its content into the relevant section body using revise(mode=replace or section=), then leave
-no addendum marker behind. Addendum-style append is appropriate only for sessions, diary
-entries, and logs — records by nature whose history has value. Everywhere else, merge.
-
-Returns note IDs, titles, kinds, and content snippets so you can identify what to fold in. The successful call also durably marks the pre-close gate.`,
+    `Find pending addendum blocks on notes that must stay merged documents (master and LLM singletons, knowledge notes). Fold each into its section with revise(section=/find=) and leave no marker; only sessions, diary, logs and dated thread entries accumulate addenda. The call marks its close-gate step.`,
     {},
     async () => {
       const cfg = b();
@@ -3504,33 +3282,7 @@ Returns note IDs, titles, kinds, and content snippets so you can identify what t
 
   server.tool(
     "maintain",
-    `Run the maintenance sweep. start and close run the lite sweep automatically (ages stale
-threads active → dormant → archived). deep=true also surfaces stale notes (untouched past the
-policy window), unconnected threads/knowledge notes (orphan = no connections at all; sink =
-has inbound but no outbound) to wire with connect() — inbound detection is brain-wide, so a
-note referenced from another area is never misflagged as an orphan — a structural lint over
-maintained documents (duplicate headings within one note, unbalanced tags, bodies approaching
-the read ceiling), duplicate titles, and any thread day-child that escaped its
-#noteType=threadEntry label. dryRun previews only.
-
-ack=[noteId, …] marks a note reviewed-and-correct: its findings stay quiet until its content
-actually changes, then all of them return. Use it instead of ignoring a flag you have decided
-is fine — a warning that reappears every run and is correctly ignored every run trains you to
-skim the list, which is where the one finding that DID change gets missed. Same mechanic as a
-linter baseline, same justification. suppressed reports how many findings were withheld.
-
-domain="<name>" narrows the deep passes to one domain's notes — the equivalent of the lane
-scoping addendum() already has, so a scoped agent's flags arrive in its own lane instead of it
-re-deriving each run that the cross-venture findings belong to someone else.
-
-repair=[noteId, …] fixes an entity-corrupted body in place instead of reporting it: one level of
-double-escaping is unwound ("&amp;lt;" → "&lt;", "&amp;nbsp;" → "&nbsp;"), with a revision taken
-first. The substitution is always the same one, so it is a first-class action rather than
-something each caller reinvents with revise(mode="replace"). Compose with dryRun to see the
-outcome without writing. A note that DOCUMENTS the signature rather than carrying it comes back
-unchanged and is reported as such — ack= those.
-
-coverage names any pass that hit a cap, so a short list is never mistaken for a clean one.`,
+    `Brain hygiene. Lite (automatic in start/close): ages threads active → dormant → archived and checks labels. deep=true adds stale notes, orphans and sinks, structural lint (duplicate headings, unbalanced tags, missing required sections, dated prose in timeless notes, oversized notes), duplicate titles, lapsed or broken claims and hygiene passes. dryRun previews. ack=[ids] silences a note you reviewed until its content changes. domain= narrows deep passes to one lane. repair=[ids] unwinds entity double-escaping in place. coverage names any capped pass.`,
     {
       deep: z.boolean().optional().describe("Deep pass: stale-review + orphan/sink + structural lint + duplicate titles across Memory/Threads and Knowledge (default: false)"),
       dryRun: z.boolean().optional().describe("Report what would change without changing it"),
@@ -3559,10 +3311,7 @@ coverage names any pass that hit a cap, so a short list is never mistaken for a 
 
   server.tool(
     "forget",
-    `Archive a note (default) or hard-delete it (hard=true). Archiving keeps it in place,
-hidden from default recall — the safe choice and the only one for anything with history.
-Hard delete is refused while other notes still link here (backlinks are returned so you can
-re-wire with connect() first). To undo an archive, use recover().`,
+    `Archive a note (default — hidden from default recall, recoverable with recover()) or hard-delete it (hard=true, refused while backlinked).`,
     {
       noteId: z.string().describe("Note to forget"),
       reason: z.string().optional().describe("Why — recorded in the note before archiving"),
@@ -3639,11 +3388,7 @@ re-wire with connect() first). To undo an archive, use recover().`,
 
   server.tool(
     "recover",
-    `Restore an archived or resolved note: removes #archived, clears #closed, resets status
-to active. Use to undo forget() or reconsider a resolved thread / note. Does not restore
-note content — use revise() to fix content, or get_revisions (full mode) to roll back to a
-prior snapshot. For notes deleted from Trilium entirely (not just archived), use undelete_note
-(full mode) instead.`,
+    `Restore an archived or resolved note: clears #archived and #closed and resets status. Content is untouched — use revise(), or get_revisions for an older snapshot. Notes deleted from Trilium need undelete_note.`,
     {
       noteId: z.string().describe("The archived or resolved note to restore"),
       reason: z.string().optional().describe("Why it was recovered — written as an addendum"),
@@ -3688,17 +3433,7 @@ prior snapshot. For notes deleted from Trilium entirely (not just archived), use
 
   server.tool(
     "template",
-    `Serve the canonical structure for a content kind — the enforced skeleton, the
-top-to-bottom structure, and the rules writes are held to. Read it BEFORE writing a kind for
-the first time in a session, or when unsure. The write tools enforce what can be enforced
-server-side (heading normalization, duplicate-heading detection, thread Goal/Resolution rules,
-Last-updated stamps); this tool serves the full contract including what remains authorial.
-
-Template for the schema, sibling for the shape: this gives you the skeleton, but the
-conventions it cannot encode — how deep the headings actually go, how a table is laid out, how
-much prose a section warrants, what a good title looks like for this kind — live in the notes
-that already exist. Read one before writing another. Content of the same kind must read like
-its siblings, and a note that satisfies the skeleton can still be the odd one out.`,
+    `The canonical structure for a kind: skeleton, top-to-bottom structure, and the rules writes are held to (including what stays authorial). Read it before your first write of a kind; then read an existing sibling and match its shape.`,
     {
       kind: z.enum(Kinds).describe("The content kind to serve the canonical structure for"),
     },
@@ -3717,11 +3452,13 @@ its siblings, and a note that satisfies the skeleton can still be the odd one ou
           : { note: "No bespoke structure for this kind — server meta line + body." }),
         skeleton,
         conventions: [
-          "Headings h2–h4 only — h1 is the note title; h5/h6 are demoted on write.",
-          "Minimal headings — only ones that earn their place. Depth comes from layout (tables, lists, emphasis), not heading proliferation. A heading whose section is one sentence was not a section; headings are also what revise(section=) addresses, so proliferating them makes every future edit ambiguous too.",
-          "Titles: concise, maximum 4 words, no dates or run numbers (dates defeat title-dedup). A title that won't trim to 4 words without losing what it identifies is a signal the CONTENT should be split, not the title stretched.",
-          "Merge, don't stack: Master, LLM (excluding the session/diary/log surfaces) and Knowledge notes are clean merged documents — fold new content into the relevant section's body. Dated, append-only history is expected only for sessions, diary entries and logs, which are records by nature. Everywhere else, merge.",
-          "Content of the same kind matches its siblings — same structure, layout, and format. Read an existing one before writing another; if a pattern needs improving, improve it everywhere, since one better-shaped note among twenty is drift, not an improvement.",
+          "Headings h2–h4 only (h1 is the title); only headings that earn their place — depth comes from tables, lists and emphasis.",
+          "Titles: at most 4 words, no dates or run numbers (they defeat dedup-by-title).",
+          "Timeless kinds carry no state, version or decision history: state goes to the domain's Current State note, history to thread entries and sessions.",
+          "One sentence is enough if it says the thing; drop what is rarely relevant.",
+          "Merge, don't stack: only sessions, diary, logs and dated thread entries are append-only records.",
+          "Match your siblings' structure; improve a pattern everywhere or nowhere.",
+          "Every note carries an icon except logs: the kind default is set for you; pass icon= to choose a fitting one.",
         ],
       });
     }
@@ -3729,14 +3466,7 @@ its siblings, and a note that satisfies the skeleton can still be the odd one ou
 
   server.tool(
     "graph",
-    `The graph view — render the brain's relation graph as a Mermaid flowchart.
-Scope: the whole brain (default), or a neighborhood (pass noteId + depth). Nodes are the typed
-notes, colored by area; edges are the typed relations (~template excluded). The Mermaid source
-is returned AND upserted into the maintained "Graph" note under Insights (a native Trilium
-mermaid note), so the view renders in Trilium and in any Mermaid-capable client. On-demand only —
-the note reflects the brain as of this call, not automatically after later writes; call again to
-refresh. A scoped (noteId) call replaces the note's content with just that neighborhood, not the
-whole-brain view.`,
+    `Render the relation graph as a Mermaid flowchart — the whole brain, or a neighborhood (noteId + depth). Returns the source and writes it to the Insights/Graph note. On demand only; a scoped call replaces the note's content.`,
     {
       noteId: z.string().optional().describe("Center the graph on this note's neighborhood instead of the whole brain"),
       depth: z.number().optional().describe("Neighborhood hops when noteId is given (default: 2)"),
@@ -3838,19 +3568,12 @@ whole-brain view.`,
 
   server.tool(
     "day",
-    `The new-day sweep payload — one call replacing the manual multi-read protocol on the
-first session of a day. Serves: whether today is genuinely fresh (no addendum blocks in
-today's session note), the previous session in full, that day's change log, the notes touched
-since then, and the current month's deliverables note in full. Advance the deliverables note's
-statuses with revise(find=) and present the findings in the first message — grounded strictly
-in what the touched notes evidence.
+    `The new-day sweep in one call: whether today is fresh (no addendum blocks in today's session
+note), the previous session in full, that day's log, and the notes touched since. Present what the
+touched notes evidence in the first message.
 
-recap=true answers the other question — "what happened TODAY, in order, across every surface"
-— by returning every addendum block written today across the session note, the diary and every
-thread day-child, chronologically, with its identification line. start() is tuned for a fresh
-day and does not serve a day already several instances deep; reconstructing one by hand takes a
-read per surface, and as more work runs unattended that shape becomes the norm rather than the
-exception.`,
+recap=true instead returns every addendum block written today across the session note, the diary
+and every thread day-child, in time order with its identification line.`,
     {
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
       recap: z.boolean().optional().describe("Return today's addendum blocks across sessions, diary and thread children in chronological order, instead of the new-day sweep"),
@@ -3947,29 +3670,15 @@ exception.`,
         } catch { /* non-fatal */ }
       }
 
-      // The current month's deliverables note (titled by month name) — in full.
-      const monthName = new Date(`${todayStr}T00:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
-      let deliverables: { id: string; title: string; content: string } | null = null;
-      const monthNotes = await trilium
-        .searchNotes("#noteType=user", { ancestorNoteId: cfg.knowledge.master, fastSearch: true, limit: 100 })
-        .catch(() => ({ results: [] as Note[] }));
-      const monthNote = monthNotes.results.find((n) => sameTitle(n.title, monthName));
-      if (monthNote) {
-        deliverables = { id: monthNote.noteId, title: monthNote.title, content: await trilium.getNoteContent(monthNote.noteId).catch(() => "") };
-      }
-
       return txt({
         date: todayStr,
         newDay,
-        month: monthName,
         lastSession,
         previousLog,
         changes: changes.length ? changes : undefined,
-        deliverables: deliverables ?? { note: `No "${monthName}" deliverables note found in Knowledge/Master — first session of a new month: baseline a fresh one from the venture strategies and the schedule state.` },
         next: [
-          "Skim lastSession, previousLog, and changes for evidenced outputs — never plausibility.",
-          "Advance the deliverables note's counts/statuses with revise(noteId, find=..., body=...).",
-          "Present the findings in the first message: what moved, what's now due, current counts against the month.",
+          "Skim lastSession, previousLog and changes for evidenced outputs — never plausibility.",
+          "Present what moved in the first message.",
         ],
       });
     }
@@ -3977,15 +3686,7 @@ exception.`,
 
   server.tool(
     "brain",
-    `Surface the entire BrainLLM content tree — every typed note across all five content areas
-(Master, LLM, Memory, Knowledge, Insights), grouped by area and sub-container, with
-id/title/kind/status/dates. Use to audit what the brain contains or locate a specific note.
-Structural containers are excluded; only content notes appear.
-
-Insights returns { logs, claims }. Claims were missing entirely before V12 — they live in a
-container resolved by title rather than named in the config, and this read was scoped one level
-too deep to reach them, so the register was invisible to the tool that calls itself the full
-inventory.`,
+    `The full inventory: every content note across all five areas with id, title, kind, status, parent and dates, grouped by area (Insights returns logs and claims). Use it to audit or locate a note; read parent, not position — each group is flat. includeArchived= adds archived notes.`,
     {
       includeArchived: z.boolean().optional().describe("Include archived/resolved notes (default: false)"),
     },
@@ -4089,25 +3790,7 @@ inventory.`,
 
   server.tool(
     "assembly",
-    `What the brain HOLDS — every note by title, grouped under the surface it lives in, with each
-surface's own purpose alongside it. The awareness read: "what do I already know here", answered
-in one call before deciding whether to look something up.
-
-Distinct from brain(), which is an inventory: brain() returns id, kind, status, parent, dates and
-relations for every note, and is what you want when auditing or locating one. assembly() answers
-a different question and is shaped for it:
-
-- **Dated collections collapse.** Sessions, diary entries and logs are titled [yyyy-mm-dd], so
-  listing them is a wall of dates carrying no information about content. They come back as a
-  count and a span instead. This is the difference between a listing and an awareness read — the
-  full titles are one brain() call away when you actually need them.
-- **Domains nest.** Each domain book appears with its own information and sources notes beneath
-  it, which is the real shape of what the brain knows rather than the flat list brain() returns.
-- **Threads group by status**, newest activity first — the working set is the actionable part.
-- **Purposes are read from the container notes themselves**, the text bootstrap engraved on them,
-  so this can never drift from what the brain actually says about itself.
-
-Pass area= to zoom into one surface and get its full detail.`,
+    `What the brain holds: every note by title, grouped under its surface with that surface's purpose. Dated collections (sessions, diary, logs) collapse to a count and span; domains nest their notes; threads group by status. The awareness read — use brain() instead to audit or locate by id. area= zooms into one surface.`,
     {
       area: z.enum(["master", "llm", "memory", "knowledge", "insights"]).optional().describe("Zoom into one surface instead of all five"),
       includeArchived: z.boolean().optional().describe("Include archived/resolved notes (default: false)"),
@@ -4238,12 +3921,7 @@ Pass area= to zoom into one surface and get its full detail.`,
 
   server.tool(
     "bootstrap",
-    `Initialize the BrainLLM structure in Trilium (idempotent — safe to re-run; refreshes config,
-heals singletons a newer version introduced, and re-engraves container purposes if the structure
-already exists). Creates the five areas — Master (Biography/Goals/Preferences),
-LLM (Responsibilities/Protocols/Self-correction/Diary), Memory (Sessions/Threads), Knowledge (Master/Domains),
-Insights (Logs) — each engraved with its purpose, and writes brainllm.json. Active
-immediately, no restart needed.`,
+    `Create the BrainLLM structure in Trilium, or verify and refresh it when it exists (idempotent): the five areas with their containers, singletons and engraved purposes, plus brainllm.json. Only creates a new tree when the stored root is confirmed deleted.`,
     {},
     async () => {
       if (b().root) {

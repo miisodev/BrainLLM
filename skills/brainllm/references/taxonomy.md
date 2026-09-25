@@ -36,7 +36,8 @@ Written by the server — you never set `#noteType`, `#status`, `#created`, `#up
 
 | Label | Values | Purpose |
 |---|---|---|
-| `#noteType` | `biography` `goals` `preferences` `responsibilities` `protocols` `selfcorrection` `diary` `session` `thread` `threadEntry` `user` `domain` `information` `sources` `claim` `log` | Kind — exactly one per note, set at creation and immutable once present; a missing kind may be repaired explicitly. `threadEntry` is never created directly — only as a thread's day-child; `claim` is managed by `claim()` |
+| `#noteType` | `biography` `goals` `preferences` `responsibilities` `protocols` `selfcorrection` `diary` `session` `thread` `threadEntry` `user` `domain` `information` `sources` `claim` `log` | Kind — exactly one per note, set at creation and immutable once present; a missing kind may be repaired explicitly. `threadEntry` is a dated thread's day-child (created by appending) or a collection thread's titled entry (`remember(kind="threadEntry", thread=)`); `claim` is managed by `claim()` |
+| `#threadShape` | `collection` | On a thread book: children are titled, maintained entries rather than dated days. Absent = dated |
 | `#status` | `active` `dormant` `resolved` `superseded` `eternal` | Lifecycle state — threads age; `resolve()` sets terminal. `eternal` = lifecycle-exempt, never aged by the sweep — for user-curated permanent threads |
 | `#created` | ISO date | Set at creation (the user's local day) |
 | `#updated` | ISO date | Updated on every write |
@@ -47,6 +48,6 @@ Written by the server — you never set `#noteType`, `#status`, `#created`, `#up
 | `#mandate` | (flag) | Information notes only — marks a **standing brief** (instructions a future session must follow) as distinct from current-state fact. Set via `remember(…, mandate=true)` or `label(id, "mandate")`; surfaced in `domain()` and `knowledge_recall`. See `references/domains.md` |
 | `#reviewed` | content blob id | Set by `maintain(ack=[…])` — this note's current content was reviewed and its maintenance findings accepted. Suppresses them until the body actually changes, then all of them return |
 | `#brainLlmRoot` | (flag) | Marks the brain root — used by auto-discovery |
-| `#iconClass` | `bx …` | Display icon — set via `icon=` on `remember`/`revise`/`diary`/`close` (class or bare name, normalized) |
+| `#iconClass` | `bx …` | Display icon — required on every note except logs. Kind default at creation (entries inherit their thread's), sweep backfills; choose one with `icon=` on `remember`/`revise`/`diary`/`close` |
 
 **Searching by label:** `recall()` accepts `kinds=[]`, `domain=`, `includeArchived=`. Raw queries via `search_notes()`: `#status=active`, `#noteType=thread`, `#topic=infra`, `#archived` (presence), `note.dateModified < 'YYYY-MM-DD'`. Combine with `AND`/`OR` (space = AND).

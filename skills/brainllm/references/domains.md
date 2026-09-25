@@ -1,66 +1,50 @@
 # Domain Knowledge Lifecycle
 
-Domain knowledge is **gated and current-state**. Read this before creating a domain, adding a sub-category note, or refreshing existing domain content — then pick the one protocol that matches what's actually happening. Never skip the sources gate where one applies, and never manufacture knowledge.
+Read this before creating a domain, adding a sub-category note, or refreshing domain content, then follow the one protocol that matches. Never skip the sources gate and never manufacture knowledge.
 
-**The markers:** ❇️ = discovered/credible, not yet used. ✅ = used. Markers appear on each source entry as **just the emoji** — marker dates live in the Sources note's **Revision** table, never inline in the list.
+## The shape of a domain
 
-**Dates are server policy.** Every Sources and information note carries a `Last updated` line that the server bumps on every content write — you never hand-maintain it. (V8's "one manual date" exception is gone.)
+A domain is **one Sources note plus one information note per sub-category**, each a maintained document revised in place.
 
-**Siblings set the pattern.** This is where the consistency rule bites hardest, because domain notes are the most numerous and the most repeated kind in the brain: every Sources note reads like the other Sources notes, every information note like its peers in the same domain and in every other domain. Read one before writing another — the canonical structure below gives you the skeleton, the sibling gives you the conventions it can't encode (heading depth, table shape, how much prose a sub-category warrants). And keep headings minimal: a domain note earns its structure from the source list and the Revision table, not from splitting three paragraphs across four h3s. If a pattern genuinely needs improving, improve it across every domain — one better-shaped note among twenty is drift, and the next writer has to guess which shape is canonical.
+| Note | Holds |
+|---|---|
+| **Sources** | every source, marked ❇️ discovered / ✅ used, grouped under h3s; a **Revision** table (Source · Marker · Date) |
+| **Current State** | the domain's **measured state** — what is live, built, deployed, counted — latest value only, with the date it was measured. The only information note that holds state |
+| any other information note | **timeless knowledge**: how the thing works, its rules, its architecture, its constraints. No state, versions, dates, incidents or decision history |
+| a `#mandate` note (optional) | a standing brief a session must follow (e.g. a founder brief) — `remember(..., mandate=true)` |
 
-## The canonical Sources note
+**History and decisions never live in a domain.** "What run N found" and "what Miiso decided on a date" go to the venture's thread entries; the domain holds the resulting truth. If you are about to write a date into a non-Current-State note, it belongs in Current State (a measurement) or in a thread entry (an event).
 
-**Domains are born complete** — creating a domain (any `remember(domain=…)` call that resolves a new name) creates the book AND its canonical Sources note. Its structure, top to bottom (serve it anytime with `template(kind="sources")`):
+Markers are just the emoji on each source; their dates live only in the Revision table. `Last updated` lines are server-maintained. Titles are ≤ 4 words with no dates or run numbers; a sub-category that needs more words is two sub-categories. Read a sibling before writing and match it; improve a pattern across every domain or not at all.
 
-1. Server header (`sources · domain: <name>`)
-2. `Last updated - <date>` (h4) — server-maintained
-3. **Sources** (h2) — the ❇️/✅ legend line, then the full, complete source list: **every** source (URL, doc, file, dataset, …) listed and marked individually with just its emoji; related sources grouped under h3 subheadings
-4. **Revision** (h2) — a `Source | Marker | Date` table recording each source's current marker and the date it earned it
+## The Sources note
 
-`remember(kind="sources", domain=…)` **merges into the Sources section** — the note is a maintained clean document, never a stack of dated addendum blocks. Pass `revision=[{source, marker, date?}]` on the same call to upsert Revision-table rows by source name — re-verifying a source replaces its existing row in place, it never grows a new one. Fall back to `revise(find=…)` surgery only for something the upsert can't express (e.g. renaming a source's row key).
+Creating a domain creates the book and its Sources note together. `remember(kind="sources", domain=…)` merges into the Sources section; pass `revision=[{source, marker, date?}]` to upsert Revision rows by source name (the name must match the list exactly).
 
-## 1. Creating a new domain (the domain doesn't exist yet)
-
-1. Propose the title.
-2. Create the domain via any domain-scoped `remember()` — the book and its canonical Sources note are created together (the receipt carries `domainId`).
-3. Run an info-query sources-discovery pass and record every candidate in the Sources note, each marked ❇️, grouped with its related sources.
-4. Propose/obtain the learning scope from the user (which sources, how deep).
-5. Read the approved sources and create the appropriate sub-category `information` note(s).
-6. Flip the used entries' markers to ✅ and record the date in the Revision table.
-7. `connect()` and wire relations (or pass `connect=` on the `remember()` calls).
-
-If all source candidates are rejected in step 4, **no information note is created** — an unsourced domain note corrupts the brain.
-
-## 2. Adding a sub-category note to an existing domain
-
-Use when the Sources note already covers the relevant source — no new discovery needed. This path extends an already-sourced domain with another sub-category; it is not for introducing new claims.
+## 1. Creating a domain
 
 1. Propose the title.
-2. Create the `information` note directly (`remember(kind="information", domain=…, title=…)`).
-3. `connect()` and wire relations.
+2. Any domain-scoped `remember()` creates the book and its Sources note.
+3. Discover sources and record each as ❇️, grouped.
+4. Agree the learning scope with the user.
+5. Read the approved sources; write the information notes, starting with **Current State**.
+6. Flip used sources to ✅ with their Revision dates.
+7. Wire relations (`connect=` on the `remember` calls).
 
-## 3. Maintaining domain knowledge (periodic refresh)
+If every source is rejected, create no information note — an unsourced note corrupts the brain.
 
-1. Read the Sources note for any ❇️ discovered-but-unused entries → read those sources and create/update the appropriate sub-category `information` note(s).
-2. Check the Revision table for ✅ entries last used more than a month ago → verify those sources are still available/credible; update Sources if not.
-3. Skim the domain (`domain(name)`) for its sub-category notes → spot-check each against its source for continued correctness — if correct, stop; if not, re-read the source and update the note.
-4. Flip markers to ✅ and record dates in the Revision table.
-5. `connect()` and wire relations.
+## 2. Adding a sub-category
+
+For a source the Sources note already covers: `remember(kind="information", domain, title, body, mustCreate=true)`, then wire it.
+
+## 3. Refreshing a domain
+
+1. Read ❇️ sources not yet used; fold what they teach into the right notes.
+2. Re-check ✅ sources older than a month; update Sources if they moved.
+3. Re-measure **Current State** against live sources; replace values in place, then run `consistency()` on anything recorded twice.
+4. Spot-check each other note for correctness and for state or history that has crept in (`maintain(deep)` flags dated prose).
+5. Update markers and Revision dates; wire relations.
 
 ## Renames
 
-Retitling a domain book (`revise(bookId, title=…)`) **cascades automatically**: the book's `#domain` slug and every child's are updated server-side, so `domain()` gathering never breaks on a stale slug. Hyphenated slugs (`wall-e`, `framer-templates`) resolve correctly.
-
-## The shape of a domain's surface
-
-A domain's Knowledge surface is exactly: **one maintained Sources note, plus a small set of consolidated, current-state information notes — one per sub-category, never one per day.** It holds what's true now, not a changelog of what was true on each date it was checked.
-
-Chronological, run-by-run history belongs in Memory/Threads — a thread is the right place for "here's what Run N found"; a domain information note is the right place for "here's what's actually true about this sub-category," kept current by revision, not accumulation. If you find yourself naming a new information note after today's date or a run number, stop — that finding either updates an existing note (revise it) or doesn't belong in Domains at all.
-
-The title rule is the same here as everywhere: **four words maximum**, no dates, no run numbers. Sub-category titles are where it's most often stretched, and a title that won't fit is telling you something — a sub-category needing eight words to name is usually two sub-categories, so split the content rather than the title. Merge behaviour follows from the same place: Sources and information notes are maintained current-state documents, so new findings fold into the relevant section (`section=`, `find=`) and never arrive as a dated addendum block.
-
-## Standing briefs vs current-state facts — the mandate marker
-
-A domain holds two things that read alike and behave differently: a **standing brief** (instructions a future session must follow — the operating mandate of a venture) and a **current-state fact** (what's true right now). Both are `kind="information"`, and until now telling them apart meant reading each note's prose. A scoped autonomous session that needs "the thing I must obey" should not have to skim every sub-category note to find it.
-
-Mark a brief with `remember(kind="information", domain=…, title=…, body=…, mandate=true)` — it adds a `#mandate` flag, surfaced as `mandate: true` in `domain()` group rows and in `knowledge_recall` stubs. A session looking for its brief reads the domain and the mandate-flagged note is the one carrying instructions rather than facts. `label(noteId, "mandate")` / `label(noteId, "mandate", remove=true)` sets or clears the marker on an existing note. One note per mandate, titled by the brief it is ("Founder Brief", "Operating Mandate") — the four-word rule still applies.
+Retitling a domain book cascades its `#domain` slug to every child automatically.

@@ -10,7 +10,7 @@ A persistent, graph-structured second brain for Claude and any MCP client — bu
 
 [**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
 
-[![Version](https://img.shields.io/badge/version-12.4.2-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-12.5.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -49,7 +49,9 @@ Placement, naming, labels, deduplication, relation bookkeeping, lifecycle aging,
 - **Domains born complete** — creating a knowledge domain creates its book *and* its canonical Sources note (marker legend, stamp, grouped source list, revision table), so every claim has a sourcing home from the first write.
 - **A visible graph** — `graph()` renders the whole relation graph (or any note's neighborhood) as a Mermaid flowchart, maintained as a native Trilium note.
 - **Byte-preserving artifacts** — text is UTF-8, while binary content uses strict standard base64 in the tool contract and raw bytes on the wire; binary reads return an explicit MIME/base64 envelope instead of replacement characters.
-- **One-call day orientation** — `day()` serves the previous session, its change log, everything touched since, and the month's deliverables in a single call.
+- **One-call day orientation** — `day()` serves the previous session, its change log and everything touched since in a single call.
+- **Two thread shapes** — a thread is a dated journal (one child per active day) or a titled collection (one maintained note per item, e.g. an ideas list), chosen once with `shape=` at creation.
+- **Timeless notes, dated records** — knowledge, information and thread books hold no state or history (only a domain's *Current State* does); `maintain(deep=true)` flags dated prose that creeps in. Every note except a log carries an icon, set by kind and backfilled by the sweep.
 - **Resilient plumbing** — every backend call is timeout-bounded with retry on idempotent reads; routine core writes are idempotent or duplicate-guarded, while full-mode raw overwrites remain explicit; content surgery survives the editor's own HTML rewriting; renaming a domain cascades to everything inside it; the maintenance sweep heals drift it finds.
 - **Multi-agent by default** — all write-classified tools serialize behind a process-wide FIFO lock, so two agents (an interactive session and an automated run, say) writing through one hosted instance queue in arrival order instead of racing; reads stay fully parallel. Deletion catch-up in the daily log keeps a note deleted after its day's close from vanishing without a trace — and its window is configurable (`deletionCatchupDays` in the lifecycle policy), defaulting to Trilium's 7-day retention.
 - **Ask in prose, split on a seam** — `consistency(subject="…")` finds every note asserting about a fact however it is phrased, no regex guessing; `consistency(pattern, staleAfterDays=N)` surfaces figures held in exactly one untouched note, the ones that rot silently because nothing disagrees with them; `read(ids=[…])` batches a multi-note orientation into one round trip; and `split(noteId, sections=[…], into="…")` is the write half of the oversized-note problem — it lifts whole sections into a new note and leaves a pointer back. Information notes can carry a `#mandate` marker so a scoped session finds the one note it must obey without reading every note's prose.
@@ -321,7 +323,6 @@ A handful of values in this repo reflect the author's own machine. None are secr
 |---|---|---|
 | **Timezone** | `BRAINLLM_TZ` in `.env` | Your IANA zone — or unset for the host clock |
 | **Config path** | `BRAINLLM_CONFIG` env var | Only needed on persistent-volume deploys (see above) |
-| **Monthly deliverables note** | the `day()` sweep | `day()` serves a Knowledge/Master note titled by the current month name (e.g. "July") as the month's deliverables tracker — the author's convention. Adopt it (one `user` note per month) or simply ignore the `deliverables` field; everything else `day()` returns is convention-free. |
 | **Bundle path** | your MCP client config | The real absolute path to `dist/index.js` on your machine |
 | **Author · repo · funding** | `package.json`, `.github/FUNDING.yml`, the badges above | Your own details if you fork; the funding links support the original author |
 

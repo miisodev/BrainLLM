@@ -12,18 +12,7 @@ export function registerLlmTools(server: McpServer, trilium: TriliumClient, brai
 
   server.tool(
     "llm",
-    `Read an LLM note: responsibilities, protocols or selfcorrection (singletons), or a diary
-entry by id.
-
-selfcorrection holds the assistant's own corrections — what it got wrong, what generalises, and
-the rule that prevents a repeat. It is the one LLM singleton start() does NOT serve in full: it
-is the largest and the least load-bearing at a first message, so it arrives as section headings
-and is read here on demand. Reach for it when about to repeat a class of work that has gone
-wrong before — an audit, a large edit, a claim of completeness.
-
-section="<heading>" reads ONE section instead of the whole note — the efficient path on
-protocols and selfcorrection, the two largest singletons and the ones most often needed in part
-rather than whole. outline(id) lists the headings.`,
+    `Read an LLM singleton — responsibilities, protocols or selfcorrection — or a diary entry by id. Self-correction holds general rules learned from mistakes; read it before work that has gone wrong before (audits, large edits, completeness claims). section="<heading>" reads one section.`,
     {
       which: z.enum(["responsibilities", "protocols", "selfcorrection", "diary"]),
       id: z.string().optional().describe("diary only: the entry id from llm_recall"),

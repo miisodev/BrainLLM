@@ -24,12 +24,7 @@ export function registerMasterTools(server: McpServer, trilium: TriliumClient, b
 
   server.tool(
     "master",
-    `Read a Master singleton: biography, goals, or preferences. Returns its id, content, and
-relation snippet.
-
-section="<heading>" reads ONE section instead of the whole note — the efficient path on
-preferences, whose schedule tables make it the largest of the three, when the session needs one
-day's blocks rather than the whole week. outline(id) lists the headings.`,
+    `Read a master singleton — biography, goals or preferences — with its id and relations. section="<heading>" reads one section.`,
     {
       which: z.enum(AREAS),
       section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
