@@ -20,7 +20,7 @@ BrainLLM memories are typed text notes; `code` / `file` / `image` notes aren't a
 - **Code / structured text** → embed it as a fenced block in an `information` note via core `remember` (fully conformant and full-text searchable), or
 - **Binary (image, PDF, file)** → core `attach()` it onto the relevant typed note (`role=image` / `file`) — pass standard base64 with `encoding="base64"`; read back with `attach(noteId, title)`, which returns the base64 envelope and MIME.
 
-Create a standalone `type=code` / `file` note only when you specifically need Trilium's native handling of that type. If you do: label it (`add_label noteType <closest kind>`) so `recall` can see it, give it the same `domain` / `topic` labels as its anchor, and `connect` it to a typed note — otherwise it's an orphan with a blueprint-less type, exactly what `maintain(deep=true)` flags.
+Create a standalone `type=code` / `file` note only when you specifically need Trilium's native handling of that type. If you do: label it (`add_label noteType <closest kind>`) so `recall` can see it, give it the same `domain` / `topic` labels as its anchor, and `connect` it to a typed note — otherwise it's an untyped orphan, exactly what `maintain(deep=true)` flags.
 
 ### Use-case → tool
 
