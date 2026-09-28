@@ -80,7 +80,7 @@ worth keeping?
  └─ passing remark or already known from training ─→ don't capture
 ```
 
-**Domains** are one maintained **Sources** note plus one information note per sub-category, including **Current State**, revised in place. Every claim traces to a Sources entry (❇️ discovered, ✅ used); `remember(kind="sources", revision=[{source, marker, date}])` upserts the Revision row. Creating a domain creates its Sources note. Read `references/domains.md` before creating a domain, adding a sub-category or refreshing one.
+**Domains are your own working knowledge of a subject as it currently is.** Their scope, depth and size are your call, set by what keeps you confident enough to act and advise well; refresh one whenever reality moves. The structure keeps that knowledge tidy and checkable, and never caps it: one maintained **Sources** note plus one information note per sub-category, including **Current State**, revised in place. Every claim traces to a Sources entry (❇️ discovered, ✅ used); `remember(kind="sources", revision=[{source, marker, date}])` upserts the Revision row. Creating a domain creates its Sources note. Read `references/domains.md` before creating a domain, adding a sub-category or refreshing one.
 
 ---
 

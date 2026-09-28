@@ -634,7 +634,9 @@ export async function sweep(
     { id: cfg.knowledge.domains, kind: "domain",    label: "Knowledge/Domains" },
   ];
   for (const { id, kind, label: containerLabel } of dupeContainers) {
-    if (!id) continue;
+    // Flat containers span every lane, so a domain-scoped run leaves them to
+    // the unscoped sweep (its coverage note says so).
+    if (!id || domainSlug) continue;
     const all = await trilium
       .searchNotes(`#noteType=${kind}`, { ancestorNoteId: id, fastSearch: true, limit: 500, includeArchivedNotes: true })
       .catch(() => ({ results: [] as Note[] }));
@@ -657,9 +659,13 @@ export async function sweep(
   // (#domain-slug, title) — same title in different domains is intentional.
   if (cfg.knowledge.domains) {
     for (const domainKind of ["information", "sources"] as const) {
-      const all = await trilium
+      const found = await trilium
         .searchNotes(`#noteType=${domainKind}`, { ancestorNoteId: cfg.knowledge.domains, fastSearch: true, limit: 500, includeArchivedNotes: true })
         .catch(() => ({ results: [] as Note[] }));
+      // A domain-scoped run reports its own lane only: without this filter,
+      // maintain(deep, domain="BrainLLM") flagged near-duplicate pairs in the
+      // myClerkBook and Bard domains.
+      const all = { results: found.results.filter(inScope) };
       report.scanned += all.results.length;
       const byDomainTitle = new Map<string, Note[]>();
       for (const n of all.results) {

@@ -2,6 +2,8 @@
 
 Read this before creating a domain, adding a sub-category note, or refreshing domain content, then follow the one protocol that matches. Never skip the sources gate and never manufacture knowledge.
 
+**A domain is your own working knowledge of a subject as it currently is.** What it covers, how deep it goes and how large it grows are your call. The measure is confidence: enough that a session reading the domain can act and advise well without re-deriving the subject, and no more. The structure below does not cap that knowledge. It keeps it tidy and makes every claim checkable against a source. When reality moves, refresh the domain rather than waiting to be asked.
+
 ## The shape of a domain
 
 A domain is **one Sources note plus one information note per sub-category**, each a maintained document revised in place.
