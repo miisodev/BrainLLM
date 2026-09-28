@@ -32,7 +32,7 @@ section="<heading>" reads one section instead of the whole log.`,
 
   server.tool(
     "insights_recall",
-    "Skim recent change logs (days + previews).",
+    "Skim the most recent daily change logs (dates + previews), newest first. limit sets how many days (default 14). For one day's full log use insights(date).",
     { limit: z.number().optional() },
     async ({ limit }) => txt(await skim(trilium, b().insights.logs, { kind: "log", limit: limit ?? 14 }))
   );

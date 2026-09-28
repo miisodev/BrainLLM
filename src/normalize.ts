@@ -175,10 +175,30 @@ export function normalizeIcon(raw: string): string {
 
 // ── Body markup ───────────────────────────────────────────────────────────────
 
-const HTML_TAG = /<\/?[a-z][a-z0-9-]*(\s[^<>]*)?>/i;
+const HTML_TAG = /<\/?([a-z][a-z0-9-]*)(\s[^<>]*)?>/gi;
 
+/** Every element name HTML defines. A tag-shaped token outside this set — a
+ *  placeholder like <venture> or <id> — is prose, not markup: it decides
+ *  neither whether a body is HTML nor gets stripped as an "unsupported element". */
+const HTML_ELEMENTS = new Set([
+  "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "bdi", "bdo", "blockquote", "body", "br", "button",
+  "canvas", "caption", "center", "cite", "code", "col", "colgroup", "data", "datalist", "dd", "del", "details", "dfn", "dialog", "div",
+  "dl", "dt", "em", "embed", "fieldset", "figcaption", "figure", "font", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "head",
+  "header", "hgroup", "hr", "html", "i", "iframe", "img", "input", "ins", "kbd", "label", "legend", "li", "link", "main", "map", "mark",
+  "math", "menu", "meta", "meter", "nav", "noscript", "object", "ol", "optgroup", "option", "output", "p", "param", "picture", "pre",
+  "progress", "q", "rp", "rt", "ruby", "s", "samp", "script", "search", "section", "select", "slot", "small", "source", "span",
+  "strike", "strong", "style", "sub", "summary", "sup", "svg", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead",
+  "time", "title", "tr", "track", "tt", "u", "ul", "var", "video", "wbr", "applet",
+]);
+
+export function isHtmlElement(name: string): boolean {
+  return HTML_ELEMENTS.has(name.toLowerCase());
+}
+
+/** True when the body carries at least one real HTML element tag. */
 export function looksLikeHtml(body: string): boolean {
-  return HTML_TAG.test(body);
+  for (const m of body.matchAll(HTML_TAG)) if (isHtmlElement(m[1])) return true;
+  return false;
 }
 
 // Entity-encoded markup: a body whose tags arrive as "&lt;p&gt;" rather than
@@ -191,7 +211,7 @@ const ENCODED_TAG = /&lt;\/?[a-z][a-z0-9-]*(?:\s[^&<>]*?)?\s*\/?&gt;/i;
 /** True when the body carries markup in escaped form and no real tags — the
  *  spelling that must be decoded rather than escaped again. */
 export function looksLikeEncodedHtml(body: string): boolean {
-  return !HTML_TAG.test(body) && ENCODED_TAG.test(body);
+  return !looksLikeHtml(body) && ENCODED_TAG.test(body);
 }
 
 /** Unwind an entity-encoded body to real markup, one level per pass, stopping
@@ -313,11 +333,86 @@ function inlineMd(escaped: string): string {
  *  -/* lists, numbered lists, fenced code blocks, GFM tables, bold/italic/
  *  inline code/links. */
 export function toHtml(body: string): string {
-  if (!body.trim()) return "<p></p>";
-  if (looksLikeHtml(body)) return body;
-  if (looksLikeEncodedHtml(body)) return decodeEncodedHtml(body);
+  return renderMarkup(body).html;
+}
 
+/** toHtml, plus how many top-level text runs of an HTML body it converted —
+ *  the count renderBody reports so a caller knows its body was reshaped. */
+export function renderMarkup(raw: string): { html: string; convertedRuns: number } {
+  // NUL has no place in an HTML note, and the mixed-body path uses it to
+  // delimit the inline tags it protects — a caller's own NULs must not collide.
+  const body = raw.replace(/\u0000/g, "");
+  if (!body.trim()) return { html: "<p></p>", convertedRuns: 0 };
+  if (looksLikeHtml(body)) return mixedToHtml(body);
+  if (looksLikeEncodedHtml(body)) return { html: decodeEncodedHtml(body), convertedRuns: 0 };
+  return { html: markdownToHtml(body), convertedRuns: 0 };
+}
+
+// Block-level elements: a line that opens one at the top level starts HTML the
+// converter leaves alone, and everything until its matching close stays HTML.
+const BLOCK_ELEMENTS = new Set([
+  "address", "article", "aside", "blockquote", "dd", "details", "div", "dl", "dt", "figcaption", "figure", "footer",
+  "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section", "summary",
+  "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+]);
+const VOID_BLOCKS = new Set(["hr"]);
+const LEADING_BLOCK_TAG = /^\s*<([a-z][a-z0-9]*)(?=[\s>/])/i;
+const BLOCK_TAG = /<(\/?)([a-z][a-z0-9]*)(?=[\s>/])[^>]*?(\/?)>/gi;
+
+/** An HTML body that also carries text outside any block — a markdown list
+ *  after a <p>, a bare paragraph between two tables. Stored as-is, that text is
+ *  raw markdown in a CKEditor note: literal asterisks and dashes, and a run
+ *  CKEditor re-wraps on its own terms the first time the note is opened. Each
+ *  top-level run is converted through the markdown path instead, keeping real
+ *  inline tags (<code>, <strong>, <a>) as markup; lines inside an open block,
+ *  and every pure-HTML body, pass through untouched. */
+function mixedToHtml(body: string): { html: string; convertedRuns: number } {
   const lines = body.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let run: string[] = [];
+  let depth = 0;
+  let convertedRuns = 0;
+
+  const flushRun = () => {
+    if (!run.length) return;
+    const text = run.join("\n");
+    if (text.trim()) {
+      out.push(markdownToHtml(text, true));
+      convertedRuns++;
+    } else {
+      out.push(text);
+    }
+    run = [];
+  };
+
+  for (const line of lines) {
+    const lead = LEADING_BLOCK_TAG.exec(line)?.[1]?.toLowerCase();
+    if (depth === 0 && !(lead && BLOCK_ELEMENTS.has(lead))) {
+      run.push(line);
+      continue;
+    }
+    flushRun();
+    out.push(line);
+    for (const [, close, name, selfClose] of line.matchAll(BLOCK_TAG)) {
+      const tag = name.toLowerCase();
+      if (!BLOCK_ELEMENTS.has(tag) || VOID_BLOCKS.has(tag) || selfClose) continue;
+      depth = Math.max(0, depth + (close ? -1 : 1));
+    }
+  }
+  flushRun();
+  return { html: out.join("\n"), convertedRuns };
+}
+
+/** Markdown/plain text → HTML. With inlineHtml, real element tags already in
+ *  the text are kept as markup (and shown as text inside code blocks) rather
+ *  than escaped — the mixed-body path, where a run may carry <code> or <a>. */
+function markdownToHtml(body: string, inlineHtml = false): string {
+  const kept: string[] = [];
+  const source = inlineHtml
+    ? body.replace(HTML_TAG, (tag: string, name: string) => (isHtmlElement(name) ? `\u0000${kept.push(tag) - 1}\u0000` : tag))
+    : body;
+
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
   const out: string[] = [];
   let para: string[] = [];
   let list: { tag: "ul" | "ol"; items: string[] } | null = null;
@@ -410,7 +505,14 @@ export function toHtml(body: string): string {
   flushTable();
   flushPara(); flushList();
 
-  return out.join("\n") || "<p></p>";
+  const html = out.join("\n") || "<p></p>";
+  if (!kept.length) return html;
+  const restore = (token: string) => kept[Number(token)] ?? "";
+  return html.replace(
+    /(<pre><code>[\s\S]*?<\/code><\/pre>)|\u0000(\d+)\u0000/g,
+    (_m: string, pre: string | undefined, i: string | undefined) =>
+      pre ? pre.replace(/\u0000(\d+)\u0000/g, (_x: string, j: string) => escapeHtml(restore(j), false)) : restore(i!),
+  );
 }
 
 /** HTML → readable plain text, for recall snippets and digests. */
@@ -666,14 +768,26 @@ function safeHtmlUrl(value: string): string | null {
   return decoded;
 }
 
+function keptAsText(full: string, warnings: string[]): string {
+  warnings.push(`Kept ${full} as text — not an HTML element`);
+  return escapeHtml(full, false);
+}
+
 function sanitizeTag(full: string, warnings: string[]): string {
   if (full.startsWith("<!--")) return "";
   const close = /^<\s*\/\s*([a-z][a-z0-9-]*)\s*>$/i.exec(full);
-  if (close) return SAFE_TAGS.has(close[1].toLowerCase()) ? `</${close[1].toLowerCase()}>` : "";
+  if (close) {
+    const name = close[1].toLowerCase();
+    if (SAFE_TAGS.has(name)) return `</${name}>`;
+    return isHtmlElement(name) ? "" : keptAsText(full, warnings);
+  }
   const open = /^<\s*([a-z][a-z0-9-]*)(\s[\s\S]*?)?\/?\s*>$/i.exec(full);
   if (!open) return "";
   const tag = open[1].toLowerCase();
   if (!SAFE_TAGS.has(tag)) {
+    // A placeholder like <venture> is prose the caller meant to be read; only a
+    // real element the editor cannot hold is markup to drop.
+    if (!isHtmlElement(tag)) return keptAsText(full, warnings);
     warnings.push(`Stripped unsupported <${tag}> element`);
     return "";
   }
@@ -790,15 +904,16 @@ export function sanitizeHtml(html: string): SanitizeResult {
  *  reading the stored note back. */
 export function renderBody(body: string): SanitizeResult {
   const wasEncoded = looksLikeEncodedHtml(body);
-  const result = sanitizeHtml(toHtml(body));
-  if (!wasEncoded) return result;
-  return {
-    html: result.html,
-    warnings: [
-      "Entity-encoded markup decoded to real HTML — pass tags as <p>…</p>, not &lt;p&gt;…&lt;/p&gt;; the escaped form would otherwise be stored as literal text",
-      ...result.warnings,
-    ],
-  };
+  const { html, convertedRuns } = renderMarkup(body);
+  const result = sanitizeHtml(html);
+  const notes: string[] = [];
+  if (wasEncoded) {
+    notes.push("Entity-encoded markup decoded to real HTML — pass tags as <p>…</p>, not &lt;p&gt;…&lt;/p&gt;; the escaped form would otherwise be stored as literal text");
+  }
+  if (convertedRuns) {
+    notes.push(`Converted ${convertedRuns} text run(s) outside HTML blocks from markdown to HTML — send a body as all markdown or all HTML to control its shape exactly`);
+  }
+  return notes.length ? { html: result.html, warnings: [...notes, ...result.warnings] } : result;
 }
 
 /** The sanitizer warnings that mean the body's tag STRUCTURE had to be

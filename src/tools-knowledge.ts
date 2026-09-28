@@ -6,7 +6,7 @@ import { z } from "zod";
 import { TriliumClient, type Note } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 import { slugify } from "./normalize.js";
-import { txt, skim, readFull } from "./tools-surface.js";
+import { txt, skim, readFull, idParams, missingId } from "./tools-surface.js";
 
 export function registerKnowledgeTools(server: McpServer, trilium: TriliumClient, brainRef: { config: BrainLLMConfig }): void {
   const b = () => brainRef.config;
@@ -15,11 +15,15 @@ export function registerKnowledgeTools(server: McpServer, trilium: TriliumClient
     "knowledge",
     `Read a knowledge note by id — user knowledge, a domain information note or a Sources note. section="<heading>" reads one section (outline() lists them); use it on anything large.`,
     {
-      id: z.string(),
+      ...idParams,
       section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
     },
-    async ({ id, section, occurrence }) => txt(await readFull(trilium, id, { section, occurrence }))
+    async ({ id, noteId, section, occurrence }) => {
+      const target = id ?? noteId;
+      if (!target) return missingId("knowledge");
+      return txt(await readFull(trilium, target, { section, occurrence }));
+    }
   );
 
   server.tool(

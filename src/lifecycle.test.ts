@@ -3,7 +3,7 @@ import { applyResolution, isContainer, isStructural } from "./lifecycle.js";
 import { labelPlan } from "./router.js";
 import { RESOLUTION_ANCHOR, contentFor, isOpenResolutionOnly, missingSections } from "./templates.js";
 import { ownedLabel, type Note, type Attribute } from "./trilium.js";
-import { EMPTY_BRAINLLM } from "./config.js";
+import { EMPTY_BRAINLLM, deletionCatchupDays, envDeletionCatchupDays } from "./config.js";
 import { DEFAULT_POLICY } from "./types.js";
 import { defaultIcon, KIND_ICONS, FALLBACK_ICON } from "./icons.js";
 
@@ -161,6 +161,22 @@ describe("deletionCatchupDays — configurable policy, default 7", () => {
     const merged = { ...DEFAULT_POLICY, ...({ deletionCatchupDays: 30 } as Partial<typeof DEFAULT_POLICY>) };
     expect(merged.deletionCatchupDays).toBe(30);
     expect(merged.dormantAfterDays).toBe(21); // sibling defaults preserved
+  });
+
+  test("BRAINLLM_DELETION_CATCHUP_DAYS wins over the file's policy and the default", () => {
+    const fromFile = { policy: { ...DEFAULT_POLICY, deletionCatchupDays: 14 } };
+    expect(deletionCatchupDays(fromFile, { BRAINLLM_DELETION_CATCHUP_DAYS: "30" })).toBe(30);
+    expect(deletionCatchupDays(fromFile, {})).toBe(14);
+    expect(deletionCatchupDays(EMPTY_BRAINLLM, {})).toBe(7);
+  });
+
+  test("an invalid variable is reported and ignored, never half-applied", () => {
+    for (const raw of ["0", "-3", "7.5", "thirty", "3651", "30d"]) {
+      expect(envDeletionCatchupDays({ BRAINLLM_DELETION_CATCHUP_DAYS: raw })).toEqual({ invalid: raw });
+      expect(deletionCatchupDays(EMPTY_BRAINLLM, { BRAINLLM_DELETION_CATCHUP_DAYS: raw })).toBe(7);
+    }
+    expect(envDeletionCatchupDays({ BRAINLLM_DELETION_CATCHUP_DAYS: "  " })).toEqual({});
+    expect(envDeletionCatchupDays({ BRAINLLM_DELETION_CATCHUP_DAYS: " 30 " })).toEqual({ days: 30 });
   });
 });
 

@@ -90,6 +90,34 @@ export function saveCachedToken(token: string): string | null {
   }
 }
 
+// ── Deletion catch-up window ─────────────────────────────────────────────────
+// How long Trilium keeps a soft-deleted note before its eraser removes it, and
+// so how far back the change feed can still show the deletion. Trilium's
+// default is 7 days (eraseEntitiesAfterTimeInSeconds = 604800), but ETAPI has no
+// options endpoint, so an instance configured differently cannot be read — the
+// operator states it in BRAINLLM_DELETION_CATCHUP_DAYS instead. Resolved at read
+// time and never saved into brainllm.json, so removing the variable restores
+// the file's policy rather than leaving the old value baked in.
+
+const MAX_CATCHUP_DAYS = 3650;
+
+/** The operator's BRAINLLM_DELETION_CATCHUP_DAYS as a whole number of days, or
+ *  undefined when unset. `invalid` carries the raw value when it was set but is
+ *  not a whole number in 1..3650, so startup can say why it was ignored. */
+export function envDeletionCatchupDays(env: Record<string, string | undefined> = process.env): { days?: number; invalid?: string } {
+  const raw = env.BRAINLLM_DELETION_CATCHUP_DAYS?.trim();
+  if (!raw) return {};
+  const days = Number(raw);
+  if (!/^\d+$/.test(raw) || days < 1 || days > MAX_CATCHUP_DAYS) return { invalid: raw };
+  return { days };
+}
+
+/** The effective catch-up window: the environment, then brainllm.json's policy,
+ *  then Trilium's default of 7. */
+export function deletionCatchupDays(cfg: Pick<BrainLLMConfig, "policy">, env: Record<string, string | undefined> = process.env): number {
+  return envDeletionCatchupDays(env).days ?? cfg.policy?.deletionCatchupDays ?? DEFAULT_POLICY.deletionCatchupDays;
+}
+
 // ── Load ──────────────────────────────────────────────────────────────────────
 
 export function loadConfig(): BrainLLMConfig | null {

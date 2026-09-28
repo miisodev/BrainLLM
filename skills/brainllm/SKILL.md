@@ -89,7 +89,7 @@ worth keeping?
 | Need | Tool |
 |---|---|
 | a singleton | `master(which)` / `llm(which)` — `section=` for one section |
-| a thread or session | `memory(id)` — dated index or collection entries; `date=` for one day |
+| a thread or session | `memory(id)` — dated index (newest days, up to 30 and ~24k characters; `limit=` for more) or collection entries; `date=` for one day |
 | a knowledge note | `knowledge(id)` — `section=` for one section |
 | a day's change log | `insights(date?)` |
 | skim a surface | `<surface>_recall` |
@@ -122,7 +122,7 @@ Every read that can be large takes `section=`; a note past the read ceiling cann
 - **Wire at creation:** `connect=[{relation, toNoteId}]` on the same call. An unconnected note is an orphan until wired.
 - **Identity line** (`"LLM · environment · agent/mode [· Run N]"`) is required on diary, close and dated thread appends.
 - **Every note carries an icon except logs.** The server sets the kind default at creation (a thread entry takes its thread's icon) and the sweep backfills any missing; `icon=` picks a better one (boxicons class or bare name). Removing an icon is refused.
-- Bodies may be text, markdown or HTML; the server normalises them and reports `sanitized[]`.
+- Bodies may be text, markdown or HTML; the server normalises them to editor-native HTML and reports `sanitized[]` (markdown mixed into an HTML body is converted; a placeholder like `<name>` stays as text).
 - `diary`, `session`, `log`, `claim` and `domain` have dedicated paths; `remember` refuses them.
 
 **Four writing rules** (each applies to every note you touch):
@@ -214,6 +214,7 @@ Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=tr
 | timeouts or connection errors | the Trilium instance at `TRILIUM_BASE_URL` is unreachable; tools don't need restarting |
 | `start()` → `uninitialized` | `bootstrap()` |
 | dates look off on a hosted deploy | set `BRAINLLM_TZ` (IANA) |
+| deletions older than a week go unreported | Trilium keeps deleted notes longer than its 7-day default: set `BRAINLLM_DELETION_CATCHUP_DAYS` to match |
 | an informational `{error, detail, hint}` | read `hint` and retry with corrected arguments |
 
 ## References

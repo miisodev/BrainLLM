@@ -16,7 +16,7 @@ import { coerceToolArgs } from "./coerce.js";
 import { registerAdvancedTools } from "./tools-advanced.js";
 import { applyToolAnnotations } from "./annotations.js";
 import { BunSseServerTransport } from "./sse.js";
-import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM } from "./config.js";
+import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM, envDeletionCatchupDays, deletionCatchupDays } from "./config.js";
 import {
   oauthEnabled, baseUrl as publicBaseUrl, protectedResourceMetadata, authorizationServerMetadata,
   handleAuthorize, handleToken, handleRegister, validateAccessToken, wwwAuthenticate, landingPage,
@@ -103,6 +103,13 @@ if (!brain) {
   }
 }
 
+{
+  const { invalid } = envDeletionCatchupDays();
+  if (invalid !== undefined) {
+    console.error(`[brainllm] BRAINLLM_DELETION_CATCHUP_DAYS="${invalid}" ignored — expected a whole number of days from 1 to 3650. Using ${deletionCatchupDays(brain ?? EMPTY_BRAINLLM)}.`);
+  }
+}
+
 // brainRef is a mutable container — bootstrap updates config in-place
 // so subsequent tool calls in the same session see the new IDs immediately.
 const brainRef = { config: brain ?? EMPTY_BRAINLLM };
@@ -155,7 +162,7 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "12.5.0",
+    version: "12.6.0",
     icons: brandingIcons(origin),
   });
   // The two surfaces, composed here rather than nested inside registerTools —

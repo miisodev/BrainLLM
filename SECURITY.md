@@ -6,8 +6,8 @@ Security fixes ship on the latest release line. Older versions may remain useful
 
 | Version | Supported |
 |---|---|
-| 12.4.x | ✅ |
-| 12.3.x and earlier | ❌ |
+| 12.6.x | ✅ |
+| 12.5.x and earlier | ❌ |
 
 ## Reporting a vulnerability
 

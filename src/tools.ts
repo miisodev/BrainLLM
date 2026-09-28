@@ -18,7 +18,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { TriliumClient, type Note, type RecentChange, ownedLabel, isOwnedAttribute, relationSnippet, type RelationEdge, PartialContentUploadError, isCollectionThread } from "./trilium.js";
 import { ensureIcon, ICON_EXEMPT } from "./icons.js";
-import { type BrainLLMConfig, saveConfig } from "./config.js";
+import { type BrainLLMConfig, saveConfig, deletionCatchupDays } from "./config.js";
 import {
   Kinds,
   RelationTypes,
@@ -196,7 +196,23 @@ export function registerTools(
     return found.results[0]?.noteId ?? null;
   };
 
-  const parseGate = (raw: string | undefined): Map<string, number> => {
+  /** Today's session note, created when missing — the same stub start() opens.
+   *  A session that crosses midnight reaches session() on a day start() never
+   *  saw; refusing there would strand the close protocol until a fresh start(). */
+  const ensureGateNote = async (date: string): Promise<string | null> => {
+    const existing = await gateNote(date);
+    if (existing) return existing;
+    const cfg = b();
+    if (!cfg.memory.sessions) return null;
+    const created = await trilium.createNote(cfg.memory.sessions, `[${date}]`, contentFor("session", { date, body: "" }));
+    const noteId = created.note.noteId;
+    await trilium.addLabel(noteId, "noteType", "session");
+    await trilium.addLabel(noteId, "created", date);
+    await ensureIcon(trilium, noteId);
+    return noteId;
+  };
+
+  const parseGate =(raw: string | undefined): Map<string, number> => {
     const out = new Map<string, number>();
     for (const pair of (raw ?? "").split(",")) {
       const [step, seq] = pair.split(":");
@@ -213,8 +229,8 @@ export function registerTools(
    *  is updated after it succeeds. */
   const markStep = async (step: string, date?: string): Promise<void> => {
     const d = checkedDate(date);
-    const noteId = await gateNote(d);
-    if (!noteId) throw new Error(`Cannot record pre-close step "${step}": today's session note was not found`);
+    const noteId = await ensureGateNote(d);
+    if (!noteId) throw new Error(`Cannot record pre-close step "${step}": the brain has no Sessions container — run bootstrap()`);
     const note = await trilium.getNote(noteId);
     const stored = parseGate(labelOf(note, "gate"));
     const next = Math.max(preCloseSeq, ...[...stored.values()], 0) + 1;
@@ -376,7 +392,7 @@ export function registerTools(
       const [hygiene, digest] = await Promise.all([
         sweep(trilium, cfg, { deep: false, dryRun: false }).catch((e): SweepReport => ({
           scanned: 0, fixed: [], transitions: [], deleted: [], flagged: [`sweep failed: ${e}`], dryRun: false,
-          policy: { dormantAfterDays: cfg.policy.dormantAfterDays, archiveDormantAfterDays: cfg.policy.archiveDormantAfterDays, staleAfterDays: cfg.policy.staleAfterDays, deletionCatchupDays: cfg.policy.deletionCatchupDays ?? 7 },
+          policy: { dormantAfterDays: cfg.policy.dormantAfterDays, archiveDormantAfterDays: cfg.policy.archiveDormantAfterDays, staleAfterDays: cfg.policy.staleAfterDays, deletionCatchupDays: deletionCatchupDays(cfg) },
         })),
         buildDigest(trilium, cfg, { depth: depth ?? "digest" }),
       ]);
@@ -422,11 +438,7 @@ export function registerTools(
             // A session note without addendum blocks = nothing logged yet today.
             newDay = !/<h2(?:\s[^>]*)?>\s*Addendum/i.test(content);
           } else {
-            const created = await trilium.createNote(cfg.memory.sessions, `[${todayStr}]`, contentFor("session", { date: todayStr, body: "" }));
-            sessionNoteId = created.note.noteId;
-            await trilium.addLabel(sessionNoteId, "noteType", "session");
-            await trilium.addLabel(sessionNoteId, "created", todayStr);
-            await ensureIcon(trilium, sessionNoteId);
+            sessionNoteId = await ensureGateNote(todayStr);
             newDay = true;
           }
         } catch { /* non-fatal */ }
@@ -1779,7 +1791,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
 
 Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. title= composes with every mode; retitling a domain book cascades its #domain slug.
 
-Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text.`,
+Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled.`,
     {
       noteId: z.string().describe("Note to update"),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML. With find=, the raw replacement string (no conversion)."),
@@ -3282,7 +3294,7 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
 
   server.tool(
     "maintain",
-    `Brain hygiene. Lite (automatic in start/close): ages threads active → dormant → archived and checks labels. deep=true adds stale notes, orphans and sinks, structural lint (duplicate headings, unbalanced tags, missing required sections, dated prose in timeless notes, oversized notes), duplicate titles, lapsed or broken claims and hygiene passes. dryRun previews. ack=[ids] silences a note you reviewed until its content changes. domain= narrows deep passes to one lane. repair=[ids] unwinds entity double-escaping in place. coverage names any capped pass.`,
+    `Brain hygiene. Lite (automatic in start/close): ages threads active → dormant → archived and checks labels. deep=true adds stale notes, orphans and sinks, structural lint (duplicate headings, unbalanced tags, missing required sections, dated prose in timeless notes, oversized notes), duplicate titles, lapsed or broken claims and hygiene passes. dryRun previews. ack=[ids] silences a note you reviewed until its content changes. domain= narrows deep passes to one lane. repair=[ids] unwinds entity double-escaping in place. coverage names any capped pass: structural lint reads at most 40 notes per run and rotates through the rest day by day, so a whole-brain lint spans several runs.`,
     {
       deep: z.boolean().optional().describe("Deep pass: stale-review + orphan/sink + structural lint + duplicate titles across Memory/Threads and Knowledge (default: false)"),
       dryRun: z.boolean().optional().describe("Report what would change without changing it"),

@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { type TriliumClient, type Note, ownedLabel, isOwnedAttribute, relationSnippet, type RelationEdge } from "./trilium.js";
-import type { BrainLLMConfig } from "./config.js";
+import { type BrainLLMConfig, deletionCatchupDays } from "./config.js";
 import type { AnyKind } from "./types.js";
 import { toText, closeDangling, slugify, structureReport, hasPlaceholderRow, headingOutline, sectionProfile, escapeQueryRegex, repairDoubleEscaping, classifyDoubleEscape, LARGE_NOTE_CHARS } from "./normalize.js";
 import { RESOLUTION_ANCHOR, missingSections } from "./templates.js";
@@ -147,7 +147,7 @@ export async function sweep(
       dormantAfterDays: policy.dormantAfterDays,
       archiveDormantAfterDays: policy.archiveDormantAfterDays,
       staleAfterDays: policy.staleAfterDays,
-      deletionCatchupDays: policy.deletionCatchupDays ?? 7,
+      deletionCatchupDays: deletionCatchupDays(cfg),
     },
   };
   if (!cfg.root) return report;
@@ -356,8 +356,8 @@ export async function sweep(
   // ── Deep: deletion visibility ──────────────────────────────────────────────
   // A note soft-deleted under the brain root shows in Trilium's change feed
   // until the eraser removes the row — 7 days at Trilium's default retention,
-  // and cfg.policy.deletionCatchupDays (default 7) must match whatever the
-  // eraser is set to. After that the deletion leaves no trace at all, which is
+  // and deletionCatchupDays() (BRAINLLM_DELETION_CATCHUP_DAYS, default 7) must
+  // match whatever the eraser is set to. After that the deletion leaves no trace at all, which is
   // exactly how two [2026-07-31] notes vanished with no tool reporting it: the
   // log for that day had already been generated, nothing ever regenerated it,
   // and erasure then destroyed both the notes and the feed's own record of the
@@ -366,7 +366,7 @@ export async function sweep(
   // attribute a scoped run's findings to.
   if (deep && !domainSlug) {
     const feed = await trilium.getNoteHistory(cfg.root).catch(() => [] as Awaited<ReturnType<TriliumClient["getNoteHistory"]>>);
-    const deletionsWindow = isoDaysAgo(policy.deletionCatchupDays ?? 7);
+    const deletionsWindow = isoDaysAgo(deletionCatchupDays(cfg));
     const recent = feed.filter((h) => h.current_isDeleted && h.date.slice(0, 10) >= deletionsWindow);
     report.scanned += recent.length;
     for (const [i, h] of recent.entries()) {
@@ -984,8 +984,9 @@ async function hygienePasses(
   }
 
   // 5. Threads heavy enough that walking their day-children is expensive. The
-  //    fix is a rolling summary on the book, so the next session reads what the
-  //    thread established rather than replaying how it got there.
+  //    book holds only the goal, so what the thread established belongs in the
+  //    domain's timeless notes (and measured state in Current State): the next
+  //    session reads the conclusion there instead of replaying the entries.
   if (cfg.memory.threads) {
     const heavy = await trilium
       .searchNotes(`#noteType=thread #status=active note.childrenCount > ${THREAD_CONSOLIDATION_CHILDREN}`, { ancestorNoteId: cfg.memory.threads, fastSearch: true, limit: 20 })
@@ -993,7 +994,7 @@ async function hygienePasses(
       .catch(() => [] as Note[]);
     for (const n of heavy) {
       if (!eligible(n) || ownedLabel(n, "threadShape") === "collection") continue; // a collection's size is its content, not history
-      report.flagged.push(`consolidate: ${n.title} [${n.noteId}] — ${n.childNoteIds.length} day-children. Fold what the thread has ESTABLISHED into its Context section with revise(section="Context"), so a successor reads the conclusion instead of walking the history.`);
+      report.flagged.push(`consolidate: ${n.title} [${n.noteId}] — ${n.childNoteIds.length} day-children. Move what the thread has established into its domain: timeless knowledge into the information notes, measured state into Current State. The book keeps only its goal and the entries stay as the record, so a successor reads the conclusion instead of walking the history.`);
     }
   }
 

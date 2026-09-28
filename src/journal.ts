@@ -19,7 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { type TriliumClient, ownedLabel } from "./trilium.js";
-import type { BrainLLMConfig } from "./config.js";
+import { type BrainLLMConfig, deletionCatchupDays } from "./config.js";
 import { isStructural } from "./lifecycle.js";
 import { escapeHtml } from "./normalize.js";
 
@@ -102,13 +102,12 @@ export async function generateDailyLog(trilium: TriliumClient, cfg: BrainLLMConf
   return { date, noteId: logNoteId, ...counts, action: "created" };
 }
 
-// Matches Trilium's own default trash retention (eraseEntitiesAfterTimeInSeconds
-// = 604800s). A deletion is catch-up-able only while the soft-deleted row still
-// exists — past this window the feed no longer shows it. The runtime value comes
-// from cfg.policy.deletionCatchupDays (default 7); operators who raise Trilium's
-// eraser retention must raise this to match, or the catch-up quietly loses
-// deletions that Trilium still holds.
-export const DELETION_CATCHUP_DAYS = 7;
+// A deletion is catch-up-able only while the soft-deleted row still exists —
+// past Trilium's eraser retention the feed no longer shows it. The window comes
+// from deletionCatchupDays() (BRAINLLM_DELETION_CATCHUP_DAYS, then the file's
+// policy, then Trilium's default of 7); operators who change Trilium's retention
+// set the variable to match, or the catch-up quietly loses deletions Trilium
+// still holds.
 
 export interface DeletionCatchUpReport {
   windowDays: number;
@@ -126,7 +125,7 @@ export interface DeletionCatchUpReport {
  *  regenerates today's log after this returns, and that regeneration sees
  *  today's deletions through the same feed. */
 export async function catchUpDeletions(trilium: TriliumClient, cfg: BrainLLMConfig, today: string): Promise<DeletionCatchUpReport> {
-  const windowDays = cfg.policy.deletionCatchupDays ?? DELETION_CATCHUP_DAYS;
+  const windowDays = deletionCatchupDays(cfg);
   const empty = { windowDays, coverage: "full" as const, deletionsFound: 0, regenerated: [] as string[] };
   if (!cfg.root || !cfg.insights.logs) return empty;
 

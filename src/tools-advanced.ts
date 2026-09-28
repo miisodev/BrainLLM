@@ -94,7 +94,7 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "create_note",
-    "Create a note at an explicit parent. Types: text/code/book/canvas/mermaid/relationMap/render/search/file/image.",
+    "Create a note at an explicit parent. Types: text/code/book/canvas/mermaid/relationMap/render/search/file/image. The note gets no #noteType, icon or placement, so core tools cannot see it until it is typed with label(id, \"noteType\", <kind>); use remember() for a memory.",
     {
       parentNoteId: z.string(),
       title: z.string(),
@@ -116,7 +116,7 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "update_note_content",
-    "Replace a note's full content. Binary input must use encoding=base64; text remains UTF-8.",
+    "Replace a note's full content. Binary input must use encoding=base64; text remains UTF-8. No revision is taken and nothing is sanitised: call create_revision first to keep the prior content recoverable, and prefer revise() for any BrainLLM note.",
     { noteId: z.string(), content: z.string(), mime: z.string().optional(), encoding: z.enum(["auto", "text", "base64"]).optional() },
     async ({ noteId, content, mime, encoding }) => {
       const note = await trilium.getNote(noteId);
@@ -149,7 +149,7 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
 
   server.tool(
     "delete_note",
-    "Hard-delete a note (and its subtree if this is its last branch). Irreversible.",
+    "Hard-delete a single note. Irreversible. Refused (blocked: true) while any relation points at it (backlinks_exist), while it has children or more than one parent (blast_radius), or if the backlink check itself fails. Remove or retarget those first; for a recoverable removal use forget().",
     { noteId: z.string() },
     async ({ noteId }) => {
       const note = await trilium.getNote(noteId);

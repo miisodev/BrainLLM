@@ -15,14 +15,16 @@ export function registerLlmTools(server: McpServer, trilium: TriliumClient, brai
     `Read an LLM singleton — responsibilities, protocols or selfcorrection — or a diary entry by id. Self-correction holds general rules learned from mistakes; read it before work that has gone wrong before (audits, large edits, completeness claims). section="<heading>" reads one section.`,
     {
       which: z.enum(["responsibilities", "protocols", "selfcorrection", "diary"]),
-      id: z.string().optional().describe("diary only: the entry id from llm_recall"),
+      id: z.string().optional().describe("diary only: the entry id from llm_recall (noteId is accepted as an alias)"),
+      noteId: z.string().optional().describe("Alias of id"),
       section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
     },
-    async ({ which, id, section, occurrence }) => {
+    async ({ which, id, noteId: idAlias, section, occurrence }) => {
       if (which === "diary") {
-        if (!id) throw new Error("Reading a diary entry needs its id — use llm_recall to find one.");
-        return txt(await readFull(trilium, id, { section, occurrence }));
+        const entry = id ?? idAlias;
+        if (!entry) throw new Error("Reading a diary entry needs its id — use llm_recall to find one.");
+        return txt(await readFull(trilium, entry, { section, occurrence }));
       }
       const noteId = b().llm[which];
       if (!noteId) {

@@ -10,7 +10,7 @@ A persistent, graph-structured second brain for Claude and any MCP client — bu
 
 [**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
 
-[![Version](https://img.shields.io/badge/version-12.5.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-12.6.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -296,6 +296,7 @@ Without a volume, leave `BRAINLLM_CONFIG` unset — auto-discovery re-finds the 
 | `TRILIUM_PASSWORD` | ◐ | Alternative to the token: BrainLLM mints one on first start and caches it beside `brainllm.json`, reusing it across restarts. Also used by `bun run init` |
 | `BRAINLLM_MODE` | — | `core` (default) or `full` (adds the raw ETAPI surface) |
 | `BRAINLLM_TZ` | — | IANA timezone (e.g. `Africa/Johannesburg`) so dates stamp in *your* day on hosted deploys; unset = host clock |
+| `BRAINLLM_DELETION_CATCHUP_DAYS` | — | How many days your Trilium keeps deleted notes (Options → Other → "Erase notes after"). Deletions are reported only within this window, and ETAPI cannot read the option. Default `7`, Trilium's own default; overrides `policy.deletionCatchupDays` |
 | `PORT` | — | Presence switches to HTTP-connector mode |
 | `MCP_AUTH_TOKEN` | — | Static bearer token accepted on `/mcp` — what Claude Code and `mcp-remote` send |
 | `BRAINLLM_OWNER_PASSWORD` | — | Enables the OAuth 2.1 / CIMD endpoints, required for claude.ai. The password you type on the consent screen |
@@ -322,6 +323,7 @@ A handful of values in this repo reflect the author's own machine. None are secr
 | What | Where | Make it yours |
 |---|---|---|
 | **Timezone** | `BRAINLLM_TZ` in `.env` | Your IANA zone — or unset for the host clock |
+| **Deleted-note retention** | `BRAINLLM_DELETION_CATCHUP_DAYS` in `.env` | Only if your Trilium erases deleted notes after something other than 7 days |
 | **Config path** | `BRAINLLM_CONFIG` env var | Only needed on persistent-volume deploys (see above) |
 | **Bundle path** | your MCP client config | The real absolute path to `dist/index.js` on your machine |
 | **Author · repo · funding** | `package.json`, `.github/FUNDING.yml`, the badges above | Your own details if you fork; the funding links support the original author |

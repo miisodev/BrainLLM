@@ -8,10 +8,22 @@
 
 import { TriliumClient, type Note, isOwnedAttribute, relationSnippet, type RelationEdge } from "./trilium.js";
 import { toText, getSection, LARGE_NOTE_CHARS } from "./normalize.js";
+import { z } from "zod";
 
 export const txt = (obj: unknown) => ({
   content: [{ type: "text" as const, text: typeof obj === "string" ? obj : JSON.stringify(obj, null, 2) }],
 });
+
+/** The note id a surface read targets. Surface reads name it `id`; the verbs
+ *  (inspect, revise, label, connect…) name it `noteId`, and callers moving
+ *  between them guess wrong in both directions — so the reads take either. */
+export const idParams = {
+  id: z.string().optional().describe("The note's id (noteId is accepted as an alias)"),
+  noteId: z.string().optional().describe("Alias of id"),
+};
+
+export const missingId = (tool: string) =>
+  txt({ error: "missing_id", detail: `${tool}() needs the note's id.`, hint: "Pass id=<noteId> (noteId= works too)." });
 
 export const labelOf = (n: Note, name: string) =>
   n.attributes.find((a) => isOwnedAttribute(n, a) && a.type === "label" && a.name === name)?.value;

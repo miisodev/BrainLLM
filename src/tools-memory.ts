@@ -4,8 +4,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { TriliumClient, type Note, isCollectionThread } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
-import { txt, skim, readFull, labelOf } from "./tools-surface.js";
+import { txt, skim, readFull, labelOf, idParams, missingId } from "./tools-surface.js";
 import { toText, addendumIndex } from "./normalize.js";
+
+/** Day-children memory() indexes when the caller sets no limit. */
+export const MEMORY_INDEX_DEFAULT = 30;
+/** Without a limit, the index also stops once its entries pass this many
+ *  characters: a thread's size lives in its entries' block summaries, not
+ *  their count, so thirty busy days can still outgrow the tool-output ceiling. */
+export const MEMORY_INDEX_CHAR_BUDGET = 24_000;
 
 export function registerMemoryTools(server: McpServer, trilium: TriliumClient, brainRef: { config: BrainLLMConfig }): void {
   const b = () => brainRef.config;
@@ -13,17 +20,21 @@ export function registerMemoryTools(server: McpServer, trilium: TriliumClient, b
   server.tool(
     "memory",
     `Read a Memory note by id — a thread or a session. A dated thread returns its Context and
-Resolution plus an index of its [yyyy-mm-dd] children (newest first), each listed by its
-addendum blocks; date="yyyy-mm-dd" resolves straight to one day. A collection thread returns its
+Resolution plus an index of its [yyyy-mm-dd] children (newest first: the latest 30, fewer if their
+index passes ~24k characters, unless limit= says otherwise; with the total count), each listed by its addendum blocks;
+date="yyyy-mm-dd" resolves straight to one day. A collection thread returns its
 Context plus its titled entries (alphabetical, with a lead). Read a child with memory(<child id>).
 section="<heading>" reads one section.`,
     {
-      id: z.string(),
+      ...idParams,
       date: z.string().optional().describe("Thread books only: resolve directly to this day's child note (yyyy-mm-dd)"),
+      limit: z.number().int().positive().optional().describe("Dated threads: how many of the newest day-children to index (default 30)"),
       section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
     },
-    async ({ id, date, section, occurrence }) => {
+    async ({ id: idArg, noteId, date, limit, section, occurrence }) => {
+      const id = idArg ?? noteId;
+      if (!id) return missingId("memory");
       const note = await trilium.getNote(id).catch(() => null);
       if (!note || labelOf(note, "noteType") !== "thread") return txt(await readFull(trilium, id, { section, occurrence }));
 
@@ -55,12 +66,17 @@ section="<heading>" reads one section.`,
         return txt({ id, title: note.title, kind: "thread", note: `No entry for ${date}.` });
       }
 
+      // Bounded by default: a busy thread's full index outgrew the tool-output
+      // ceiling and the read refused outright, when the caller usually wanted
+      // only the newest entries. The total says whether there is more.
+      const shown = limit ?? MEMORY_INDEX_DEFAULT;
+      const totalChildren = note.childNoteIds.length;
       const children = await trilium
         .searchNotes("#noteType=threadEntry", {
-          ancestorNoteId: id, fastSearch: true, limit: 200, orderBy: "dateCreated", orderDirection: "desc",
+          ancestorNoteId: id, fastSearch: true, limit: shown, orderBy: "dateCreated", orderDirection: "desc",
         })
         .catch(() => ({ results: [] as Note[] }));
-      const entries = await Promise.all(
+      const indexed = await Promise.all(
         children.results.map(async (c) => {
           const content = await trilium.getNoteContent(c.noteId).catch(() => "");
           const blocks = addendumIndex(content);
@@ -73,8 +89,24 @@ section="<heading>" reads one section.`,
           };
         })
       );
+      // An explicit limit is the caller's call; the default also respects the budget.
+      const entries: typeof indexed = [];
+      let used = 0;
+      for (const e of indexed) {
+        const size = JSON.stringify(e).length;
+        if (limit === undefined && entries.length && used + size > MEMORY_INDEX_CHAR_BUDGET) break;
+        entries.push(e);
+        used += size;
+      }
       const full = await readFull(trilium, id, { section, occurrence });
-      return txt({ ...full, children: entries });
+      return txt({
+        ...full,
+        totalChildren,
+        children: entries,
+        ...(totalChildren > entries.length
+          ? { more: `Showing the newest ${entries.length} of ${totalChildren} day-children. Pass limit= for more, or date= for one day.` }
+          : {}),
+      });
     }
   );
 
