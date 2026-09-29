@@ -744,6 +744,7 @@ const PAGE_CSS = `
     padding:11px 14px; border-radius:9px; font-size:14px; margin-bottom:18px;
   }
   .foot { margin:22px 0 0; font-size:12.5px; color:var(--text-dim,#52525b); text-align:center; }
+  .foot a { color:inherit; }
   @media (prefers-reduced-motion: reduce) { button { transition:none; } .approve:hover { transform:none; } }
 `;
 
@@ -752,11 +753,11 @@ const PAGE_CSS = `
 const BRAND_MARK =
   `<span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>`;
 
-const shell = (title: string, body: string): string => `<!doctype html>
+const shell = (title: string, body: string, head = ""): string => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#0a0a0f">
-<meta name="robots" content="noindex,nofollow">
+<meta name="robots" content="noindex,nofollow">${head}
 <title>${esc(title)}</title>
 <style>${PAGE_CSS}</style></head>
 <body>${body}</body></html>`;
@@ -783,19 +784,11 @@ export function landingPage(base: string, oauthOn: boolean, sseOn: boolean): str
 
 const PAGE_SECURITY_DIRECTIVES = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; img-src 'self' data:";
 
-/** The consent page is unusual: the form posts to this origin, but the response
- *  redirects to the OAuth client's already-validated callback. Chrome and Safari
- *  enforce form-action across that redirect chain, so `form-action 'self'` alone
- *  blocks the callback and leaves the owner staring on a page whose server did
- *  return 302. Add only the exact validated callback origin, never a scheme-wide
- *  grant or a client-supplied string. */
-function pageContentSecurityPolicy(redirectUri?: string): string {
-  let formAction = "'self'";
-  if (redirectUri) {
-    const origin = new URL(redirectUri).origin;
-    if (origin !== "null") formAction += ` ${origin}`;
-  }
-  return `${PAGE_SECURITY_DIRECTIVES}; form-action ${formAction}; style-src 'unsafe-inline'`;
+/** The consent form posts to this origin and nowhere else. Its outcome reaches
+ *  the client through handoff(), a fresh navigation rather than a redirect of the
+ *  form submission, so form-action never has to name a client's origin. */
+function pageContentSecurityPolicy(): string {
+  return `${PAGE_SECURITY_DIRECTIVES}; form-action 'self'; style-src 'unsafe-inline'`;
 }
 
 function consentResponse(
@@ -811,7 +804,7 @@ function consentResponse(
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
-      "Content-Security-Policy": pageContentSecurityPolicy(redirectUri),
+      "Content-Security-Policy": pageContentSecurityPolicy(),
     },
   });
 }
@@ -855,6 +848,39 @@ const redirectWith = (uri: string, params: Record<string, string>): Response => 
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
   return new Response(null, { status: 302, headers: { Location: u.href } });
 };
+
+/** How a consent POST ends. A 302 would carry the form submission through the
+ *  client's callback and on to wherever that callback sends the browser next,
+ *  and Chrome enforces form-action across the whole chain. Android Studio's
+ *  callback redirects to developer.android.com, which no policy can list in
+ *  advance, so the browser froze on the password screen while the login had in
+ *  fact succeeded. A page that moves on by meta refresh starts a new navigation,
+ *  outside form-action, and tells the owner what happened. */
+function handoff(uri: string, params: Record<string, string>, heading: string, message: string): Response {
+  const u = new URL(uri);
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  const href = esc(u.href);
+  return new Response(
+    shell(
+      heading,
+      `<div class="card">
+  <div class="brand">${BRAND_MARK}<span class="brand-name">BrainLLM</span></div>
+  <h1>${esc(heading)}</h1>
+  <p>${esc(message)}</p>
+  <p class="foot"><a href="${href}">Continue</a> if this page does not move on by itself.</p>
+</div>`,
+      `\n<meta http-equiv="refresh" content="0;url=${href}">`
+    ),
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": pageContentSecurityPolicy(),
+      },
+    }
+  );
+}
 
 /** The error page shares the consent screen's shell.
  *
@@ -957,10 +983,8 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
   const { clientId, redirectUri, codeChallenge, state, resource, scope } = request;
 
   // From here the redirect_uri came from a validated client document on GET, or
-  // from the HMAC-signed transaction on POST. Protocol errors can safely return
+  // from the HMAC-signed transaction on POST, so the outcome can safely return
   // to that exact client callback.
-  const fail = (error: string, description: string): Response =>
-    redirectWith(redirectUri, { error, error_description: description, iss: base, ...(state ? { state } : {}) });
 
   // CIMD clients identify as a URL — its host is what the consent screen
   // shows, because DNS and TLS vouch for it. A /register client_id is an
@@ -981,7 +1005,12 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
   }
 
   if (form.get("decision") !== "approve") {
-    return fail("access_denied", "The owner denied the request.");
+    return handoff(
+      redirectUri,
+      { error: "access_denied", error_description: "The owner denied the request.", iss: base, ...(state ? { state } : {}) },
+      "Access denied",
+      `Nothing was authorized. Returning you to ${clientHost}.`
+    );
   }
   if (!ownerPasswordMatches(form.get("password") ?? "")) {
     return consentResponse(transaction, redirectUri, clientHost, verifiedHost, "Incorrect password.", 401);
@@ -997,7 +1026,12 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
   saveStore();
 
   // RFC 9207: the iss parameter lets the client detect a mix-up attack.
-  return redirectWith(redirectUri, { code, iss: base, ...(state ? { state } : {}) });
+  return handoff(
+    redirectUri,
+    { code, iss: base, ...(state ? { state } : {}) },
+    "Authorized",
+    `Returning you to ${clientHost}. You can close this window once it confirms the connection.`
+  );
 }
 
 // ── /token ────────────────────────────────────────────────────────────────────

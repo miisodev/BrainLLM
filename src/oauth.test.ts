@@ -159,7 +159,7 @@ describe("CIMD client resolution", () => {
     expect(resolved.client.redirect_uris).toEqual(["https://claude.ai/api/mcp/auth_callback"]);
   });
 
-  test("hosted Claude consent allows its validated callback through form-action", async () => {
+  test("hosted Claude consent keeps form-action to its own origin", async () => {
     const verifier = randomBytes(32).toString("base64url");
     const url = new URL(`${BASE}/authorize`);
     url.searchParams.set("client_id", CID);
@@ -171,7 +171,9 @@ describe("CIMD client resolution", () => {
     url.searchParams.set("scope", SCOPE);
     const response = await handleAuthorize(new Request(url.href), BASE);
     expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Security-Policy")).toContain("form-action 'self' https://claude.ai");
+    const csp = response.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toContain("form-action 'self';");
+    expect(csp).not.toContain("claude.ai");
     expect(await response.text()).toContain('name="transaction"');
   });
 
@@ -302,6 +304,12 @@ describe("dynamic client registration", () => {
     return match[1]!;
   }
 
+  function handoffUrl(html: string): URL {
+    const match = html.match(/<meta http-equiv="refresh" content="0;url=([^"]+)">/);
+    if (!match) throw new Error("handoff refresh missing");
+    return new URL(match[1]!.replaceAll("&amp;", "&"));
+  }
+
   function postConsent(fields: Record<string, string>): Request {
     return new Request(`${BASE}/authorize`, {
       method: "POST",
@@ -371,7 +379,7 @@ describe("dynamic client registration", () => {
     const page = await handleAuthorize(new Request(authorizationUrl(client_id, verifier)), BASE);
     expect(page.status).toBe(200);
     const csp = page.headers.get("Content-Security-Policy") ?? "";
-    expect(csp).toContain("form-action 'self' http://127.0.0.1:19876");
+    expect(csp).toContain("form-action 'self';");
     const html = await page.text();
     expect(html).toContain("OpenCode");
     expect(html).toContain("self-reported");
@@ -412,7 +420,7 @@ describe("dynamic client registration", () => {
       }), BASE);
       expect(wrong.status).toBe(401);
       expect(wrong.headers.get("Location")).toBeNull();
-      expect(wrong.headers.get("Content-Security-Policy")).toContain("http://127.0.0.1:19876");
+      expect(wrong.headers.get("Content-Security-Policy")).not.toContain("127.0.0.1");
       expect(await wrong.text()).toContain("OpenCode");
 
       const approved = await handleAuthorize(postConsent({
@@ -421,8 +429,14 @@ describe("dynamic client registration", () => {
         decision: "approve",
         redirect_uri: "https://evil.example/steal",
       }), BASE);
-      expect(approved.status).toBe(302);
-      const callback = new URL(approved.headers.get("Location") ?? "");
+      // A handoff page, not a 302: a redirect would carry the form submission
+      // through the callback's own redirects, which form-action then blocks.
+      expect(approved.status).toBe(200);
+      expect(approved.headers.get("Location")).toBeNull();
+      expect(approved.headers.get("Content-Security-Policy")).toContain("form-action 'self';");
+      const approvedHtml = await approved.text();
+      expect(approvedHtml).toContain("Authorized");
+      const callback = handoffUrl(approvedHtml);
       expect(`${callback.origin}${callback.pathname}`).toBe(String(OPENCODE_METADATA.redirect_uris[0]));
       expect(callback.searchParams.get("state")).toBe("state-123");
       expect(callback.searchParams.get("iss")).toBe(BASE);
@@ -448,6 +462,25 @@ describe("dynamic client registration", () => {
       if (previousSecret === undefined) delete process.env.BRAINLLM_OAUTH_SECRET;
       else process.env.BRAINLLM_OAUTH_SECRET = previousSecret;
     }
+  });
+
+  test("deny hands access_denied back to the client's callback", async () => {
+    const registered = await postRegister(OPENCODE_METADATA);
+    const { client_id } = await registered.json() as { client_id: string };
+    const verifier = randomBytes(32).toString("base64url");
+    const page = await handleAuthorize(new Request(authorizationUrl(client_id, verifier)), BASE);
+    const denied = await handleAuthorize(postConsent({
+      transaction: transactionFrom(await page.text()),
+      password: "irrelevant",
+      decision: "deny",
+    }), BASE);
+    expect(denied.status).toBe(200);
+    const html = await denied.text();
+    expect(html).toContain("Access denied");
+    const callback = handoffUrl(html);
+    expect(`${callback.origin}${callback.pathname}`).toBe(String(OPENCODE_METADATA.redirect_uris[0]));
+    expect(callback.searchParams.get("error")).toBe("access_denied");
+    expect(callback.searchParams.get("state")).toBe("state-123");
   });
 
   test("a missing, tampered, or wrong-issuer consent transaction is rejected locally", async () => {
