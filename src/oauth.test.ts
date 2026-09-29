@@ -50,6 +50,13 @@ describe("discovery metadata", () => {
     expect(wwwAuthenticate(BASE, "invalid_token")).toContain('Bearer error="invalid_token"');
   });
 
+  test("the 401 challenge is one RFC 7235 challenge: scheme, space, then params", () => {
+    for (const h of [wwwAuthenticate(BASE), wwwAuthenticate(BASE, "invalid_token")]) {
+      expect(h).toMatch(/^Bearer [a-z_]+="/);
+      expect(h).not.toContain("Bearer,");
+    }
+  });
+
   test("the landing page names the endpoints and makes no external requests", () => {
     // Same policy as the consent screen: a third-party request from a page a
     // stranger can load leaks that a brain lives at this origin.

@@ -423,14 +423,17 @@ export function authorizationServerMetadata(base: string) {
 
 /** The challenge that starts the whole flow. Without the resource_metadata
  *  pointer Claude has nothing to follow and reports "Couldn't reach the MCP
- *  server" — the failure looks like a network problem and isn't one. */
+ *  server" — the failure looks like a network problem and isn't one.
+ *  RFC 7235: the scheme is followed by a space, then comma-separated params.
+ *  "Bearer, resource_metadata=…" ends the challenge at the comma, and strict
+ *  parsers (Android Studio's Ktor client) then see no pointer and never log in. */
 export function wwwAuthenticate(base: string, error?: string): string {
-  const parts = [
-    error ? `Bearer error="${error}"` : "Bearer",
+  const params = [
+    ...(error ? [`error="${error}"`] : []),
     `resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
     `scope="${SCOPE}"`,
   ];
-  return parts.join(", ");
+  return `Bearer ${params.join(", ")}`;
 }
 
 // ── CIMD client resolution ────────────────────────────────────────────────────
