@@ -105,9 +105,10 @@ try {
   const preflight = await expectStatus("/mcp", { method: "OPTIONS" }, 204, "CORS preflight");
   if (preflight.headers.get("x-content-type-options") !== "nosniff") fail("security headers missing from preflight");
 
-  // Full OAuth browser transaction against the real router. v12.4 returned 302
-  // from /authorize but the static form-action 'self' CSP made Chrome refuse the
-  // callback redirect, so status-only checks missed a completely broken login.
+  // Full OAuth browser transaction against the real router. A 302 answer to the
+  // consent POST is subject to form-action across the whole redirect chain, and
+  // twice that froze a login that had succeeded (v12.4, then Android Studio's
+  // onward redirect). The POST now answers with a handoff page instead.
   const callback = "http://127.0.0.1:43187/mcp/oauth/callback";
   const registration = await expectStatus("/register", {
     method: "POST",
@@ -130,8 +131,8 @@ try {
     fail(`OAuth consent: expected 200, received ${consent.status} at ${consent.url}: ${(await consent.text()).slice(0, 200)}`);
   }
   const csp = consent.headers.get("content-security-policy") ?? "";
-  if (!csp.includes("form-action 'self' http://127.0.0.1:43187")) {
-    fail(`OAuth consent CSP does not allow the validated callback: ${csp}`);
+  if (!csp.includes("form-action 'self';")) {
+    fail(`OAuth consent CSP should keep form-action to its own origin: ${csp}`);
   }
   const consentHtml = await consent.text();
   const transaction = consentHtml.match(/name="transaction" value="([^"]+)"/)?.[1];
@@ -143,8 +144,10 @@ try {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ transaction, password: "smoke-owner-password", decision: "approve" }),
   });
-  if (approval.status !== 302) fail(`OAuth approval: expected 302, received ${approval.status}`);
-  const callbackUrl = new URL(approval.headers.get("location") ?? "");
+  if (approval.status !== 200) fail(`OAuth approval: expected a 200 handoff page, received ${approval.status}`);
+  const refresh = (await approval.text()).match(/<meta http-equiv="refresh" content="0;url=([^"]+)">/)?.[1];
+  if (!refresh) fail("OAuth approval page has no handoff refresh");
+  const callbackUrl = new URL(refresh!.replaceAll("&amp;", "&"));
   if (`${callbackUrl.origin}${callbackUrl.pathname}` !== callback) fail("OAuth approval redirected to the wrong callback");
   if (callbackUrl.searchParams.get("state") !== "smoke-state") fail("OAuth state was not returned");
   const code = callbackUrl.searchParams.get("code");
@@ -195,7 +198,7 @@ try {
   }, 200, "OAuth-authenticated root MCP compatibility alias");
   if (!oauthRootInitialized.headers.get("mcp-session-id")) fail("OAuth-authenticated root MCP alias returned no session id");
 
-  console.log("HTTP auth smoke passed: static/OAuth authentication, every transport, callback CSP, root MCP compatibility, and security headers");
+  console.log("HTTP auth smoke passed: static/OAuth authentication, every transport, consent handoff, root MCP compatibility, and security headers");
 } finally {
   child?.kill("SIGTERM");
   rmSync(temp, { recursive: true, force: true });
