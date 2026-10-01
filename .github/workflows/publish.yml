@@ -117,10 +117,7 @@ jobs:
         run: bun run validate:release
 
       # npm CLI >= 11.15.0 and Node >= 22.14.0: trusted publishing needs 11.5.1,
-      # and the registry's staged-publishing era (GA 2026-05-22) needs 11.15.0.
-      # v12.7.0 went out from a pinned 11.5.1 and the registry left it half
-      # staged: its manifest existed, its tarball did not, no stage queue showed
-      # it, and every retry answered 409 "previously staged". The runner's
+      # and staged publishing (GA 2026-05-22) needs 11.15.0. The runner's
       # bundled npm is not guaranteed to be new enough, so it is upgraded
       # explicitly rather than hoped for.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -135,7 +132,11 @@ jobs:
 
       # No NODE_AUTH_TOKEN: the CLI detects the OIDC credential itself. The step
       # is idempotent so a registry failure can be resumed by rerunning the tag
-      # workflow without attempting an immutable npm republish.
+      # workflow without attempting an immutable npm republish. A version still
+      # in npm's automated review is not served yet but already exists, and a
+      # second `npm publish` of it answers 409 "Cannot publish over previously
+      # staged version": that means "uploaded, under review", so it is treated
+      # as done rather than as a failure.
       - name: Publish to npm (idempotent)
         run: |
           set -euo pipefail
@@ -144,26 +145,35 @@ jobs:
           if EXISTING=$(npm view "${PACKAGE}@${VERSION}" version 2>/dev/null); then
             test "$EXISTING" = "$VERSION"
             echo "npm already serves ${PACKAGE}@${VERSION}; skipping immutable republish"
+          elif ! OUT=$(npm publish 2>&1); then
+            echo "$OUT"
+            if echo "$OUT" | grep -q "previously staged version"; then
+              echo "${PACKAGE}@${VERSION} is already uploaded and in npm's review; waiting for it below"
+            else
+              exit 1
+            fi
           else
-            npm publish
+            echo "$OUT"
           fi
 
-      # npm's CDN and the registry's package fetch are eventually consistent.
-      # The registry proves ownership by reading the just-published package, so
-      # starting it immediately after npm publish is a race — v12.3.0 lost a
-      # release run to exactly this and needed a manual republish.
-      - name: Wait for npm propagation
+      # npm validates every new version (an automated review, shown as
+      # "Validating" on the package page) before serving it. v12.7.0 took about
+      # half an hour, so the wait covers 45 minutes. The registry proves
+      # ownership by reading the published package, so it must not start before
+      # npm serves the version — v12.3.0 lost a release run to that race.
+      - name: Wait for npm review and propagation
+        timeout-minutes: 50
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          for i in $(seq 1 12); do
+          for i in $(seq 1 90); do
             if [ "$(npm view "brainllm@$TAG" version 2>/dev/null || true)" = "$TAG" ]; then
               echo "npm serves $TAG (attempt $i)"
               exit 0
             fi
-            echo "npm has not served $TAG yet (attempt $i/12)"
-            sleep 15
+            echo "npm has not served $TAG yet (attempt $i/90)"
+            sleep 30
           done
-          echo "::error::npm never served $TAG after 3 minutes; do not publish the registry entry yet."
+          echo "::error::npm never served $TAG after 45 minutes; check the package page for its review status, then rerun the failed job."
           exit 1
 
       - name: Install mcp-publisher
