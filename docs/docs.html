@@ -163,7 +163,7 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
         <tr><td>claude.ai says "couldn't reach the MCP server"</td><td>OAuth discovery failed — almost never a network problem. Check <code>BRAINLLM_OWNER_PASSWORD</code> is set and that the resource URL matches what you typed, trailing slash included</td></tr>
         <tr><td>Every call 401s after an hour</td><td>Token refresh failed because the signing secret changed. <code>BRAINLLM_CONFIG</code> must point at a persistent volume</td></tr>
         <tr><td><code>ENOENT</code> on a hosted start</td><td><code>BRAINLLM_CONFIG</code> is a directory, not a file path</td></tr>
-        <tr><td><code>revise(find=)</code> returns <code>replaced: 0</code></td><td>Read the hint — it names the cause. Usually an entity-escaped search string: bodies accept escaped markup, <code>find=</code> does not</td></tr>
+        <tr><td><code>revise(find=)</code> returns <code>replaced: 0</code></td><td>Read the hint — it names the cause. Usually an entity-escaped search string: bodies accept escaped markup, <code>find=</code> does not. For a table row, anchor on a few words with <code>within="tr"</code> instead of copying the row</td></tr>
       </table>
       <p style="margin-top:28px">Full reference lives in the <a href="https://github.com/miisodev/BrainLLM#readme" style="color:var(--accent)">README</a>, and the operational guide in <code>skills/brainllm/SKILL.md</code>.</p>
 

@@ -74,3 +74,21 @@ export function checkedDate(value?: string): string {
 export function localNowTime(): string {
   return localNowDateTime().slice(11, 16);
 }
+
+/** A diff cutoff in Trilium's local datetime order ("YYYY-MM-DD HH:mm"):
+ *  "today" (or "session", since a session note spans the day), a calendar date
+ *  meaning its midnight, or a local datetime. Null when the value is none of
+ *  those, so it never reaches a search expression unchecked. */
+export function sinceCutoff(value: string): string | null {
+  const v = value.trim().toLowerCase();
+  if (v === "today" || v === "session") return `${localToday()} 00:00`;
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[ t](\d{2}):(\d{2}))?$/.exec(v);
+  if (!m) return null;
+  try {
+    checkedDate(m[1]);
+  } catch {
+    return null;
+  }
+  if (m[2] !== undefined && (Number(m[2]) > 23 || Number(m[3]) > 59)) return null;
+  return `${m[1]} ${m[2] ?? "00"}:${m[3] ?? "00"}`;
+}

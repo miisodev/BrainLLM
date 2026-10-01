@@ -82,7 +82,9 @@ import {
 import { sweep, buildDigest, applyResolution, isStructural, isContainer, type SweepReport } from "./lifecycle.js";
 import { createBrainLLMStructure, containerPurposes } from "./bootstrap.js";
 import { generateDailyLog, catchUpDeletions } from "./journal.js";
-import { checkedDate, localToday, localNowTime } from "./time.js";
+import { checkedDate, localToday, localNowTime, sinceCutoff } from "./time.js";
+import { blockDiff, firstRevisionSince, revisionsSince } from "./diffing.js";
+import { WITHIN_TAGS, editWithin } from "./elements.js";
 import { registerMasterTools } from "./tools-master.js";
 import { registerLlmTools } from "./tools-llm.js";
 import { registerMemoryTools } from "./tools-memory.js";
@@ -261,6 +263,16 @@ export function registerTools(
   // every entry carries its own identification line and its own section names —
   // so structural checks apply to maintained documents only.
   const RECORD_KINDS = new Set(["session", "diary", "log", "threadEntry"]);
+
+  /** A chronological record: a session, diary or log note, or a dated thread
+   *  entry. Collection-thread entries are titled, maintained documents and are
+   *  not records. Records are never rewritten, so a fact they assert is history,
+   *  not a claim to keep consistent. */
+  const isRecordNote = (n: Note): boolean => {
+    const kind = ownedLabel(n, "noteType");
+    if (kind === "session" || kind === "diary" || kind === "log") return true;
+    return kind === "threadEntry" && /^\[\d{4}-\d{2}-\d{2}\]$/.test(n.title.trim());
+  };
 
   /** Structural findings for a write receipt: duplicate section headings the
    *  edit introduced, so the run that creates drift is the one told about it.
@@ -993,7 +1005,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     {
       kind: z.enum(Kinds).describe("What kind of memory this is"),
       title: z.string().optional().describe("Title — collection kinds (thread/knowledge/information sub-category); ignored for singletons & sources"),
-      body: z.string().optional().describe("Content: plain text, markdown, or HTML"),
+      body: z.string().optional().describe("Content: plain text, markdown, or HTML. Send real tags: entity-escaped markup (&lt;p&gt;) is decoded and reported in sanitized[]"),
       goal: z.string().optional().describe("thread creation: the goal statement — REQUIRED for a new thread (query the user for it); becomes the Context → Goal section"),
       shape: z.enum(["dated", "collection"]).optional().describe('thread creation: "dated" (default — one [yyyy-mm-dd] child per active day) or "collection" (one titled child per item, e.g. an ideas list)'),
       thread: z.string().optional().describe('kind="threadEntry" only: the collection thread\'s id — adds a titled child to it'),
@@ -1565,6 +1577,12 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           rejected ? `${rejected} backend candidate(s) did not actually match the pattern and were dropped — results are verified against the real regex, not just the search index.` : null,
           tagSpanning ? `${tagSpanning} match(es) were found only after stripping markup — the phrase is split by an inline tag there.` : null,
           results.length === 0 ? "No bodies matched that pattern, searched both as stored HTML and tag-stripped. Note that Trilium's %= pre-filter reads a striptags'd copy, so a pattern anchored ON tags may never reach verification — consistency() scans exhaustively if you need certainty." : null,
+          // An empty sweep over a pattern with backslashes is most often an
+          // escaping slip, and it looks exactly like a clean result. Show the
+          // pattern as the server received it so the slip is visible.
+          results.length === 0 && regex.includes("\\")
+            ? `The pattern reached the server as /${regex}/i. In it, \\d is a digit and \\\\ is one literal backslash (a Windows path separator); a backslash doubled once too often matches a literal backslash instead of escaping. If that is not the pattern you meant, adjust the escaping and retry.`
+            : null,
         ].filter(Boolean);
         return txt({
           mode: "regex",
@@ -1679,11 +1697,18 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     async ({ name, includeArchived }) => {
       const cfg = b();
       const slug = slugify(name);
-      const runIn = (ancestor: string | undefined, q: string) =>
+      // A note the listing omits is one nobody will ever correct, so the cap is
+      // generous and hitting it is reported rather than silent.
+      const CAP = 500;
+      let capped = false;
+      const runIn = (ancestor: string | undefined, q: string, archived = includeArchived ?? false) =>
         ancestor
           ? trilium
-              .searchNotes(q, { ancestorNoteId: ancestor, limit: 100, fastSearch: true, includeArchivedNotes: includeArchived ?? false })
-              .then((r) => r.results)
+              .searchNotes(q, { ancestorNoteId: ancestor, limit: CAP, fastSearch: true, includeArchivedNotes: archived })
+              .then((r) => {
+                if (r.results.length >= CAP) capped = true;
+                return r.results;
+              })
               .catch(() => [] as Note[])
           : Promise.resolve([] as Note[]);
 
@@ -1743,11 +1768,26 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         return k && k !== "domain";
       }).length;
 
+      // Archived notes are left out by default, and saying how many is what
+      // keeps "not listed" from reading as "does not exist".
+      let archivedOmitted = 0;
+      if (!includeArchived) {
+        const [archTopic, archDomain] = await Promise.all([runIn(cfg.root, `#topic='${slug}'`, true), runIn(cfg.root, `#domain='${slug}'`, true)]);
+        const extra = new Set<string>();
+        for (const n of [...archTopic, ...archDomain]) {
+          const k = ownedLabel(n, "noteType");
+          if (k && k !== "domain" && !seen.has(n.noteId)) extra.add(n.noteId);
+        }
+        archivedOmitted = extra.size;
+      }
+
       return txt({
         domain: name,
         slug,
         knowledgeDomain,
         total,
+        ...(archivedOmitted ? { archivedOmitted, archivedNote: `${archivedOmitted} archived note(s) carry this slug and are not listed; includeArchived=true shows them.` } : {}),
+        ...(capped ? { truncated: `A query hit its ${CAP}-note cap, so some notes may be missing; narrow with recall(domain=) or maintain(domain=).` } : {}),
         ...(staleCount ? { stale: `${staleCount} note(s) untouched ${staleAfter}d+ — marked stale:true below; re-verify against live sources before treating them as current` } : {}),
         groups,
         ...(total === 0 && !knowledgeDomain
@@ -1789,19 +1829,20 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     "revise",
     `Edit a note by id. A revision is taken first; "Last updated" lines are bumped on content writes.
 
-Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. title= composes with every mode; retitling a domain book cascades its #domain slug.
+Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
 
 Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled.`,
     {
       noteId: z.string().describe("Note to update"),
-      body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML. With find=, the raw replacement string (no conversion)."),
+      body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML. Send real tags: entity-escaped markup (&lt;p&gt;) is decoded and reported in sanitized[]. With find=, the raw replacement string (no conversion)."),
       title: z.string().optional().describe("New title (normalized server-side)"),
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading to target, 1-based (default: the first). Read them with outline(noteId)."),
       strict: z.boolean().optional().describe("Refuse (note untouched) on a section= miss or a body needing structural repair, instead of writing a new section"),
       mode: z.enum(["append", "replace", "before", "after", "prepend", "remove"]).optional().describe('append (default) | replace | before | after (around the whole section=) | prepend (top of its body) | remove (delete section=, no body needed)'),
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
-      nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them)"),
+      nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them). With within=: the Nth containing element"),
+      within: z.enum(WITHIN_TAGS).optional().describe('With find=: act on the <tag> element that contains the find text (a short unique anchor) — mode="replace" (default) swaps it for body=, "before"/"after" insert body= as a sibling (add a table row), "remove" deletes it'),
       edits: z.array(z.object({
         find: z.string().describe("Exact raw string to replace"),
         body: z.string().describe("Raw replacement string"),
@@ -1811,9 +1852,11 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
-    async ({ noteId, body, title, section, occurrence, mode, find, nth, edits, identity, icon, date, strict }) => {
+    async ({ noteId, body, title, section, occurrence, mode, find, nth, within, edits, identity, icon, date, strict }) => {
       if (isContainer(b(), noteId))
         return err("protected_note", `Note ${noteId} is a container — its content cannot be edited directly.`, "Use remember() to write to singletons, or specify a content note id.");
+      if (within && find === undefined)
+        return err("missing_param", "within= needs find= as its anchor.", 'Pass a short text unique to the element, e.g. revise(noteId, find="Phase 2", within="tr", body="<tr>…</tr>").');
       const d = checkedDate(date);
       const note = await trilium.getNote(noteId);
       const noteKind = labelOf(note, "noteType");
@@ -1856,7 +1899,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
         for (const [i, e] of plan.entries()) {
           if (!e.find)
             return err("missing_param", `edits[${i}].find cannot be empty.`, 'Pass the exact text to replace, e.g. revise(noteId, find="Brainllm", body="BrainLLM").');
-          if (e.body === undefined)
+          if (e.body === undefined && !within)
             return err("missing_param", `edits[${i}] requires body as the replacement string.`, 'Call revise(noteId, find="<exact text>", body="<replacement>").');
         }
 
@@ -1926,6 +1969,58 @@ Check the receipt: matched=false means a NEW section was written (available= lis
         };
 
         const current = await trilium.getNoteContent(noteId);
+
+        // ── within=: a short anchor names the element that contains it ──────
+        // Tables are the notes' main structural idiom, and a find= that had to
+        // carry a whole stored row (600 characters for one cell) was the sharp
+        // edge. The anchor needs only to be unique among the elements of that
+        // tag; the element is then replaced, removed, or given a sibling.
+        if (within) {
+          if (edits !== undefined)
+            return err("conflicting_params", "within= works with a single find=, not edits=.", "Make one revise() call per element.");
+          const action = mode === "before" || mode === "after" || mode === "remove" ? mode : mode === undefined || mode === "replace" ? "replace" : null;
+          if (!action)
+            return err("invalid_mode", `mode="${mode}" does not apply to within=.`, 'Use mode="replace" (default), "before", "after" or "remove".');
+          if (action !== "remove" && body === undefined)
+            return err("missing_param", `within= with mode="${action}" needs body= (the raw element HTML).`, `e.g. revise(noteId, find="Phase 2", within="tr", mode="after", body="<tr><td>…</td></tr>")`);
+          const exact: Array<{ start: number; length: number }> = [];
+          for (let at = current.indexOf(find!); at !== -1; at = current.indexOf(find!, at + find!.length)) exact.push({ start: at, length: find!.length });
+          const rx = exact.length ? null : tolerantFindRegex(find!);
+          const hits = exact.length ? exact : rx ? [...current.matchAll(rx)].map((m) => ({ start: m.index!, length: m[0].length })) : [];
+          const res = editWithin(current, hits, within, action, body ?? "", nth);
+          if (!res.ok) {
+            const hint =
+              res.reason === "no_match" ? missHint(find!, current, false)
+              : res.reason === "no_element" ? `The anchor matched ${res.matches} time(s), but never inside a <${within}>. Check the tag, or drop within= to edit the text itself.`
+              : `The anchor sits in ${res.matches} different <${within}> elements. Lengthen it until it is unique, or pass nth= (1-based, in document order) — elements[] previews them.`;
+            return txt({
+              ok: false, noteId, mode: `within:${within}:${action}`, replaced: 0, date: d, reason: res.reason, hint,
+              ...(res.elements ? { elements: res.elements } : {}),
+              ...(res.reason === "no_match" ? missContext(find!, current) : {}),
+            });
+          }
+          if (res.html === current)
+            return txt({ ok: true, noteId, mode: `within:${within}:${action}`, unchanged: true, date: d, note: "The body equals the element it would replace, so nothing was written and no revision was taken." });
+          await trilium.createRevision(noteId).catch(() => null);
+          const withinResult = sanitizeHtml(res.html);
+          const stampedWithin = bumpLastUpdated(withinResult.html, d);
+          await trilium.updateNoteContent(noteId, stampedWithin.html);
+          const titledWithin = await applyTitle();
+          const iconWithin = await applyIcon(noteId, icon);
+          await trilium.updateLabelValue(noteId, "updated", d);
+          if (labelOf(note, "status") === "dormant") await trilium.updateLabelValue(noteId, "status", "active");
+          const relsWithin = relationSnippet(note);
+          return txt({
+            ok: true, noteId, mode: `within:${within}:${action}`, date: d,
+            element: toText(res.element, 200),
+            ...(titledWithin.retitled ? { retitled: titledWithin.retitled } : {}),
+            ...(iconWithin ? { icon: iconWithin } : {}),
+            ...(relsWithin ? { relations: relsWithin } : {}),
+            ...structuralFindings(noteKind, stampedWithin.html),
+            ...(withinResult.warnings.length ? { sanitized: withinResult.warnings } : {}),
+          });
+        }
+
         let working = current;
         const results: Array<{ find: string; replaced: number; matchMode?: string; hint?: string; matchedUpTo?: string; storedNearby?: string }> = [];
         let total = 0;
@@ -1962,6 +2057,21 @@ Check the receipt: matched=false means a NEW section was written (available= lis
                   ...(results[0]!.matchedUpTo ? { matchedUpTo: results[0]!.matchedUpTo } : {}),
                   ...(results[0]!.storedNearby ? { storedNearby: results[0]!.storedNearby } : {}),
                 }),
+          });
+        }
+
+        // A replacement equal to what it matched changes nothing. Writing it
+        // anyway took a revision and reported a replacement, so a retry looked
+        // like a second edit. Say so and leave the note alone.
+        if (working === current) {
+          const titledNoop = await applyTitle();
+          const iconNoop = await applyIcon(noteId, icon);
+          return txt({
+            ok: true, noteId, mode: edits ? "edits" : "find-replace", replaced: 0, unchanged: true, date: d,
+            ...(edits ? { results } : { matchMode: results[0]!.matchMode }),
+            ...(titledNoop.retitled ? { retitled: titledNoop.retitled } : {}),
+            ...(iconNoop ? { icon: iconNoop } : {}),
+            note: "Every match already equals its replacement, so the body was not written and no revision was taken.",
           });
         }
 
@@ -2535,18 +2645,37 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
   server.tool(
     "consistency",
-    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Scans every in-scope note (fast=true uses Trilium's lossy pre-filter). Run it after correcting any fact recorded in more than one place.`,
+    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Records (sessions, diary, logs, dated thread entries) are skipped by default because they are never rewritten; includeRecords=true or a kinds= naming them brings them back. Scans every in-scope note (fast=true uses Trilium's lossy pre-filter). Run it after correcting any fact recorded in more than one place.`,
     {
       pattern: z.string().optional().describe("Regex over note bodies. One capture group = the value that should agree across notes. Omit when using subject= (prose mode)."),
       subject: z.string().optional().describe("A fact in prose — returns notes asserting about it however phrased (instead of pattern=)"),
       staleAfterDays: z.number().optional().describe("With pattern: also report values held in exactly one note untouched N+ days (staleSingles)"),
       domain: z.string().optional().describe("Restrict to one knowledge domain"),
-      kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds"),
+      kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds. Naming a record kind (session, diary, log, threadEntry) includes those records"),
+      includeRecords: z.boolean().optional().describe("Also match records: sessions, diary, logs and dated thread entries (default false: they are history, never rewritten)"),
       includeArchived: z.boolean().optional().describe("Include archived notes (default false)"),
       limit: z.number().optional().describe("Max notes to examine (default 60)"),
       fast: z.boolean().optional().describe("Use Trilium's faster but lossy %= pre-filter (default: scan every in-scope note)"),
     },
-    async ({ pattern, subject, staleAfterDays, domain, kinds, includeArchived, limit, fast }) => {
+    async ({ pattern, subject, staleAfterDays, domain, kinds, includeRecords, includeArchived, limit, fast }) => {
+      // Records are history: matching them buries the maintained notes that can
+      // actually be corrected. A kinds= that names a record kind is an explicit ask.
+      const wantsRecords = includeRecords === true || (kinds ?? []).some((k) => RECORD_KINDS.has(k));
+      let recordsSkipped = 0;
+      const inScope = (n: Note): boolean => {
+        const kind = ownedLabel(n, "noteType");
+        if (!kind) return false;
+        if (kinds?.length && !(kinds as string[]).includes(kind)) return false;
+        if (!wantsRecords && isRecordNote(n)) {
+          recordsSkipped++;
+          return false;
+        }
+        return true;
+      };
+      const recordsNote = () =>
+        recordsSkipped
+          ? { recordsSkipped, recordsNote: `${recordsSkipped} record(s) (sessions, diary, logs, dated thread entries) were skipped: they are never rewritten. includeRecords=true matches them too.` }
+          : {};
       if (!pattern && !subject)
         return err("missing_param", "consistency() needs either a regex pattern or a prose subject.", 'Pass pattern="(\\\\d+) users" to compare a captured value, or subject="<a fact in prose>" to find every note asserting about that subject however phrased.');
 
@@ -2567,11 +2696,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
           .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: max, includeArchivedNotes: includeArchived ?? false })
           .then((r) => r.results)
           .catch(() => [] as Note[]);
-        const scoped = notes.filter((n) => {
-          const kind = ownedLabel(n, "noteType");
-          if (!kind) return false;
-          return !kinds?.length || (kinds as string[]).includes(kind);
-        });
+        const scoped = notes.filter(inScope);
         const threshold = Math.max(1, Math.ceil(tokens.length / 2));
         const hits: Array<{ id: string; title: string; kind: string; matchedTokens: string[]; snippet: string }> = [];
         for (const n of scoped) {
@@ -2591,6 +2716,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
           notes: hits,
           total: hits.length,
           ...(domain ? { domain: slugify(domain) } : {}),
+          ...recordsNote(),
           note: hits.length
             ? `${hits.length} note(s) assert something about "${subject}". Open each to read the claim — or narrow with domain= / kinds=.`
             : `No note in scope matched ${threshold}+ of the subject's tokens. That is evidence about the phrasing, not the brain — this mode is deliberately phrase-agnostic, so if you expected a hit, the fact may not be recorded here at all.`,
@@ -2618,11 +2744,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
         .then((r) => r.results)
         .catch(() => [] as Note[]);
 
-      const scoped = notes.filter((n) => {
-        const kind = ownedLabel(n, "noteType");
-        if (!kind) return false;
-        return !kinds?.length || (kinds as string[]).includes(kind);
-      });
+      const scoped = notes.filter(inScope);
 
       // Group by the captured value. A note asserting the value more than once
       // contributes each distinct capture, because a note that contradicts
@@ -2688,6 +2810,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
           pattern,
           scan: fast ? "fast (%= pre-filter)" : "exhaustive",
           notesExamined: scoped.length,
+          ...recordsNote(),
           notes: noCapture,
           total: noCapture.length,
           note:
@@ -2719,6 +2842,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
         scan: fast ? "fast (%= pre-filter)" : "exhaustive",
         ...(domain ? { domain: slugify(domain) } : {}),
         notesExamined: scoped.length,
+        ...recordsNote(),
         ...(tagSpanning ? { tagSpanning, tagSpanningNote: `${tagSpanning} note(s) matched only once markup was stripped — the phrase is split by an inline tag there. Before v10.3 those were invisible.` } : {}),
         distinctValues: groups.length,
         agreement: groups.length === 0 ? "no-data" : agrees ? "unanimous" : "DISAGREEMENT",
@@ -3076,13 +3200,63 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
 
   server.tool(
     "diff",
-    `What a write actually changed: a revision snapshot (default the latest) against the note as it stands, as changed lines with context and added/removed counts. The revision list comes back on every call; pass revisionId to compare against an earlier one.`,
+    `What a write actually changed: a revision snapshot (default the latest) against the note as it stands, as changed lines with context and added/removed counts. The revision list comes back on every call; pass revisionId to compare against an earlier one. since="today" (or a date, or "YYYY-MM-DD HH:mm") reviews everything changed since then in one call: with noteId, that note's net change across all its writes since; without, every maintained note changed since, each diffed against its state before the first of those writes. Run it before close to check today's corrections agree with each other.`,
     {
-      noteId: z.string().describe("Note to diff"),
+      noteId: z.string().optional().describe("Note to diff (omit with since= to review every note changed since then)"),
       revisionId: z.string().optional().describe("Compare against this revision (default: the most recent one)"),
+      since: z.string().optional().describe('"today", a date (YYYY-MM-DD) or a local datetime (YYYY-MM-DD HH:mm): the net change since then, across all writes'),
+      includeRecords: z.boolean().optional().describe("since= without noteId: also list records (sessions, diary, logs, dated thread entries), which only ever gain addenda (default false)"),
+      limit: z.number().int().min(1).max(50).optional().describe("since= without noteId: max notes to diff (default 25)"),
       context: z.number().int().min(0).max(10).optional().describe("Unchanged lines to show around each change (default: 1)"),
     },
-    async ({ noteId, revisionId, context }) => {
+    async ({ noteId, revisionId, since, includeRecords, limit, context }) => {
+      const pad = context ?? 1;
+      if (since !== undefined) {
+        const cutoff = sinceCutoff(since);
+        if (!cutoff)
+          return err("invalid_since", `since="${since}" is not "today", a date or a local datetime.`, 'Pass since="today", since="2026-10-01" or since="2026-10-01 14:30".');
+        if (noteId) {
+          const revisions = await trilium.getNoteRevisions(noteId).catch(() => []);
+          const after = await trilium.getNoteContent(noteId).catch(() => null);
+          if (after === null) return err("not_found", `Note ${noteId} not found.`, "Check the id with brain() or recall().");
+          const first = firstRevisionSince(revisions, cutoff);
+          if (!first)
+            return txt({ noteId, since: cutoff, changed: false, note: `No content write to this note since ${cutoff} (no revision was taken after it).` });
+          const before = await trilium.getRevisionContent(first.revisionId);
+          return txt({ noteId, since: cutoff, writes: revisionsSince(revisions, cutoff).length, comparedTo: first.revisionId, ...blockDiff(before, after, pad) });
+        }
+        const changed = await trilium
+          .searchNotes(`#noteType note.dateModified >= '${cutoff}'`, { ancestorNoteId: b().root, limit: 200, orderBy: "dateModified", orderDirection: "desc" })
+          .then((r) => r.results)
+          .catch(() => [] as Note[]);
+        const maintained = includeRecords ? changed : changed.filter((n) => !isRecordNote(n));
+        const max = limit ?? 25;
+        const notes: Array<Record<string, unknown>> = [];
+        for (const n of maintained.slice(0, max)) {
+          const stub = { id: n.noteId, title: n.title, kind: ownedLabel(n, "noteType") ?? "" };
+          const revisions = await trilium.getNoteRevisions(n.noteId).catch(() => []);
+          const first = firstRevisionSince(revisions, cutoff);
+          if (!first) {
+            notes.push({ ...stub, ...(n.dateCreated >= cutoff ? { created: true } : { note: "Changed without a content revision (attributes or title only)." }) });
+            continue;
+          }
+          const [before, after] = await Promise.all([trilium.getRevisionContent(first.revisionId), trilium.getNoteContent(n.noteId)]);
+          const d = blockDiff(before, after, pad, 12);
+          notes.push({ ...stub, writes: revisionsSince(revisions, cutoff).length, ...(d.identical ? { identical: true } : { summary: d.summary, removed: d.removed, added: d.added }) });
+        }
+        const recordsSkipped = changed.length - maintained.length;
+        return txt({
+          since: cutoff,
+          notesChanged: maintained.length,
+          ...(maintained.length > max ? { shown: max, more: `${maintained.length - max} more; raise limit= or diff one note with noteId=.` } : {}),
+          ...(recordsSkipped ? { recordsSkipped, recordsNote: "Records only gain dated addenda; includeRecords=true lists them too." } : {}),
+          notes,
+          note: maintained.length
+            ? "Each note is diffed from its state before its first write since the cutoff. Check the changes agree with each other, and run consistency() on any fact you changed in more than one note."
+            : `No maintained note changed since ${cutoff}.`,
+        });
+      }
+      if (!noteId) return err("missing_param", "diff() needs noteId=, since=, or both.", 'Pass noteId= for one note\'s last write, or since="today" to review everything changed today.');
       const revisions = await trilium.getNoteRevisions(noteId).catch(() => []);
       if (!revisions.length)
         return txt({ noteId, note: "No revisions — this note has not been written through a content-mutating tool yet, or its revisions have been pruned.", revisions: [] });
@@ -3110,37 +3284,11 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
         });
       }
 
-      // Block-level line split: these bodies are one long line of HTML, so
-      // splitting on element boundaries is what makes a diff readable at all.
-      const lines = (s: string) => s.replace(/></g, ">\n<").split("\n");
-      const a = lines(before);
-      const bLines = lines(after);
-
-      // Common prefix and suffix, then report the middle. Adequate and honest
-      // for the edit shapes this tool exists to verify — surgical replacements
-      // in a known region — and it never claims a similarity it did not check.
-      let head = 0;
-      while (head < a.length && head < bLines.length && a[head] === bLines[head]) head++;
-      let tail = 0;
-      while (tail < a.length - head && tail < bLines.length - head && a[a.length - 1 - tail] === bLines[bLines.length - 1 - tail]) tail++;
-
-      const pad = context ?? 1;
-      const removed = a.slice(head, a.length - tail);
-      const added = bLines.slice(head, bLines.length - tail);
-      const cap = (arr: string[]) => (arr.length > 40 ? [...arr.slice(0, 40), `… ${arr.length - 40} more line(s)`] : arr);
-
       return txt({
         noteId,
         comparedTo: target.revisionId,
         revisionDate: target.dateCreated?.slice(0, 16),
-        identical: false,
-        sizeBefore: before.length,
-        sizeAfter: after.length,
-        contextBefore: cap(a.slice(Math.max(0, head - pad), head)),
-        removed: cap(removed),
-        added: cap(added),
-        contextAfter: cap(a.slice(a.length - tail, a.length - tail + pad)),
-        summary: `${removed.length} block(s) removed, ${added.length} added, ${after.length - before.length >= 0 ? "+" : ""}${after.length - before.length} characters.`,
+        ...blockDiff(before, after, pad),
         revisions: index,
       });
     }

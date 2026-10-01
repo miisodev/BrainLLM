@@ -24,15 +24,17 @@ Resolution plus an index of its [yyyy-mm-dd] children (newest first: the latest 
 index passes ~24k characters, unless limit= says otherwise; with the total count), each listed by its addendum blocks;
 date="yyyy-mm-dd" resolves straight to one day. A collection thread returns its
 Context plus its titled entries (alphabetical, with a lead). Read a child with memory(<child id>).
-section="<heading>" reads one section.`,
+section="<heading>" reads one section. index=true on a dated thread returns only child ids,
+dates and block markers (no book body, no leads): the cheap answer to "what is the newest entry".`,
     {
       ...idParams,
       date: z.string().optional().describe("Thread books only: resolve directly to this day's child note (yyyy-mm-dd)"),
       limit: z.number().int().positive().optional().describe("Dated threads: how many of the newest day-children to index (default 30)"),
+      index: z.boolean().optional().describe("Dated threads: ids, dates and block markers only — no book body, no block leads"),
       section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
     },
-    async ({ id: idArg, noteId, date, limit, section, occurrence }) => {
+    async ({ id: idArg, noteId, date, limit, index, section, occurrence }) => {
       const id = idArg ?? noteId;
       if (!id) return missingId("memory");
       const note = await trilium.getNote(id).catch(() => null);
@@ -76,6 +78,21 @@ section="<heading>" reads one section.`,
           ancestorNoteId: id, fastSearch: true, limit: shown, orderBy: "dateCreated", orderDirection: "desc",
         })
         .catch(() => ({ results: [] as Note[] }));
+
+      if (index) {
+        const compact = await Promise.all(
+          children.results.map(async (c) => ({
+            id: c.noteId,
+            date: labelOf(c, "created") ?? c.dateCreated.slice(0, 10),
+            blocks: addendumIndex(await trilium.getNoteContent(c.noteId).catch(() => "")).map(({ marker, identity }) => ({ marker, identity })),
+          }))
+        );
+        return txt({
+          id, title: note.title, kind: "thread", totalChildren, children: compact,
+          ...(totalChildren > compact.length ? { more: `Showing the newest ${compact.length} of ${totalChildren}. Pass limit= for more.` } : {}),
+        });
+      }
+
       const indexed = await Promise.all(
         children.results.map(async (c) => {
           const content = await trilium.getNoteContent(c.noteId).catch(() => "");

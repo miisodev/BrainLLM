@@ -30,7 +30,7 @@ DURING   remember(...)                   the moment something is worth keeping
          resolve / withdraw / recover    thread and note lifecycle
          connect(...)                    wire a real relation when you see one
          read: <surface>, domain, recall, read(ids), outline, inspect, assembly, brain
-         verify: consistency(...), claim(...)
+         verify: consistency(...), claim(...), diff(since="today")
 END      session() → [update singletons] → addendum() → maintain() → remarks() → diary() → close()
 ```
 
@@ -89,7 +89,7 @@ worth keeping?
 | Need | Tool |
 |---|---|
 | a singleton | `master(which)` / `llm(which)` — `section=` for one section |
-| a thread or session | `memory(id)` — dated index (newest days, up to 30 and ~24k characters; `limit=` for more) or collection entries; `date=` for one day |
+| a thread or session | `memory(id)` — dated index (newest days, up to 30 and ~24k characters; `limit=` for more) or collection entries; `date=` for one day; `index=true` for ids, dates and block markers only |
 | a knowledge note | `knowledge(id)` — `section=` for one section |
 | a day's change log | `insights(date?)` |
 | skim a surface | `<surface>_recall` |
@@ -148,8 +148,11 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 | `section=` + `mode="remove"` | delete the section |
 | `find="<exact stored text>"` | replace every occurrence (`nth=` for one) |
 | `edits=[{find, body}]` | several surgeries in one read and one write |
+| `find="<short anchor>"` + `within="tr"` | act on the element containing the anchor: replace it (default), `mode="before"/"after"` to insert a row beside it, `mode="remove"` to delete it (`li`, `p`, `td` … too) |
 
-- A revision is taken before every content write; `diff(noteId)` shows what the last write changed.
+- **Tables are edited by row.** Anchor on a few words unique to the row and pass `within="tr"`; never copy a whole stored row into `find=`. An anchor in several rows is refused with previews; `nth=` picks one.
+- A replacement equal to its match writes nothing and reports `unchanged`.
+- A revision is taken before every content write; `diff(noteId)` shows what the last write changed, and `diff(since="today")` reviews every note you changed today in one call — run it before closing.
 - **Check the receipt.** `matched: false` means a new section was written — `available[]` lists real headings and `didYouMean` catches typos; `strict=true` refuses instead. `headingCount > 1` means only the first match was touched. `replacedSubsections[]` names nested headings a section replace took with it.
 - **`find=` matches stored HTML, not rendered text.** Pass tags literally; `outline()` gives the `raw` form of headings with inline markup. On a miss the hint names the cause and shows the stored text nearby.
 - A section replace swaps everything under the heading — use `find=` for anything smaller.
@@ -175,7 +178,7 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 
 ## Verification — `consistency` and `claim`
 
-- **`consistency(pattern | subject)`** — does the brain agree with itself? A regex with one capture group (or a fact in prose) returns every asserting note grouped by value. **Run it after correcting any fact that could be recorded in more than one place.** `staleAfterDays=N` reports values held in only one note untouched N+ days.
+- **`consistency(pattern | subject)`** — does the brain agree with itself? A regex with one capture group (or a fact in prose) returns every asserting note grouped by value. **Run it after correcting any fact that could be recorded in more than one place.** `staleAfterDays=N` reports values held in only one note untouched N+ days. Records (sessions, diary, logs, dated thread entries) are skipped because they are never rewritten; `includeRecords=true` brings them back.
 - **`claim(...)`** — does the brain still agree with the world? Register `assertion` + `check`; verify with `claimId` + `holds` + `evidence` (evidence required); read with `claimId`; list with no arguments. BrainLLM never runs the check — you do. Register claims that would be expensive to discover had gone stale.
 
 ---

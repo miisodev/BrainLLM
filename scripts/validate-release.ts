@@ -93,6 +93,15 @@ if (distinct.length > 1) {
 } else if (!missing.length) {
   passed.push(`all version sites agree (${distinct[0]})`);
 }
+// SECURITY.md names the supported line (major.minor), not a patch version, so it
+// is checked against the release's line. It sat at 12.4.x through 12.5.0 before
+// it was checked at all.
+const security = readFileSync(new URL("../SECURITY.md", import.meta.url), "utf8");
+const supportedLine = security.match(/\|\s*([0-9]+\.[0-9]+)\.x\s*\|\s*✅/)?.[1];
+const releaseLine = pkg.version.split(".").slice(0, 2).join(".");
+if (!supportedLine) problems.push("SECURITY.md has no supported-versions row of the form | X.Y.x | ✅ |");
+else if (supportedLine !== releaseLine) problems.push(`SECURITY.md supports ${supportedLine}.x but the release is ${pkg.version}`);
+else passed.push(`SECURITY.md supports the release line (${supportedLine}.x)`);
 if (lock.name !== pkg.name) problems.push(`package-lock.json name "${lock.name}" != package.json name "${pkg.name}"`);
 if ((manifest as { manifest_version?: string }).manifest_version !== "0.3") {
   problems.push("manifest.json must declare the current MCPB manifest_version 0.3");

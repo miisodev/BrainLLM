@@ -162,7 +162,7 @@ function createServer(origin: string | null = null): McpServer {
   const s = new McpServer({
     name: "BrainLLM",
     title: "BrainLLM",
-    version: "12.6.4",
+    version: "12.7.0",
     icons: brandingIcons(origin),
   });
   // The two surfaces, composed here rather than nested inside registerTools —
