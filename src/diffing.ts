@@ -50,8 +50,16 @@ export function blockDiff(before: string, after: string, pad = 1, cap = 40): Blo
   while (head < a.length && head < b.length && a[head] === b[head]) head++;
   let tail = 0;
   while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
-  const removed = a.slice(head, a.length - tail);
-  const added = b.slice(head, b.length - tail);
+  const midA = a.slice(head, a.length - tail);
+  const midB = b.slice(head, b.length - tail);
+  // Several separate edits leave unchanged blocks between them. A longest
+  // common subsequence over the middle reports only the changed blocks, so two
+  // one-cell edits at either end of a note read as two cells, not the whole
+  // table between them. Bounded: past the cell budget the middle is reported
+  // whole, which is still true, only coarser.
+  const lcs = changedLines(midA, midB);
+  const removed = lcs ? lcs.removed : midA;
+  const added = lcs ? lcs.added : midB;
   const bound = (arr: string[]) => (arr.length > cap ? [...arr.slice(0, cap), `… ${arr.length - cap} more line(s)`] : arr);
   const delta = after.length - before.length;
   return {
@@ -62,6 +70,41 @@ export function blockDiff(before: string, after: string, pad = 1, cap = 40): Blo
     removed: bound(removed),
     added: bound(added),
     contextAfter: bound(a.slice(a.length - tail, a.length - tail + pad)),
-    summary: `${removed.length} block(s) removed, ${added.length} added, ${delta >= 0 ? "+" : ""}${delta} characters.`,
+    summary: `${lcs ? `${lcs.hunks} change(s): ` : ""}${removed.length} block(s) removed, ${added.length} added, ${delta >= 0 ? "+" : ""}${delta} characters.`,
   };
+}
+
+/** Lines only in `a` (removed) and only in `b` (added), by longest common
+ *  subsequence, with the number of separate change runs. Null when the
+ *  table would exceed the cell budget. */
+export function changedLines(a: string[], b: string[], budget = 4_000_000): { removed: string[]; added: string[]; hunks: number } | null {
+  const n = a.length;
+  const m = b.length;
+  if ((n + 1) * (m + 1) > budget) return null;
+  const w = m + 1;
+  const t = new Uint32Array((n + 1) * w);
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      t[i * w + j] = a[i] === b[j] ? t[(i + 1) * w + j + 1]! + 1 : Math.max(t[(i + 1) * w + j]!, t[i * w + j + 1]!);
+  const removed: string[] = [];
+  const added: string[] = [];
+  let hunks = 0;
+  let inHunk = false;
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) {
+      inHunk = false;
+      i++;
+      j++;
+      continue;
+    }
+    if (!inHunk) {
+      hunks++;
+      inHunk = true;
+    }
+    if (j >= m || (i < n && t[(i + 1) * w + j]! >= t[i * w + j + 1]!)) removed.push(a[i++]!);
+    else added.push(b[j++]!);
+  }
+  return { removed, added, hunks };
 }

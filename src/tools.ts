@@ -2693,10 +2693,10 @@ calling twice is safe. Use remove=true to delete an edge.`,
         const clauses = ["#noteType"];
         if (domain) clauses.push(`#domain='${slugify(domain)}'`);
         const notes = await trilium
-          .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: max, includeArchivedNotes: includeArchived ?? false })
+          .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: wantsRecords ? max : max * 4, includeArchivedNotes: includeArchived ?? false })
           .then((r) => r.results)
           .catch(() => [] as Note[]);
-        const scoped = notes.filter(inScope);
+        const scoped = notes.filter(inScope).slice(0, max); // the limit counts notes in scope, not the records skipped
         const threshold = Math.max(1, Math.ceil(tokens.length / 2));
         const hits: Array<{ id: string; title: string; kind: string; matchedTokens: string[]; snippet: string }> = [];
         for (const n of scoped) {
@@ -2740,11 +2740,11 @@ calling twice is safe. Use remove=true to delete an edge.`,
       const clauses = fast ? [`note.content %= '${escapeQueryRegex(pattern)}'`] : ["#noteType"];
       if (domain) clauses.push(`#domain='${slugify(domain)}'`);
       const notes = await trilium
-        .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: max, includeArchivedNotes: includeArchived ?? false })
+        .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: wantsRecords ? max : max * 4, includeArchivedNotes: includeArchived ?? false })
         .then((r) => r.results)
         .catch(() => [] as Note[]);
 
-      const scoped = notes.filter(inScope);
+      const scoped = notes.filter(inScope).slice(0, max); // the limit counts notes in scope, not the records skipped
 
       // Group by the captured value. A note asserting the value more than once
       // contributes each distinct capture, because a note that contradicts

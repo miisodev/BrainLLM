@@ -30,6 +30,17 @@ describe("blockDiff", () => {
     expect(d.contextAfter).toEqual(["<p>c</p>"]);
   });
 
+  test("reports two distant edits as two changes, not the span between them", () => {
+    const rows = Array.from({ length: 20 }, (_, i) => `<p>${i}</p>`);
+    const edited = [...rows];
+    edited[1] = "<p>one</p>";
+    edited[18] = "<p>eighteen</p>";
+    const d = blockDiff(rows.join(""), edited.join(""));
+    expect(d.removed).toEqual(["<p>1</p>", "<p>18</p>"]);
+    expect(d.added).toEqual(["<p>one</p>", "<p>eighteen</p>"]);
+    expect(d.summary).toStartWith("2 change(s)");
+  });
+
   test("caps long change lists", () => {
     const before = Array.from({ length: 30 }, (_, i) => `<p>${i}</p>`).join("");
     const d = blockDiff(before, "", 1, 5);
