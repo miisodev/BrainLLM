@@ -12,7 +12,7 @@
 # identity:
 #   - npm trusted publishing, configured on the package at
 #     npmjs.com/package/brainllm/access — needs `id-token: write`, npm CLI
-#     >= 11.5.1 and Node >= 22.14.0, and generates provenance automatically.
+#     >= 11.15.0 and Node >= 22.14.0, and generates provenance automatically.
 #   - mcp-publisher login github-oidc, which proves the io.github.miisodev/*
 #     namespace from the repository owner.
 # A token would have been the other option and is worse: the granular npm token
@@ -116,9 +116,13 @@ jobs:
       - name: Release metadata
         run: bun run validate:release
 
-      # npm CLI >= 11.5.1 and Node >= 22.14.0 are required for trusted
-      # publishing; the runner's bundled npm is not guaranteed to be new enough,
-      # so it is upgraded explicitly rather than hoped for.
+      # npm CLI >= 11.15.0 and Node >= 22.14.0: trusted publishing needs 11.5.1,
+      # and the registry's staged-publishing era (GA 2026-05-22) needs 11.15.0.
+      # v12.7.0 went out from a pinned 11.5.1 and the registry left it half
+      # staged: its manifest existed, its tarball did not, no stage queue showed
+      # it, and every retry answered 409 "previously staged". The runner's
+      # bundled npm is not guaranteed to be new enough, so it is upgraded
+      # explicitly rather than hoped for.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -126,7 +130,7 @@ jobs:
 
       - name: Ensure npm supports trusted publishing
         run: |
-          npm install -g npm@11.5.1
+          npm install -g npm@^11.15.0
           npm --version
 
       # No NODE_AUTH_TOKEN: the CLI detects the OIDC credential itself. The step
