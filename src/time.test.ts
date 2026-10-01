@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { checkedDate } from "./time.js";
+import { checkedDate, rollingBackupName } from "./time.js";
+
+describe("rollingBackupName", () => {
+  test("maps a date to its weekday slot, so seven slots repeat weekly", () => {
+    expect(rollingBackupName("2026-10-01")).toBe("brainllm-thu");
+    expect(rollingBackupName("2026-10-04")).toBe("brainllm-sun");
+    expect(rollingBackupName("2026-10-08")).toBe(rollingBackupName("2026-10-01"));
+  });
+
+  test("rejects impossible dates", () => {
+    expect(() => rollingBackupName("2026-02-30")).toThrow();
+  });
+});
 
 describe("checkedDate", () => {
   test("accepts real ISO calendar dates", () => {

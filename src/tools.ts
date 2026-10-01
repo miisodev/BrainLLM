@@ -82,7 +82,7 @@ import {
 import { sweep, buildDigest, applyResolution, isStructural, isContainer, type SweepReport } from "./lifecycle.js";
 import { createBrainLLMStructure, containerPurposes } from "./bootstrap.js";
 import { generateDailyLog, catchUpDeletions } from "./journal.js";
-import { checkedDate, localToday, localNowTime, sinceCutoff } from "./time.js";
+import { checkedDate, localToday, localNowTime, sinceCutoff, rollingBackupName } from "./time.js";
 import { blockDiff, firstRevisionSince, revisionsSince } from "./diffing.js";
 import { WITHIN_TAGS, editWithin } from "./elements.js";
 import { registerMasterTools } from "./tools-master.js";
@@ -861,7 +861,7 @@ Protocol: 1. update master singletons with what the session taught about the use
       }
 
       let backupStatus: "disabled" | "completed" | "failed" = "disabled";
-      let backupName = `brainllm-${d}`;
+      let backupName = rollingBackupName(d);
       if (backup !== false) {
         try {
           await trilium.createBackup(backupName);
@@ -897,13 +897,13 @@ Protocol: 1. update master singletons with what the session taught about the use
 
   server.tool(
     "backup",
-    `Named database snapshot. close() already backs up; use this before a large restructure.`,
+    `Named database snapshot. close() already backs up into a rolling weekday slot (brainllm-mon … brainllm-sun, overwritten weekly); use this before a large restructure. A named backup is kept until someone deletes it on the server, so name milestones sparingly: every one is a full copy of the database on Trilium's volume.`,
     {
-      name: z.string().optional().describe("Backup name without extension (default: brainllm-{today}). Use a descriptive name for milestones."),
+      name: z.string().optional().describe("Backup name without extension (default: today's rolling slot, e.g. brainllm-thu). A descriptive name keeps a milestone."),
     },
     async ({ name }) => {
       const d = today();
-      const backupName = name ?? `brainllm-${d}`;
+      const backupName = name ?? rollingBackupName(d);
       try {
         await trilium.createBackup(backupName);
         return txt({ ok: true, backup: backupName, backupStatus: "completed", date: d });

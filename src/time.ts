@@ -92,3 +92,14 @@ export function sinceCutoff(value: string): string | null {
   if (m[2] !== undefined && (Number(m[2]) > 23 || Number(m[3]) > 59)) return null;
   return `${m[1]} ${m[2] ?? "00"}:${m[3] ?? "00"}`;
 }
+
+/** The rolling backup name for a calendar date: one slot per weekday
+ *  ("brainllm-thu"), overwritten each week. Trilium writes backups onto its
+ *  own data volume and ETAPI cannot delete them, so a dated name per close
+ *  grew the volume by a full database copy every day until it filled. Seven
+ *  slots bound that to seven copies; milestones keep their own names. */
+export function rollingBackupName(date: string): string {
+  const [y, m, d] = checkedDate(date).split("-").map(Number);
+  const day = new Date(Date.UTC(y!, m! - 1, d!)).getUTCDay();
+  return `brainllm-${["sun", "mon", "tue", "wed", "thu", "fri", "sat"][day]}`;
+}

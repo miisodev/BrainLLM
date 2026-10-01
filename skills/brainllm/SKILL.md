@@ -208,7 +208,7 @@ Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=tr
 
 ## Other tools
 
-`attach`/`detach` — raw artifacts on a note. `backup(name)` — milestone snapshot (close already backs up). `bootstrap()` — create or refresh the structure. `template(kind)` — the canonical skeleton. **Full mode** (`BRAINLLM_MODE=full`) adds raw ETAPI tools with none of the server's guarantees. Read `references/fullmode.md` before any raw work.
+`attach`/`detach` — raw artifacts on a note. `backup(name)` — milestone snapshot (close already backs up into a rolling weekday slot; every named backup is a full database copy kept on Trilium's volume, so name them sparingly). `bootstrap()` — create or refresh the structure. `template(kind)` — the canonical skeleton. **Full mode** (`BRAINLLM_MODE=full`) adds raw ETAPI tools with none of the server's guarantees. Read `references/fullmode.md` before any raw work.
 
 ## Quick-fix
 

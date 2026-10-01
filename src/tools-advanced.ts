@@ -10,7 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { TriliumClient, ownedLabel, ContentMetadataUpdateError, PartialContentUploadError } from "./trilium.js";
-import { localToday } from "./time.js";
+import { localToday, rollingBackupName } from "./time.js";
 import { labelPlan } from "./router.js";
 import type { BrainLLMConfig } from "./config.js";
 import type { Kind } from "./types.js";
@@ -520,11 +520,11 @@ note.dateModified >= 'YYYY-MM-DD', AND/OR. Unscoped unless ancestorNoteId is giv
     "create_backup",
     `Named Trilium database backup (raw). The resulting file path is not exposed.`,
     {
-      name: z.string().optional().describe("Backup file name without .db extension (default: brainllm-{today})"),
-      date: z.string().optional().describe("ISO date used in the default name when name is omitted (default: today)"),
+      name: z.string().optional().describe("Backup file name without .db extension (default: the date's rolling weekday slot, e.g. brainllm-thu)"),
+      date: z.string().optional().describe("ISO date whose weekday slot is used when name is omitted (default: today)"),
     },
     async ({ name, date }) => {
-      const backupName = name ?? `brainllm-${date ?? localToday()}`;
+      const backupName = name ?? rollingBackupName(date ?? localToday());
       try {
         await trilium.createBackup(backupName);
         return txt({ ok: true, backup: backupName, backupStatus: "completed" });
