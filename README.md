@@ -6,11 +6,11 @@
 
 **Give Claude a memory that survives the session.**
 
-A persistent, graph-structured second brain for Claude and any MCP client — built on [TriliumNext Notes](https://github.com/TriliumNext/Trilium), served over the [Model Context Protocol](https://modelcontextprotocol.io).
+Self-hosted memory for LLMs in [TriliumNext Notes](https://github.com/TriliumNext/Trilium), structured by the server and editable by you, served over the [Model Context Protocol](https://modelcontextprotocol.io).
 
-[**brainllm site**](https://miisodev.github.io/BrainLLM/) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Use cases](https://miisodev.github.io/BrainLLM/use-cases.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html)
+[**Site**](https://miisodev.github.io/BrainLLM/) · [Connect to Claude](https://miisodev.github.io/BrainLLM/connect.html) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html) · [Privacy](https://miisodev.github.io/BrainLLM/privacy.html)
 
-[![Version](https://img.shields.io/badge/version-12.7.1-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-12.8.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -35,7 +35,7 @@ Anyone running an LLM as a long-running collaborator, not a one-shot Q&A tool �
 
 ### From experiment to open source
 
-BrainLLM began in February 2026 as a personal experiment: could an LLM operate a real, self-hosted second brain reliably enough to be trusted as its own memory — orienting, writing, connecting, and closing sessions without a human doing the filing? Through sustained daily, production use the answer held. The design has settled, the failure modes have been found and fixed, and the project has graduated from experiment to something **efficient and stable enough to share** — so it's now open source. It still runs the author's own sessions every day; what you're reading is the same code, not a demo. It also still carries the shape of one person's daily use — see [Adapting to your environment](#adapting-to-your-environment) for exactly what that means and what to change.
+BrainLLM began in February 2026 as a personal experiment: could an LLM operate a real, self-hosted memory reliably enough to be trusted as its own memory — orienting, writing, connecting, and closing sessions without a human doing the filing? Through sustained daily, production use the answer held. The design has settled, the failure modes have been found and fixed, and the project has graduated from experiment to something **efficient and stable enough to share** — so it's now open source. It still runs the author's own sessions every day; what you're reading is the same code, not a demo. It also still carries the shape of one person's daily use — see [Adapting to your environment](#adapting-to-your-environment) for exactly what that means and what to change.
 
 ### The core principle
 
@@ -199,15 +199,15 @@ The **full mode** tools deliberately break this convention — they are named af
 
 ### Tool permissions
 
-Every tool declares whether it reads, writes, or destroys, so your client can group them and you can grant permission per group instead of per call. The current full-mode split is **33 read-only · 38 write · 6 destructive** (core mode is **22 read-only · 20 write · 2 destructive**), which lets reads run unattended while anything that touches your brain still asks.
+Every tool declares whether it reads, writes, or destroys, so your client can group them and you can grant permission per group instead of per call. Every tool also carries a human-readable title ("Edit a note", "Search the brain") for permission prompts and directory listings. The current full-mode split is **34 read-only · 31 write · 13 destructive** (core mode is **23 read-only · 17 write · 5 destructive**); `revise`, `label` and `connect` count as destructive because they can overwrite or remove what was there, which lets reads run unattended while anything that touches your brain still asks.
 
 The classification lives in one reviewable table ([`src/annotations.ts`](./src/annotations.ts)) rather than scattered across registrations, and its default is deliberately unsafe-side: a tool missing from the table is treated as a **write**, never a read, and says so at startup. Three are worth knowing because they look like reads and aren't — `start()` creates today's diary and session stubs, `session()` runs the maintenance sweep, and `graph()` writes the rendered graph note.
 
-### Core — universal verbs (34)
+### Core — universal verbs (35)
 
 | Group | Tools |
 |---|---|
-| Session lifecycle | `start` · `day` · `session` · `remarks` · `close` · `backup` |
+| Session lifecycle | `start` · `day` · `session` · `remarks` · `close` · `backup` · `health` |
 | Writing | `remember` · `diary` · `revise` · `split` · `resolve` · `withdraw` · `recover` |
 | Reading & search | `read` · `recall` · `domain` · `brain` · `assembly` · `outline` · `inspect` · `diff` · `template` · `consistency` |
 | Graph | `connect` · `explore` · `graph` |
@@ -222,7 +222,7 @@ The classification lives in one reviewable table ([`src/annotations.ts`](./src/a
 
 The raw ETAPI, one tool per Trilium primitive — notes, attributes, branches, revisions, attachments, calendar, system. Brain-agnostic and guard-free: an edge-case fallback for what core can't express (precise raw queries, code/canvas/mermaid notes, branch surgery, revision recovery).
 
-The complete operational reference is [`skills/brainllm/SKILL.md`](./skills/brainllm/SKILL.md); per-topic deep dives live in [`skills/brainllm/references/`](./skills/brainllm/references/). Beyond that, the **Blueprint** is a from-source architecture reference — every module, every tool's exact behavior and signature, the sweep internals, the full idempotency matrix — kept internally rather than published in this repo; see [Support the project](#support-the-project) for how to get a copy.
+The complete operational reference is [`skills/brainllm/SKILL.md`](./skills/brainllm/SKILL.md); per-topic deep dives live in [`skills/brainllm/references/`](./skills/brainllm/references/). Beyond that, the **architecture reference** explains how BrainLLM is built and why — every module, every tool's behaviour, the sweep internals, the idempotency matrix — and is kept current with each release rather than published in this repo; see [Support the project](#support-the-project) for how to get a copy.
 
 ---
 
@@ -243,7 +243,7 @@ The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector (tw
 
 ### Branding
 
-In HTTP mode BrainLLM serves its own icons — `/icon.png`, `/icon.svg`, sized variants, and `/favicon.ico` — and advertises them in the MCP handshake, so clients show the BrainLLM mark in your connector list and beside its tool calls.
+In HTTP mode BrainLLM serves its own icons — `/icon.png`, `/icon.svg`, sized variants, and `/favicon.ico` — and advertises them in the MCP handshake together with its title, a one-line description and its website, so clients show the BrainLLM mark in your connector list and beside its tool calls. The handshake also carries short server instructions describing the five areas and the session shape. Everything brand-shaped (name, tagline, description, the mark's geometry) is defined once in [`src/brand.ts`](./src/brand.ts), and a unit test holds `package.json`, `manifest.json` and `server.json` to the same description.
 
 Both halves of that are load-bearing. The spec tells clients to **verify icon URIs share the server's origin**, so icons hosted anywhere else are silently dropped. And a host that serves no favicon makes clients fall back to the *registrable domain's* — a BrainLLM at `brain.yourdomain.com` would show `yourdomain.com`'s site logo, which is worse than nothing because it looks intentional.
 
@@ -253,7 +253,7 @@ To use your own artwork, replace `public/BrainLLM.svg` and run `bun run icons` �
 
 Claude Code and `mcp-remote` send `MCP_AUTH_TOKEN` as a header and need nothing further. **The hosted Claude surfaces — claude.ai, Claude mobile, Cowork — cannot.** Their custom-connector UI offers OAuth or nothing; there is no field for a bearer token. So BrainLLM ships its own OAuth 2.1 authorization server. It serves **both** registration mechanisms, so every OAuth-capable client works:
 
-- **Client ID Metadata Documents (CIMD)** — the registration-free mechanism MCP's `2026-07-28` revision adopted; this is what Claude selects.
+- **Client ID Metadata Documents (CIMD)** — the registration-free mechanism adopted in the MCP `2025-11-25` specification; this is what Claude selects.
 - **Dynamic Client Registration (RFC 7591)** — for clients that never grew CIMD support. opencode (MCP TS SDK ≤1.29) is the forcing case: without a `registration_endpoint` it refuses to authenticate at all.
 
 Set one variable to turn it on:
@@ -273,8 +273,10 @@ What that turns on:
 | `/.well-known/oauth-protected-resource` (+ `/mcp` variant) | RFC 9728 — names the authorization server |
 | `/.well-known/oauth-authorization-server` (+ `/mcp` variant) | RFC 8414 — advertises CIMD support, DCR, and PKCE S256 |
 | `/authorize` | Validates the client (CIMD document or registered id), shows the consent screen |
-| `/token` | PKCE-verified code exchange, with rotating refresh tokens |
+| `/token` | PKCE-verified code exchange, with rotating refresh tokens stored only as SHA-256 hashes |
 | `/register` | RFC 7591 dynamic client registration — how opencode and other DCR-only clients connect |
+
+The consent screen names the requesting client and the address it will return to, and warns when that address is your own computer (a loopback redirect, as Claude Code uses). MCP traffic is rate-limited per bearer token, with a looser per-IP bound, so clients that share an egress range (all of Claude's hosted traffic does) never exhaust each other's budget.
 
 Both credentials work simultaneously — a static token from Claude Code and an OAuth token from claude.ai, against the same brain. Access tokens are signed JWTs bound to your server's resource URI, so a token minted for a different MCP server is rejected; the signing secret and refresh tokens persist beside `brainllm.json`, which on a container deploy means **putting `BRAINLLM_CONFIG` on a volume** — otherwise every redeploy invalidates every token.
 
@@ -341,12 +343,15 @@ index.ts ─→ tools.ts ─┬→ trilium.ts     ETAPI client: bounded/retrying
                       ├→ journal.ts     daily Insights log generation (regenerate-in-place)
                       ├→ time.ts        timezone-correct now/today (BRAINLLM_TZ)
                        ├→ rate-limit.ts  bounded public HTTP budgets
+                       ├→ brand.ts       name, description, mark, icons, server instructions
+                       ├→ cap.ts         the 140k-character result cap
+                       ├→ diffing.ts     block and table-cell diffs
                        ├→ network-security.ts CIMD public-network and redirect checks
                       ├→ bootstrap.ts   five-area tree builder
                       └→ tools-*.ts     per-area surface reads · full-mode raw ETAPI
 ```
 
-Key properties: every write is sanitized for Trilium/CKEditor 5 compatibility (mutations reported back as `sanitized[]`); a revision snapshot precedes routine content mutation; every request carries the user's local time so Trilium stamps dates in the right day; core writes are idempotent or duplicate-guarded, while raw full-mode overwrites are explicit.
+Key properties: no tool result exceeds 140,000 characters (a larger one is cut with a note naming the narrower read); every write is sanitized for Trilium/CKEditor 5 compatibility (mutations reported back as `sanitized[]`); a revision snapshot precedes routine content mutation; every request carries the user's local time so Trilium stamps dates in the right day; core writes are idempotent or duplicate-guarded, while raw full-mode overwrites are explicit.
 
 ## Development
 
@@ -355,6 +360,7 @@ bun run dev    # hot-reload dev server
 bun run build  # bundle to dist/index.js
 bun run test:unit   # all unit tests (Bun discovery; works on Windows and CI)
 bun run test:http   # local auth/header smoke (no Trilium required)
+BRAINLLM_LIVE_TOKEN=... bun run test:live   # read-only smoke against a deployed server, over real MCP
 bun run test        # integration tests (requires a live Trilium instance)
 bun run validate:manifest # MCPB schema/icon validation
 bun run init   # CLI bootstrap
@@ -391,6 +397,10 @@ Not sure where to start? Issues labeled `good first issue`, doc gaps, and the tr
 ## Security
 
 Please do not report suspected vulnerabilities in a public issue. Follow the private reporting process in [`SECURITY.md`](./SECURITY.md); never include ETAPI tokens, OAuth credentials, or private brain content in a report.
+
+## Privacy and support
+
+BrainLLM collects nothing: no analytics, no telemetry, no account. Your notes stay in your Trilium, and sign-in records stay on your own server. The full [privacy policy](https://miisodev.github.io/BrainLLM/privacy.html) says what is stored where. For help, open a [GitHub issue](https://github.com/miisodev/BrainLLM/issues) or email miisodev@gmail.com.
 
 ---
 

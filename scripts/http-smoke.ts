@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EMPTY_BRAINLLM } from "../src/config.ts";
@@ -163,7 +163,24 @@ try {
       redirect_uri: callback,
     }),
   }, 200, "OAuth token exchange");
-  const { access_token: accessToken } = await token.json() as { access_token: string };
+  const { access_token: accessToken, refresh_token: refreshToken } = await token.json() as { access_token: string; refresh_token: string };
+
+  // Refresh tokens are stored by hash: the store on the volume must never
+  // contain a working credential in the clear.
+  const store = readFileSync(configPath.replace(/\.json$/, "") + ".oauth.json", "utf8");
+  if (store.includes(refreshToken)) fail("the OAuth store holds a refresh token in the clear");
+  const rotated = await expectStatus("/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }),
+  }, 200, "OAuth refresh");
+  const { refresh_token: successor } = await rotated.json() as { refresh_token: string };
+  if (!successor || successor === refreshToken) fail("refresh did not rotate the token");
+  await expectStatus("/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }),
+  }, 400, "reuse of a rotated refresh token");
   const initialized = await expectStatus("/mcp", {
     method: "POST",
     headers: {

@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { TriliumClient, type Note, isCollectionThread } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
-import { txt, skim, readFull, labelOf, idParams, missingId } from "./tools-surface.js";
+import { txt, skim, readFull, labelOf, idParams, missingId, blockParam } from "./tools-surface.js";
 import { toText, addendumIndex } from "./normalize.js";
 
 /** Day-children memory() indexes when the caller sets no limit. */
@@ -25,7 +25,8 @@ index passes ~24k characters, unless limit= says otherwise; with the total count
 date="yyyy-mm-dd" resolves straight to one day. A collection thread returns its
 Context plus its titled entries (alphabetical, with a lead). Read a child with memory(<child id>).
 section="<heading>" reads one section. index=true on a dated thread returns only child ids,
-dates and block markers (no book body, no leads): the cheap answer to "what is the newest entry".`,
+dates and block markers (no book body, no leads): the cheap answer to "what is the newest entry".
+block="14:05" (or "-1" for the newest) on a session or day entry returns that one addendum block.`,
     {
       ...idParams,
       date: z.string().optional().describe("Thread books only: resolve directly to this day's child note (yyyy-mm-dd)"),
@@ -33,12 +34,13 @@ dates and block markers (no book body, no leads): the cheap answer to "what is t
       index: z.boolean().optional().describe("Dated threads: ids, dates and block markers only — no book body, no block leads"),
       section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
+      ...blockParam,
     },
-    async ({ id: idArg, noteId, date, limit, index, section, occurrence }) => {
+    async ({ id: idArg, noteId, date, limit, index, section, occurrence, block }) => {
       const id = idArg ?? noteId;
       if (!id) return missingId("memory");
       const note = await trilium.getNote(id).catch(() => null);
-      if (!note || labelOf(note, "noteType") !== "thread") return txt(await readFull(trilium, id, { section, occurrence }));
+      if (!note || labelOf(note, "noteType") !== "thread") return txt(await readFull(trilium, id, { section, occurrence, block }));
 
       // Collection threads: titled entries, alphabetical, each with a lead.
       if (isCollectionThread(note)) {
@@ -64,7 +66,7 @@ dates and block markers (no book body, no leads): the cheap answer to "what is t
         const child = await trilium
           .searchNotes(`#noteType=threadEntry #created='${date}'`, { ancestorNoteId: id, fastSearch: true, limit: 1 })
           .catch(() => ({ results: [] as Note[] }));
-        if (child.results[0]) return txt(await readFull(trilium, child.results[0].noteId, { section, occurrence }));
+        if (child.results[0]) return txt(await readFull(trilium, child.results[0].noteId, { section, occurrence, block }));
         return txt({ id, title: note.title, kind: "thread", note: `No entry for ${date}.` });
       }
 

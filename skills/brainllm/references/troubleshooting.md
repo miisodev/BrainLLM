@@ -28,6 +28,10 @@
 |---|---|
 | BrainLLM tools time out or return connection errors | The backend is unreachable, not the tool — every ETAPI call is bounded at 30 s with one retry on idempotent reads, so a hang surfaces as a failed tool call rather than a stuck session. Check the instance `TRILIUM_BASE_URL` names: a hosted deploy should answer at its own URL, a local desktop install needs the Trilium app running. Then retry. |
 | `start` → `uninitialized` | `bootstrap` |
+| A result ends with `[BrainLLM: … cut at 140,000 to fit the client's limit]` | The result passed the server's size cap. Narrow it: `section=`, `block=`, `limit=`, or fewer `ids=` |
+| `revise` refuses `dryRun=` | `dryRun` exists only for `revise(domain=)`. To preview one note's edit, read the note (or `outline()`) first; `diff(noteId)` shows what a write changed |
+| `read(ids=[…])` returns `deferred[]` | The bodies passed ~80k characters together; read the deferred ids in a second call, or pass `text=true` |
+| `health()` flags a note's revisions | Revision history is most of the database's weight. Splitting the note, or tightening Trilium's revision-snapshot interval, bounds it |
 | Deep maintenance flags the same items every session | Act on them, or `maintain(ack=[…])` the ones you reviewed and found correct |
 | `revise(find=)` returns `replaced: 0` | Read the hint — it names the cause. Escaped search string (`&lt;h3&gt;` against stored real tags): pass the tag literally. Spans a block boundary (`</h3>` then `<ol>`): anchor inside one element, or use `section=` with `mode="before"/"after"`. Otherwise it was already replaced, or the text genuinely differs — check with `inspect(noteId, find="<shorter substring>")` |
 | `revise(section=)` returns `matched: false` | No heading matched, so a NEW section was written — at the note's own level, with the note's real headings in `available[]`. Re-target from that list; `outline(noteId)` gives the same tree plus levels and occurrence indices before you write |

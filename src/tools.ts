@@ -57,6 +57,8 @@ import {
   tableRows,
   hasPlaceholderRow,
   tolerantFindRegex,
+  inlineTolerantSpans,
+  readableText,
   spansBlockBoundary,
   looksEntityEscaped,
   fixRecordHeader,
@@ -98,6 +100,51 @@ export const txt = (obj: unknown) => ({
 });
 
 export const today = () => localToday();
+
+/** How a find= anchor matched: verbatim, through re-serialized tags, or with
+ *  inline formatting and entities ignored. */
+type MatchMode = "exact" | "attribute-tolerant" | "inline-tolerant";
+
+/** One find= surgery against `source`. Tries the verbatim string first, then
+ *  an attribute- and whitespace-tolerant pass (CKEditor injects attributes
+ *  into stored tags and does not preserve whitespace between elements, so
+ *  previously-authored formatted text stops matching verbatim after one storage
+ *  round-trip), then the caller's text with inline formatting and entities
+ *  ignored. Returns null on a miss. Pure: shared by revise(noteId) and
+ *  revise(domain=). */
+export function applyFindEdit(
+  source: string,
+  needle: string,
+  replacement: string,
+  index?: number
+): { html: string; count: number; matchMode: MatchMode } | null {
+  const spans = (hits: Array<{ start: number; length: number }>, matchMode: MatchMode) => {
+    if (index === undefined) {
+      let out = "";
+      let cursor = 0;
+      for (const h of hits) {
+        out += source.slice(cursor, h.start) + replacement;
+        cursor = h.start + h.length;
+      }
+      return { html: out + source.slice(cursor), count: hits.length, matchMode };
+    }
+    const hit = hits[index - 1];
+    if (!hit) return null;
+    return { html: source.slice(0, hit.start) + replacement + source.slice(hit.start + hit.length), count: 1, matchMode };
+  };
+  const exact: Array<{ start: number; length: number }> = [];
+  for (let at = source.indexOf(needle); at !== -1; at = source.indexOf(needle, at + needle.length)) {
+    exact.push({ start: at, length: needle.length });
+  }
+  if (exact.length) return spans(exact, "exact");
+  const rx = tolerantFindRegex(needle);
+  const tolerant = rx ? [...source.matchAll(rx)].map((m) => ({ start: m.index!, length: m[0].length })) : [];
+  if (tolerant.length) return spans(tolerant, "attribute-tolerant");
+  const inline = inlineTolerantSpans(source, needle);
+  return inline.length ? spans(inline, "inline-tolerant") : null;
+}
+
+
 
 /** Structured informational error return — use instead of throw for user-input errors
  *  so the LLM can read and react without the call appearing as a system failure. */
@@ -391,7 +438,7 @@ export function registerTools(
 
   server.tool(
     "start",
-    `Boot BrainLLM — once, before responding to the first message. Runs lite maintenance, opens today's diary and session notes, and returns: date and weekday, preferences and protocols in full, the other singletons as section headings with a preview (depth="full" inlines everything), today's diary and session ids, active and dormant threads with idle ages, the previous session's summary, notes changed since, and newDay on the first session of a day.`,
+    `Opens a BrainLLM session: runs the lite maintenance sweep, creates today's diary and session notes if they do not exist yet, and returns the date and weekday, the user's stored preferences and protocols in full, the other singletons as section headings with a preview (depth="full" inlines everything), today's diary and session ids, active and dormant threads with idle ages, the previous session's summary, notes changed since, and newDay on the first session of a day.`,
     {
       depth: z.enum(["digest", "full"]).optional().describe('Singleton detail: "digest" (default — section headings + preview + size) or "full" (every singleton inline; token-heavy)'),
     },
@@ -507,9 +554,9 @@ export function registerTools(
 
   server.tool(
     "session",
-    `Mandatory pre-close step: call before close(). Returns the six singletons as {id, lastModified} stubs (full=true inlines them), today's diary as {id, blocks, size}, runs the lite maintenance sweep, and returns pending= (what each remaining step actually has to do), audit= (do the singletons agree, and do the LLM singletons still serve the master ones) and next[]. Idempotent.
+    `Pre-close review. Returns the six singletons as {id, lastModified} stubs (full=true inlines them), today's diary as {id, blocks, size}, the maintained notes changed today with their write counts, runs the lite maintenance sweep, and returns pending= (what each remaining close step has to do), audit= (do the singletons agree, and do the LLM singletons still serve the master ones) and next[]. Records the session step of the close gate. Idempotent.
 
-Protocol: 1. update master singletons with what the session taught about the user; 2. update LLM singletons with what it taught about yourself; 3. addendum(); 4. maintain(); 5. remarks(); 6. diary(); 7. close(). close() refuses until 3–6 ran and session → remarks → diary held. scope="agent" drops steps 1–2 for scoped or autonomous runs.`,
+The close sequence next[] lays out: singleton updates from the session, then addendum(), maintain(), remarks(), diary() and close(). close() checks that addendum, maintain, remarks and diary ran, in the order session → remarks → diary. scope="agent" omits the singleton updates for scoped or autonomous runs.`,
     {
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
       full: z.boolean().optional().describe("Inline every singleton's content and the diary body (default: stubs only)"),
@@ -615,6 +662,24 @@ Protocol: 1. update master singletons with what the session taught about the use
       const touchedToday = (Object.keys(singletonStubs) as SingletonKind[])
         .filter((k) => singletonStubs[k]?.lastModified === d);
 
+      // What the session changed, shown rather than remembered. The close gate
+      // used to check that the steps ran, never whether the brain was left
+      // truer: a session could correct a figure in one note and leave it stale
+      // in another without anything at close making that visible.
+      const cutoff = `${d} 00:00`;
+      const changedToday = await trilium
+        .searchNotes(`#noteType note.dateModified >= '${cutoff}'`, { ancestorNoteId: cfg.root, limit: 100, orderBy: "dateModified", orderDirection: "desc" })
+        .then((r) => r.results.filter((n) => !isRecordNote(n)))
+        .catch(() => null);
+      const changedNotes = changedToday
+        ? await Promise.all(
+            changedToday.slice(0, 20).map(async (n) => {
+              const revisions = await trilium.getNoteRevisions(n.noteId).catch(() => []);
+              return { id: n.noteId, title: n.title, kind: ownedLabel(n, "noteType") ?? "", writes: revisionsSince(revisions, cutoff).length };
+            })
+          )
+        : null;
+
       const pending = {
         addendums: pendingAddendums === null ? "unknown" : pendingAddendums,
         maintenanceFlags: hygiene?.flagged.length ?? 0,
@@ -635,6 +700,16 @@ Protocol: 1. update master singletons with what the session taught about the use
           ? { scanned: hygiene.scanned, fixed: hygiene.fixed.length, transitions: hygiene.transitions, flagged: hygiene.flagged, ...(hygiene.suppressed ? { suppressed: hygiene.suppressed } : {}) }
           : "skipped",
         pending,
+        changedToday: changedNotes
+          ? {
+              notes: changedToday!.length,
+              ...(changedToday!.length > changedNotes.length ? { shown: changedNotes.length } : {}),
+              list: changedNotes,
+              check: changedNotes.length
+                ? 'Which measured figures did these writes change? Each must now agree everywhere it is recorded: diff(since="today") shows the changes, consistency() finds other notes still asserting the old value.'
+                : "No maintained note changed today.",
+            }
+          : "unavailable",
         // The audit that nothing else performs. consistency() checks the brain
         // against itself and maintain() checks structure; neither asks whether
         // the LLM's operating rules still SERVE what the user's goals and
@@ -669,7 +744,7 @@ Protocol: 1. update master singletons with what the session taught about the use
             ? "Call maintain() — the lite sweep just ran clean, so this is a formality unless you want deep=true."
             : `Call maintain() — the lite sweep already flagged ${pending.maintenanceFlags} item(s), listed above.`,
           "Call remarks() — get the diary cues: your experience, opinions, and existence this session, plus BrainLLM remarks.",
-          "Call diary() — write the day's unfiltered record with the cues in hand; the gate counts it only after remarks().",
+          "Call diary() — write the day's record with the cues in hand; the gate counts it only after remarks().",
           "Call close() — commit the session log (mandatory, last). Refuses until every step ran and session → remarks → diary held; pass force=true only when a skipped step genuinely has nothing to log.",
         ],
       });
@@ -678,7 +753,7 @@ Protocol: 1. update master singletons with what the session taught about the use
 
   server.tool(
     "remarks",
-    `Diary cues, called after session() and before diary(): an experience bank (the session from the inside, your opinions, being what you are here) and a BrainLLM bank (walls, bugs, usability, roadmap). Answer them as prose in diary(); skip a cue rather than pad it. The call marks its close-gate step.`,
+    `Returns writing prompts for the diary: questions about how the session went and about BrainLLM itself (problems, usability, ideas). Records the remarks step of the close gate, which close() checks came after session() and before diary(). Writes no note content.`,
     {},
     async () => {
       const cfg = b();
@@ -709,7 +784,7 @@ Protocol: 1. update master singletons with what the session taught about the use
 
   server.tool(
     "close",
-    `Commit the session log — once, last, after the session() protocol. Refuses unless session(), addendum(), maintain(), remarks() and diary() ran and session → remarks → diary held (force=true bypasses a step with genuinely nothing to do; bypassed steps are reported). identity= is required. Writes a timestamped block to today's [yyyy-mm-dd] session note (title= becomes its heading), regenerates the daily log, backs up the database and resets the gate. continuing=true is a second close the same day, skipping the ceremonial re-run.`,
+    `Writes the session log, normally the last call of a session. Refuses unless session(), addendum(), maintain(), remarks() and diary() ran and session → remarks → diary held (force=true bypasses a step with genuinely nothing to do; bypassed steps are reported). identity= is required. Writes a timestamped block to today's [yyyy-mm-dd] session note (title= becomes its heading), regenerates the daily log, backs up the database and resets the gate. continuing=true is a second close the same day.`,
     {
       summary: z.string().describe("What happened this session — factual, concise prose"),
       title: z.string().optional().describe("Short session title — appears as an <h2> heading above Summary"),
@@ -906,7 +981,17 @@ Protocol: 1. update master singletons with what the session taught about the use
       const backupName = name ?? rollingBackupName(d);
       try {
         await trilium.createBackup(backupName);
-        return txt({ ok: true, backup: backupName, backupStatus: "completed", date: d });
+        const named = name && name !== rollingBackupName(d);
+        if (named) {
+          const cfg = b();
+          (cfg.backups ??= {})[backupName] = d;
+          try { saveConfig(cfg); } catch { /* the ledger is advisory; the backup itself succeeded */ }
+        }
+        const kept = Object.keys(b().backups ?? {}).length;
+        return txt({
+          ok: true, backup: backupName, backupStatus: "completed", date: d,
+          ...(named ? { namedBackups: kept, note: `A named backup stays on Trilium's volume until deleted there. ${kept} named backup(s) recorded; health() reports them.` } : {}),
+        });
       } catch (error) {
         return txt({ ok: false, backup: backupName, backupStatus: "failed", error: error instanceof Error ? error.message : String(error), date: d });
       }
@@ -917,11 +1002,78 @@ Protocol: 1. update master singletons with what the session taught about the use
   // DIARY
   // ════════════════════════════════════════════════════════════════════════════
 
+  /** Size bands health() counts notes in, by Trilium's
+   *  contentAndAttachmentsAndRevisionsSize. Each band is weighted by its
+   *  geometric midpoint, which is crude but bounded: ETAPI returns no sizes,
+   *  only whether a note passes a threshold. */
+  const SIZE_BANDS: Array<{ min: number; max: number }> = [
+    { min: 10_000_000, max: 50_000_000 },
+    { min: 1_000_000, max: 10_000_000 },
+    { min: 100_000, max: 1_000_000 },
+    { min: 10_000, max: 100_000 },
+  ];
+  /** Named backups past which health() flags accumulation. */
+  const NAMED_BACKUP_WARN = 6;
+
+  server.tool(
+    "health",
+    `The brain's storage and runtime health: Trilium's version, an estimate of the database's size (content, attachments and revisions), the heaviest notes with their revision counts, and the named backups this server has taken. Each backup is a full database copy kept on Trilium's volume, which ETAPI cannot list, so growth there is flagged here rather than discovered when the disk fills. Read-only.`,
+    {},
+    async () => {
+      const cfg = b();
+      const info = await trilium.getAppInfo().catch(() => null);
+      const count = (q: string) =>
+        trilium.searchNotes(q, { limit: 100_000, fastSearch: true, includeArchivedNotes: true }).then((r) => r.results.length).catch(() => null);
+      const bandCounts = await Promise.all(
+        SIZE_BANDS.map((band) => count(`note.contentAndAttachmentsAndRevisionsSize >= ${band.min} AND note.contentAndAttachmentsAndRevisionsSize < ${band.max}`))
+      );
+      const typed = await count("#noteType");
+      let estimate = 0;
+      SIZE_BANDS.forEach((band, i) => { estimate += (bandCounts[i] ?? 0) * Math.sqrt(band.min * band.max); });
+
+      const heavy = await trilium
+        .searchNotes("note.contentAndAttachmentsAndRevisionsSize >= 1000000", {
+          limit: 5, orderBy: "contentAndAttachmentsAndRevisionsSize", orderDirection: "desc", includeArchivedNotes: true,
+        })
+        .then((r) => r.results)
+        .catch(() => [] as Note[]);
+      const heaviest = await Promise.all(
+        heavy.map(async (n) => {
+          const revisions = await trilium.getNoteRevisions(n.noteId).catch(() => []);
+          const revisionChars = revisions.reduce((sum, r) => sum + (r.contentLength ?? 0), 0);
+          return { id: n.noteId, title: n.title, revisions: revisions.length, revisionChars };
+        })
+      );
+
+      const named = Object.entries(cfg.backups ?? {}).sort((x, y) => x[1].localeCompare(y[1]));
+      const mb = (n: number) => `${(n / 1_000_000).toFixed(1)} MB`;
+      const flags: string[] = [];
+      if (named.length >= NAMED_BACKUP_WARN)
+        flags.push(`${named.length} named backups recorded, each a full database copy (~${mb(estimate)}) kept until deleted on Trilium's volume. Delete the ones no longer needed there.`);
+      for (const h of heaviest) {
+        if (h.revisions >= 200)
+          flags.push(`${h.title} [${h.id}] carries ${h.revisions} revisions (${mb(h.revisionChars)}). Revision history is most of its weight; Trilium's revision-snapshot settings or a split bound it.`);
+      }
+      return txt({
+        trilium: info ? { appVersion: info.appVersion, dbVersion: info.dbVersion, buildDate: info.buildDate } : { error: "app-info unreachable" },
+        notes: { typed: typed ?? undefined, bySize: SIZE_BANDS.map((band, i) => ({ atLeast: mb(band.min), below: mb(band.max), notes: bandCounts[i] })) },
+        estimatedSize: `${mb(estimate)} (content, attachments and revisions of notes over 10 kB; an estimate from size bands, not a measurement)`,
+        heaviest,
+        backups: {
+          rollingSlots: "7 (brainllm-mon … brainllm-sun), overwritten weekly by close()",
+          named: named.map(([name, date]) => ({ name, date })),
+          note: "Only backups taken through this server are listed. Each is roughly the size of the database.",
+        },
+        ...(flags.length ? { flags } : { flags: [], status: "No growth findings." }),
+      });
+    }
+  );
+
   server.tool(
     "diary",
-    `Write to today's diary: your unfiltered first-person record of the session — experience, opinions, remarks on existing here — then remarks on BrainLLM itself. identity= required. Every write lands as a timestamped block. The close gate counts it only when its last call came after session() and remarks().`,
+    `Appends a timestamped block to today's diary note: the assistant's own first-person account of the session, followed by notes on BrainLLM. identity= is required. The close gate counts the diary only when its latest block was written after session() and remarks().`,
     {
-      body: z.string().describe("What to record — first-person prose, honest and unfiltered"),
+      body: z.string().describe("The diary text, in the first person"),
       identity: z.string().describe('Identification line "LLM · environment · agent/mode [· Run N]" — rendered as the block\'s h3 (required)'),
       icon: z.string().optional().describe('Display icon for the day\'s entry — a boxicons class or bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
@@ -1797,22 +1949,30 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     }
   );
 
+  /** Characters read(ids) returns before deferring the rest. Below every
+   *  client's tool-result ceiling with room for the JSON envelope: eight
+   *  domain notes overflowed the old unbounded read into a spill file. */
+  const READ_BUDGET = 80_000;
+
   server.tool(
     "read",
-    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, content, relations}]}. For one note prefer the kinded read; for a huge note prefer a section= read.`,
+    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, content, relations}]}. Bodies are returned in order until about 80k characters; the rest come back under deferred[] with their sizes, to read in a second call. text=true returns readable plain text with the markup removed (headings, list items and table rows kept), smaller and easier to read — right for orienting, not for building a find= anchor. For one note prefer the kinded read; for a huge note prefer a section= read.`,
     {
       ids: z.array(z.string()).min(1).max(10).describe("Note ids to read — one body per id, one round trip (cap 10)"),
+      text: z.boolean().optional().describe("Return readable plain text instead of stored HTML (default false)"),
     },
-    async ({ ids }) => {
-      const notes = await Promise.all(
+    async ({ ids, text }) => {
+      const fetched = await Promise.all(
         ids.map(async (id) => {
           try {
             const note = await trilium.getNote(id);
             const contentResult = await trilium.getNoteContentResult(id, note.type);
             const relations = relationSnippet(note);
+            const raw = typeof contentResult === "string" ? contentResult : contentResult.content;
+            const content = text && typeof contentResult === "string" ? readableText(raw) : raw;
             return {
               id, title: note.title, kind: ownedLabel(note, "noteType") ?? undefined,
-              content: typeof contentResult === "string" ? contentResult : contentResult.content,
+              content,
               ...(typeof contentResult === "string" ? {} : { contentEncoding: contentResult.encoding, mime: contentResult.mime }),
               ...(relations ? { relations } : {}),
             };
@@ -1821,9 +1981,96 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           }
         })
       );
-      return txt({ count: notes.length, notes });
+      const notes: typeof fetched = [];
+      const deferred: Array<{ id: string; title: string; size: number }> = [];
+      let used = 0;
+      for (const n of fetched) {
+        const size = "content" in n ? n.content.length : 0;
+        if ("content" in n && notes.length && used + size > READ_BUDGET) {
+          deferred.push({ id: n.id, title: n.title, size });
+          continue;
+        }
+        notes.push(n);
+        used += size;
+      }
+      return txt({
+        count: notes.length, notes,
+        ...(deferred.length
+          ? { deferred, hint: `${deferred.length} note(s) held back to keep this result under ~${READ_BUDGET / 1000}k characters. Read them with read(ids=[…]) again${text ? "" : ", or pass text=true, which is smaller"}.` }
+          : {}),
+      });
     }
   );
+
+  /** revise(domain=): one find/replace plan across every maintained note in a
+   *  domain. Renaming a term or flipping a state across a domain used to take
+   *  one call per note plus a regex recall to find them. Records are skipped
+   *  because they are never rewritten; a dry run is the default because a
+   *  domain-wide write is the widest edit the server offers. */
+  const reviseDomain = async (
+    name: string,
+    plan: Array<{ find: string; body: string; nth?: number }>,
+    dry: boolean,
+    d: string
+  ) => {
+    if (plan.some((e) => !e.find)) return err("missing_param", "Every find must be non-empty.");
+    const cfg = b();
+    const slug = slugify(name);
+    const CAP = 300;
+    const search = (q: string) =>
+      trilium.searchNotes(q, { ancestorNoteId: cfg.root, limit: CAP, fastSearch: true }).then((r) => r.results).catch(() => [] as Note[]);
+    const [byDomain, byTopic] = await Promise.all([search(`#domain='${slug}'`), search(`#topic='${slug}'`)]);
+    const RECORDS = new Set(["session", "diary", "log", "threadEntry", "domain"]);
+    const seen = new Set<string>();
+    const targets = [...byDomain, ...byTopic].filter((n) => {
+      if (seen.has(n.noteId)) return false;
+      seen.add(n.noteId);
+      const kind = ownedLabel(n, "noteType");
+      return !!kind && !RECORDS.has(kind) && !isContainer(cfg, n.noteId) && !hasLabel(n, "archived");
+    });
+    if (!targets.length)
+      return txt({ ok: true, domain: name, slug, scanned: 0, note: `No maintained notes carry #domain or #topic "${slug}".` });
+
+    const changes: Array<{ id: string; title: string; replaced: number; previews: string[]; written?: true }> = [];
+    let total = 0;
+    for (const n of targets) {
+      let content: string;
+      try { content = await trilium.getNoteContent(n.noteId); } catch { continue; }
+      let working = content;
+      let count = 0;
+      const previews: string[] = [];
+      for (const e of plan) {
+        const applied = applyFindEdit(working, e.find, e.body, e.nth);
+        if (!applied) continue;
+        if (previews.length < 3) {
+          const plain = toText(working, Number.MAX_SAFE_INTEGER);
+          const at = plain.indexOf(toText(e.find, Number.MAX_SAFE_INTEGER).slice(0, 40));
+          previews.push(at >= 0 ? `…${plain.slice(Math.max(0, at - 50), at + 90)}…` : toText(e.find, 120));
+        }
+        working = applied.html;
+        count += applied.count;
+      }
+      if (!count || working === content) continue;
+      total += count;
+      const row: (typeof changes)[number] = { id: n.noteId, title: n.title, replaced: count, previews };
+      if (!dry) {
+        await trilium.createRevision(n.noteId).catch(() => null);
+        const clean = sanitizeHtml(working);
+        await trilium.updateNoteContent(n.noteId, bumpLastUpdated(clean.html, d).html);
+        await trilium.updateLabelValue(n.noteId, "updated", d);
+        row.written = true;
+      }
+      changes.push(row);
+    }
+    return txt({
+      ok: true, domain: name, slug, dryRun: dry, scanned: targets.length, notesMatched: changes.length, replaced: total, date: d,
+      ...(targets.length >= CAP ? { truncated: `A query hit its ${CAP}-note cap; some notes in the domain were not scanned.` } : {}),
+      changes,
+      next: dry
+        ? (changes.length ? "Nothing was written. Re-run with dryRun=false to apply exactly these changes." : "No note matched; nothing would change.")
+        : "Written, with a revision taken first on each note. Run consistency() on the old and new wording to confirm nothing outside the domain still asserts the old form.",
+    });
+  };
 
   server.tool(
     "revise",
@@ -1833,7 +2080,9 @@ Modes: default append (a dated addendum — right only for records; a dated thre
 
 Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled.`,
     {
-      noteId: z.string().describe("Note to update"),
+      noteId: z.string().optional().describe("Note to update (omit only with domain=)"),
+      domain: z.string().optional().describe("Instead of noteId: apply find=/edits= to every maintained note in this domain (#domain or #topic slug). Records (sessions, diary, logs, dated thread entries) are never touched. Dry run unless dryRun=false"),
+      dryRun: z.boolean().optional().describe("domain=: preview the matches without writing (default true). Re-run with dryRun=false to apply"),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML. Send real tags: entity-escaped markup (&lt;p&gt;) is decoded and reported in sanitized[]. With find=, the raw replacement string (no conversion)."),
       title: z.string().optional().describe("New title (normalized server-side)"),
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
@@ -1852,7 +2101,23 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
-    async ({ noteId, body, title, section, occurrence, mode, find, nth, within, edits, identity, icon, date, strict }) => {
+    async ({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, edits, identity, icon, date, strict }) => {
+      if (domain !== undefined) {
+        if (noteIdArg)
+          return err("conflicting_params", "Pass noteId= or domain=, not both.", "domain= edits every note in the domain; noteId= edits one.");
+        if (find === undefined && edits === undefined)
+          return err("missing_param", "domain= needs find= (with body=) or edits=.", 'e.g. revise(domain="myClerkBook", find="Code Priority Queue", body="Backlog")');
+        if (within || section || title || mode || identity || icon)
+          return err("conflicting_params", "domain= takes only find=/body=, edits=, nth= and dryRun=.", "Use noteId= for element, section, title or icon edits.");
+        return reviseDomain(domain, edits ?? [{ find: find!, body: body ?? "", nth }], dryRun ?? true, checkedDate(date));
+      }
+      // dryRun exists only for domain=. Accepting it silently elsewhere would
+      // let a caller who asked for a preview get a write instead.
+      if (dryRun !== undefined)
+        return err("conflicting_params", "dryRun= applies only to revise(domain=); nothing was written.", "For one note, read it first (or outline()) and then revise without dryRun. diff(noteId) shows what a write changed.");
+      if (!noteIdArg)
+        return err("missing_param", "revise needs noteId= (or domain= for a domain-wide find/replace).", "Pass the id of the note to edit.");
+      const noteId = noteIdArg;
       if (isContainer(b(), noteId))
         return err("protected_note", `Note ${noteId} is a container — its content cannot be edited directly.`, "Use remember() to write to singletons, or specify a content note id.");
       if (within && find === undefined)
@@ -1903,48 +2168,6 @@ Check the receipt: matched=false means a NEW section was written (available= lis
             return err("missing_param", `edits[${i}] requires body as the replacement string.`, 'Call revise(noteId, find="<exact text>", body="<replacement>").');
         }
 
-        /** One surgery against `source`. Tries the verbatim string first, then
-         *  an attribute- and whitespace-tolerant pass (CKEditor injects
-         *  attributes into stored tags and does not preserve whitespace between
-         *  elements, so previously-authored formatted text stops matching
-         *  verbatim after one storage round-trip). Returns null on a miss. */
-        const applyEdit = (
-          source: string,
-          needle: string,
-          replacement: string,
-          index?: number
-        ): { html: string; count: number; matchMode: "exact" | "attribute-tolerant" } | null => {
-          const spans = (hits: Array<{ start: number; length: number }>, matchMode: "exact" | "attribute-tolerant") => {
-            if (index === undefined) {
-              let out = "";
-              let cursor = 0;
-              for (const h of hits) {
-                out += source.slice(cursor, h.start) + replacement;
-                cursor = h.start + h.length;
-              }
-              return { html: out + source.slice(cursor), count: hits.length, matchMode };
-            }
-            const hit = hits[index - 1];
-            if (!hit) return null;
-            return {
-              html: source.slice(0, hit.start) + replacement + source.slice(hit.start + hit.length),
-              count: 1,
-              matchMode,
-            };
-          };
-
-          const exact: Array<{ start: number; length: number }> = [];
-          for (let at = source.indexOf(needle); at !== -1; at = source.indexOf(needle, at + needle.length)) {
-            exact.push({ start: at, length: needle.length });
-          }
-          if (exact.length) return spans(exact, "exact");
-
-          const rx = tolerantFindRegex(needle);
-          if (!rx) return null;
-          const tolerant = [...source.matchAll(rx)].map((m) => ({ start: m.index!, length: m[0].length }));
-          return tolerant.length ? spans(tolerant, "attribute-tolerant") : null;
-        };
-
         /** A miss is almost never "the text is gone" — it is one of three
          *  specific, distinguishable causes. Naming the right one is the
          *  difference between a one-call retry and burning several on
@@ -1956,7 +2179,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
             return `Not found — the search string carries escaped markup (&lt;…&gt;) while note bodies store real tags. Pass the tag literally, e.g. "<h3>Typography</h3>".`;
           if (spansBlockBoundary(needle))
             return `Not found — this string spans an element boundary (a closing tag followed by an opening one). Anchor the find INSIDE a single element instead, or target the heading directly with section= (with mode="before"/"after" to insert around it).`;
-          return `Not found in the note body (exact or attribute-tolerant) — already replaced on a retry, or the text genuinely differs.`;
+          return `Not found in the note body (exact, attribute-tolerant or ignoring inline tags) — already replaced on a retry, or the text genuinely differs.`;
         };
 
         /** The nearest real text, attached to a miss. Answers "how does it
@@ -1986,7 +2209,8 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           const exact: Array<{ start: number; length: number }> = [];
           for (let at = current.indexOf(find!); at !== -1; at = current.indexOf(find!, at + find!.length)) exact.push({ start: at, length: find!.length });
           const rx = exact.length ? null : tolerantFindRegex(find!);
-          const hits = exact.length ? exact : rx ? [...current.matchAll(rx)].map((m) => ({ start: m.index!, length: m[0].length })) : [];
+          const tolerantHits = rx ? [...current.matchAll(rx)].map((m) => ({ start: m.index!, length: m[0].length })) : [];
+          const hits = exact.length ? exact : tolerantHits.length ? tolerantHits : inlineTolerantSpans(current, find!);
           const res = editWithin(current, hits, within, action, body ?? "", nth);
           if (!res.ok) {
             const hint =
@@ -2026,7 +2250,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
         let total = 0;
         const consumed = new Set<string>();
         for (const e of plan) {
-          const applied = applyEdit(working, e.find, e.body, e.nth);
+          const applied = applyFindEdit(working, e.find, e.body, e.nth);
           if (!applied) {
             // "Already consumed by an earlier edit in this call" and "the text
             // genuinely differs" are different diagnoses with different fixes,
@@ -2474,7 +2698,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
 
   server.tool(
     "label",
-    `Set or remove one label (remove=true). Refused on containers. noteType cannot be changed or removed, but can be set on an untyped note to repair it. status must be one of ${Statuses.join(" | ")}; domain and topic are slugged. Bumps updated unless you are setting it.`,
+    `Set or remove one label (remove=true). Refused on containers. noteType cannot be changed or removed, but can be set on an untyped note to repair it. status must be one of ${Statuses.join(" | ")}; domain and topic are slugged. register (value "") marks a register — a maintained table whose rows carry evidence dates — so maintain's dated-prose lint skips its tables. Bumps updated unless you are setting it.`,
     {
       noteId: z.string().describe("Note to edit"),
       name: z.string().describe("Label name, no # prefix (e.g. status, domain, topic, created)"),

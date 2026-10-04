@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTools } from "./tools.js";
 import { registerAdvancedTools } from "./tools-advanced.js";
-import { TOOL_ANNOTATIONS, applyToolAnnotations } from "./annotations.js";
+import { TOOL_ANNOTATIONS, TOOL_TITLES, applyToolAnnotations } from "./annotations.js";
 import type { TriliumClient } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
 
@@ -86,7 +86,7 @@ describe("the core/raw boundary", () => {
     // that is the reminder to update the places that state the count.
     const core = namesOf(register("core")).length;
     const raw = namesOf(register("full")).length - core;
-    expect({ core, raw, total: core + raw }).toEqual({ core: 44, raw: 33, total: 77 });
+    expect({ core, raw, total: core + raw }).toEqual({ core: 45, raw: 33, total: 78 });
 
     const split = (mode: "core" | "full") => {
       const result = { read: 0, write: 0, destructive: 0 };
@@ -98,8 +98,8 @@ describe("the core/raw boundary", () => {
       }
       return result;
     };
-    expect(split("core")).toEqual({ read: 22, write: 20, destructive: 2 });
-    expect(split("full")).toEqual({ read: 33, write: 38, destructive: 6 });
+    expect(split("core")).toEqual({ read: 23, write: 17, destructive: 5 });
+    expect(split("full")).toEqual({ read: 34, write: 31, destructive: 13 });
   });
 });
 
@@ -130,5 +130,21 @@ describe("the tools added in V12.3 are classified correctly", () => {
   test("split is a write — it moves sections out of a note and creates a new one", () => {
     expect(TOOL_ANNOTATIONS.split?.readOnlyHint).toBe(false);
     expect(TOOL_ANNOTATIONS.split?.destructiveHint).toBe(false);
+  });
+});
+
+describe("Directory readiness", () => {
+  test("every registered tool has a human-readable title distinct from its name", () => {
+    for (const name of namesOf(register("full"))) {
+      const title = TOOL_TITLES[name];
+      expect(`${name}:${typeof title}`).toBe(`${name}:string`);
+      expect(title).not.toBe(name);
+    }
+  });
+
+  test("tools that can overwrite or remove content say so", () => {
+    for (const name of ["revise", "label", "connect", "forget", "detach", "update_note_content", "patch_note", "update_attribute", "update_attachment"]) {
+      expect(`${name}:${TOOL_ANNOTATIONS[name]?.destructiveHint}`).toBe(`${name}:true`);
+    }
   });
 });

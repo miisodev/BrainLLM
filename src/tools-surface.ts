@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { TriliumClient, type Note, isOwnedAttribute, relationSnippet, type RelationEdge } from "./trilium.js";
-import { toText, getSection, LARGE_NOTE_CHARS } from "./normalize.js";
+import { toText, getSection, addendumBlock, LARGE_NOTE_CHARS } from "./normalize.js";
 import { z } from "zod";
 
 export const txt = (obj: unknown) => ({
@@ -91,7 +91,16 @@ export interface FullRead {
   available?: string[];
   size?: number;
   hint?: string;
+  /** block reads only */
+  block?: string;
+  identity?: string;
+  position?: string;
 }
+
+/** The block= parameter every record-reading surface shares. */
+export const blockParam = {
+  block: z.string().optional().describe('Read one addendum block of a record instead of the whole note: its marker time ("14:05") or 1-based position ("-1" = newest)'),
+};
 
 /** Read a note in full, or ONE section of it.
  *
@@ -107,7 +116,7 @@ export interface FullRead {
 export async function readFull(
   trilium: TriliumClient,
   id: string,
-  opts: { section?: string; occurrence?: number } = {}
+  opts: { section?: string; occurrence?: number; block?: string } = {}
 ): Promise<FullRead> {
   const note = await trilium.getNote(id);
   const contentResult = await trilium.getNoteContentResult(id, note.type).catch(() => "");
@@ -121,6 +130,22 @@ export async function readFull(
     return { ...base, content: contentResult.content, contentEncoding: "base64", mime: contentResult.mime };
   }
   const content = contentResult;
+
+  if (opts.block) {
+    const found = addendumBlock(content, opts.block);
+    if (!found.matched) {
+      return {
+        ...base, content: "", block: opts.block, matched: false, available: found.available,
+        hint: found.available.length
+          ? `No block "${opts.block}". available= lists this record's block markers, oldest first.`
+          : "This note has no addendum blocks; read it without block=.",
+      };
+    }
+    return {
+      ...base, content: found.content, block: found.marker, matched: true,
+      ...(found.identity ? { identity: found.identity } : {}), position: `${found.position} of ${found.of}`,
+    };
+  }
 
   if (!opts.section) {
     return {

@@ -3,154 +3,233 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>How it works — BrainLLM</title>
-<meta name="description" content="The five-area tree, the note kinds, the lifecycle, and the typed relation graph that make BrainLLM's memory reliable.">
+<title>How BrainLLM works</title>
+<meta name="description" content="The tree, the note classes, the lifecycle, the typed graph and the close gate: every guarantee BrainLLM enforces at the tool layer.">
+<link rel="canonical" href="https://miisodev.github.io/BrainLLM/how-it-works.html">
 <link rel="icon" type="image/svg+xml" href="assets/BrainLLM.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="assets/icon-64.png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <meta name="theme-color" content="#0a0a0f">
+<meta property="og:title" content="How BrainLLM works">
+<meta property="og:description" content="The tree, the note classes, the lifecycle, the typed graph and the close gate: every guarantee BrainLLM enforces at the tool layer.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://miisodev.github.io/BrainLLM/how-it-works.html">
+<meta property="og:image" content="https://miisodev.github.io/BrainLLM/assets/BrainLLM.png">
+<meta property="og:image:width" content="512">
+<meta property="og:image:height" content="512">
+<meta name="twitter:card" content="summary">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
-
-<nav class="nav">
-  <div class="nav-inner">
-    <a class="brand" href="index.html">
-      <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
-      <span class="brand-name">BrainLLM</span>
-    </a>
+<a class="skip" href="#main">Skip to content</a>
+<nav class="nav" id="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="BrainLLM home"><svg width="22" height="22" viewBox="110 110 292 292" aria-hidden="true"><circle cx="164" cy="164" r="38" fill="#f59e0b"/><circle cx="256" cy="164" r="38" fill="#3f3f46"/><circle cx="348" cy="164" r="38" fill="#f59e0b"/><circle cx="164" cy="256" r="38" fill="#f59e0b"/><circle cx="256" cy="256" r="38" fill="#f59e0b"/><circle cx="348" cy="256" r="38" fill="#3f3f46"/><circle cx="164" cy="348" r="38" fill="#3f3f46"/><circle cx="256" cy="348" r="38" fill="#f59e0b"/><circle cx="348" cy="348" r="38" fill="#f59e0b"/></svg><span class="brand-name">BrainLLM</span></a>
     <div class="nav-links">
-      <a class="active" href="how-it-works.html">How it works</a>
+      <a href="how-it-works.html" aria-current="page">How it works</a>
       <a href="use-cases.html">Use cases</a>
-      <a href="pricing.html">Pricing</a>
+      <a href="connect.html">Connect</a>
       <a href="docs.html">Docs</a>
-      <a class="nav-gh" href="https://github.com/miisodev/BrainLLM">GitHub</a>
+      <a href="pricing.html">Pricing</a>
     </div>
-    <div class="nav-cta"><a class="btn btn-primary btn-sm" href="docs.html#quick-start">Start now</a></div>
+    <div class="nav-cta">
+      <a class="btn btn-ghost btn-sm" href="https://github.com/miisodev/BrainLLM">GitHub</a>
+      <a class="btn btn-primary btn-sm" href="connect.html">Connect to Claude</a>
+      <button class="menu-toggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="nav">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 9h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
   </div>
 </nav>
+<main id="main">
 
-<main>
-
-<header class="hero">
-  <span class="pill"><span class="dot"></span>how it works</span>
-  <h1>A brain with <span class="accent">rules</span>, not a pile of embeddings</h1>
-  <p class="lede">Every guarantee BrainLLM makes is enforced at the tool layer rather than requested in a prompt. Here is what that actually looks like.</p>
+<header class="page-hero">
+  <div class="wrap">
+    <span class="eyebrow">How it works</span>
+    <h1>Rules, not a pile of notes</h1>
+    <p class="lede">Every guarantee BrainLLM makes is enforced by the server, not requested in a prompt. Here is what that looks like.</p>
+  </div>
 </header>
 
 <section>
-  <div class="wrap">
-    <div class="section-head"><div class="eyebrow">The tree</div><h2>Five areas, built on first run</h2>
-      <p>Created by <code>bootstrap()</code> against a fresh Trilium instance. The root carries a discovery marker, and every structural note is engraved with its purpose at creation.</p></div>
-    <div class="card">
-<pre class="tree" tabindex="0" aria-label="Memory tree example">BrainLLM
-├── <span class="area">👤 Master</span>      the user — durable identity
-│   └── Biography · Goals · Preferences        <span class="note">maintained singletons</span>
-├── <span class="area">🤖 LLM</span>         the assistant's self-model
-│   ├── Responsibilities · Protocols · Self-correction  <span class="note">maintained singletons</span>
-│   └── Diary/          <span class="note">one [yyyy-mm-dd] note per day</span>
-├── <span class="area">🗂️ Memory</span>      the operational record
-│   ├── Sessions/       <span class="note">one [yyyy-mm-dd] note per day</span>
-│   └── Threads/        <span class="note">titled multi-session work</span>
-│       └── &lt;Thread&gt;/   <span class="note">Context + Resolution only,</span>
-│                       <span class="note">day-to-day lives in dated children</span>
-├── <span class="area">📚 Knowledge</span>   learned info beyond training
-│   ├── Master/         <span class="note">user facts beyond bio/goals/prefs</span>
-│   └── Domains/        <span class="note">one Sources note + N information notes</span>
-└── <span class="area">💡 Insights</span>    the brain's record of itself
-    ├── Logs/           <span class="note">auto-generated daily change log</span>
-    ├── Graph           <span class="note">live Mermaid render of the relation graph</span>
-     └── Claims          <span class="note">assertions checked against the world</span></pre>
-    </div>
-  </div>
-</section>
-
-<section class="band">
-  <div class="wrap">
-    <div class="section-head"><div class="eyebrow">Note classes</div><h2>Three behaviours, sixteen kinds</h2>
-      <p>What a note <em>is</em> determines how writes to it behave. This is the distinction that keeps a knowledge base from decaying into a changelog.</p></div>
-    <div class="grid grid-3">
-      <div class="card"><h3>Singletons</h3><p>Exactly one maintained note; writes upsert into it. They hold <strong>current-state truth, edited in place</strong> — biography, goals, preferences, responsibilities, protocols, self-correction, and each domain's Sources note.</p></div>
-      <div class="card"><h3>Dated records</h3><p>One per calendar day, titled by date. Diary and session writes append a timestamped block, because chronology <em>is</em> the point. The daily log is regenerated in place — one clean snapshot, never stacked.</p></div>
-      <div class="card"><h3>Collections</h3><p>Titled notes, deduplicated by normalised title within their scope. A thread is itself a book: its body holds only Context and Resolution, and each active day gets its own child.</p></div>
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <div class="section-head"><div class="eyebrow">Lifecycle</div><h2>Threads age. Nothing is deleted.</h2>
-      <p>Degradation demotes rather than removes, so an archived note keeps its content and stays retrievable. Any touch reactivates it.</p></div>
-    <div class="card">
-<pre class="tree" tabindex="0" aria-label="Memory tree example">active  <span class="note">──────────────▶</span>  resolved | superseded   <span class="note">terminal, archived in place</span>
-  │ <span class="note">untouched 21 days</span>
-  ▼
-dormant <span class="note">──────────────▶</span>  archived in place       <span class="note">#archived + #closed</span>
-  │ <span class="note">untouched 45 days more</span>
-  ▼</pre>
-    </div>
-    <div class="grid grid-3" style="margin-top:20px">
-      <div class="card"><h3>Singletons never age</h3><p>They are maintained, not recorded. Sessions, diary entries and logs never age either — they are records by nature.</p></div>
-      <div class="card"><h3>Eternal is exempt</h3><p>A thread marked <code>eternal</code> is skipped by the sweep entirely, for work the user wants kept permanently active.</p></div>
-      <div class="card"><h3>Aging keys off a label</h3><p>Not modification date — a thread's own body rarely changes once written, so date-based aging would retire a thread being worked on daily.</p></div>
-    </div>
-  </div>
-</section>
-
-<section class="band">
-  <div class="wrap">
-    <div class="section-head"><div class="eyebrow">The graph</div><h2>Sixteen verbs, closed vocabulary</h2>
-      <p>Connections are typed and rejected if they aren't on the list, because an untyped "related to" edge carries no information a reader can act on.</p></div>
-    <div class="grid grid-2">
-      <div class="card"><h3>Pick the most specific verb that's true</h3><p><code>extends</code> · <code>contradicts</code> · <code>supports</code> · <code>causes</code> · <code>references</code> · <code>partOf</code> · <code>worksWith</code> · <code>mentors</code> · <code>instanceOf</code> · <code>supersedes</code> · <code>implements</code> · <code>inspiredBy</code> · <code>sourceOf</code> · <code>derivedFrom</code> · <code>corrects</code> — and <code>relatesTo</code> as the last resort.</p></div>
-      <div class="card"><h3>Why <code>corrects</code> exists</h3><p>Revising a note in place leaves no trace its previous claim was ever believed — so nothing tells a later reader to be suspicious of <em>sibling</em> notes written in the same pass, by the same reasoning, on the same day. In a memory whose value is being trustworthy about the past, silent overwriting is the operation to trust least.</p></div>
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <div class="section-head center"><div class="eyebrow">The gate</div><h2>Ordered, durable, and checked by tool call</h2>
-      <p>A session can't commit until every step has run — and in the right order, because the diary is the closing record and should be written with the reflection cues in hand.</p></div>
-    <div class="card">
-<pre class="term" tabindex="0" aria-label="Code example">session()  <span class="c">→</span>  addendum()  <span class="c">→</span>  maintain()  <span class="c">→</span>  <span class="a">remarks()</span>  <span class="c">→</span>  <span class="a">diary()</span>  <span class="c">→</span>  close()
-
-<span class="c">Gate state lives on today's session note as a label, not in process
-memory — so it survives a restart and behaves identically whether the
-server is running over stdio or behind a load balancer.</span></pre>
-    </div>
-  </div>
-</section>
-
-<div class="final">
-  <h2>See it running.</h2>
-  <p>Five minutes to a working brain, if you already have Trilium up.</p>
-  <div class="hero-cta">
-    <a class="btn btn-primary" href="docs.html#quick-start">Quick start →</a>
-    <a class="btn btn-ghost" href="use-cases.html">See use cases</a>
-  </div>
-</div>
-
-</main>
-
-<footer>
-  <div class="wrap foot">
+  <div class="wrap split">
     <div>
-      <a class="brand" href="index.html">
-        <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
-        <span class="brand-name">BrainLLM</span>
-      </a>
-      <p>An MCP server that turns TriliumNext into a persistent second brain.</p>
+      <span class="eyebrow">The tree</span>
+      <h2>Five areas, built on first run</h2>
+      <p style="margin-top:16px"><code>bootstrap()</code> builds the tree against a fresh Trilium. The root carries a discovery marker, and every container is engraved with its purpose, so any client that connects later finds the same structure and knows what each part is for.</p>
+      <p>Run it again at any time: it checks an existing root live and only builds a new tree on a confirmed miss, so a network blip can never produce a second brain.</p>
     </div>
-    <div class="foot-links">
-      <div><strong>Product</strong><a href="how-it-works.html">How it works</a><a href="use-cases.html">Use cases</a><a href="pricing.html">Pricing</a><a href="docs.html">Docs</a></div>
-      <div><strong>Project</strong><a href="https://github.com/miisodev/BrainLLM">GitHub</a><a href="https://github.com/miisodev/BrainLLM/releases">Releases</a><a href="https://github.com/sponsors/miisodev">Sponsor</a></div>
+    <div class="panel">
+  <div class="panel-bar">Trilium · BrainLLM<span class="tag">5 areas</span></div>
+  <div class="panel-body"><pre class="tree"><span class="b">BrainLLM</span>
+├── <span class="a">Master</span>      <span class="d">the user</span>
+│   └── Biography · Goals · Preferences
+├── <span class="a">LLM</span>         <span class="d">the assistant's self-model</span>
+│   ├── Responsibilities · Protocols · Self-correction
+│   └── Diary/            <span class="d">one note per day</span>
+├── <span class="a">Memory</span>      <span class="d">the operational record</span>
+│   ├── Sessions/         <span class="d">one note per day</span>
+│   └── Threads/          <span class="d">multi-session work</span>
+├── <span class="a">Knowledge</span>   <span class="d">beyond training</span>
+│   ├── Master/           <span class="d">facts about the user</span>
+│   └── Domains/          <span class="d">Sources + information notes</span>
+└── <span class="a">Insights</span>    <span class="d">the brain's record of itself</span>
+    ├── Logs/             <span class="d">a change log per day</span>
+    ├── Graph             <span class="d">the relation graph</span>
+    └── Claims/           <span class="d">checked against the world</span></pre></div>
+</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Note classes</span>
+      <h2>Three behaviours, sixteen kinds</h2>
+      <p>What a note is decides how writes to it behave. That is what keeps a knowledge base from decaying into a changelog.</p>
+    </div>
+    <div class="grid g3">
+      <div class="card"><span class="k">Singletons</span><h3>One note, kept current</h3><p>Biography, goals, preferences, responsibilities, protocols and self-correction. Writes merge into their sections. They hold what is true now, with no history in them.</p></div>
+      <div class="card"><span class="k">Records</span><h3>One note per day</h3><p>Sessions, diary entries, logs and dated thread entries. Every write is a timestamped block, because the order of events is the point. Records are never rewritten.</p></div>
+      <div class="card"><span class="k">Collections</span><h3>Titled and deduplicated</h3><p>Threads, domain notes and knowledge about the user. A second write with the same title updates the first instead of creating a twin.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap split rev">
+    <div>
+      <span class="eyebrow">Lifecycle</span>
+      <h2>Threads age into an archive</h2>
+      <p style="margin-top:16px">A thread untouched for three weeks turns dormant; untouched for longer, it is archived in place. Archived notes keep their content and come back with <code>recover()</code>. Any touch reactivates a thread, and one marked eternal is never aged.</p>
+      <p>Aging keys off a label, not the modification date: a thread's own body rarely changes once written, so date-based aging would retire a thread worked on daily.</p>
+    </div>
+    <div class="panel"><div class="panel-bar">Memory / Threads<span class="tag">lifecycle</span></div>
+<pre class="term"><span class="k">active</span>  ─────────▶  <span class="ok">resolved</span> | superseded   <span class="c">archived, with an outcome</span>
+  │ <span class="c">untouched 21 days</span>
+  ▼
+<span class="k">dormant</span> ─────────▶  archived in place      <span class="c">recover() brings it back</span>
+  │ <span class="c">untouched 45 days more</span>
+  ▼
+<span class="k">archived</span>             <span class="c">content kept, hidden from default reads</span></pre></div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap split">
+    <div>
+      <span class="eyebrow">The graph</span>
+      <h2>Sixteen verbs, closed vocabulary</h2>
+      <p style="margin-top:16px">relatesTo · extends · contradicts · supports · causes · references · partOf · worksWith · mentors · instanceOf · supersedes · implements · inspiredBy · sourceOf · derivedFrom · corrects.</p>
+      <p><strong>Why <code>corrects</code> exists:</strong> revising a note in place leaves no trace that its old claim was ever believed. A correction edge tells a later reader to check the notes written in the same pass, by the same reasoning.</p>
+    </div>
+    <div class="panel graph">
+  <div class="panel-bar">Insights / Graph<span class="tag">16 typed verbs</span></div>
+  <div class="panel-body"><svg viewBox="0 0 600 450" role="img" aria-label="Six notes connected by typed relations: sourceOf, references, partOf, corrects and supports">
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="rgba(245,158,11,.7)"/></marker></defs>
+  <line x1="90" y1="175" x2="300" y2="70" stroke="rgba(245,158,11,.45)" stroke-width="1.5" marker-end="url(#arr)"/><rect x="155.8" y="111.5" width="78.4" height="22" rx="11" fill="#16161f" stroke="rgba(255,255,255,.12)"/><text x="195.0" y="126.5" text-anchor="middle" font-size="12" fill="#f59e0b">sourceOf</text><line x1="510" y1="175" x2="300" y2="70" stroke="rgba(245,158,11,.45)" stroke-width="1.5" marker-end="url(#arr)"/><rect x="358.0" y="111.5" width="94.0" height="22" rx="11" fill="#16161f" stroke="rgba(255,255,255,.12)"/><text x="405.0" y="126.5" text-anchor="middle" font-size="12" fill="#f59e0b">references</text><line x1="300" y1="70" x2="300" y2="280" stroke="rgba(245,158,11,.45)" stroke-width="1.5" marker-end="url(#arr)"/><rect x="268.6" y="164.0" width="62.8" height="22" rx="11" fill="#16161f" stroke="rgba(255,255,255,.12)"/><text x="300.0" y="179.0" text-anchor="middle" font-size="12" fill="#f59e0b">partOf</text><line x1="90" y1="385" x2="300" y2="280" stroke="rgba(245,158,11,.45)" stroke-width="1.5" marker-end="url(#arr)"/><rect x="155.8" y="321.5" width="78.4" height="22" rx="11" fill="#16161f" stroke="rgba(255,255,255,.12)"/><text x="195.0" y="336.5" text-anchor="middle" font-size="12" fill="#f59e0b">corrects</text><line x1="510" y1="385" x2="510" y2="175" stroke="rgba(245,158,11,.45)" stroke-width="1.5" marker-end="url(#arr)"/><rect x="470.8" y="269.0" width="78.4" height="22" rx="11" fill="#16161f" stroke="rgba(255,255,255,.12)"/><text x="510.0" y="284.0" text-anchor="middle" font-size="12" fill="#f59e0b">supports</text><line x1="90" y1="175" x2="300" y2="280" stroke="rgba(245,158,11,.45)" stroke-width="1.5" marker-end="url(#arr)"/><rect x="155.8" y="216.5" width="78.4" height="22" rx="11" fill="#16161f" stroke="rgba(255,255,255,.12)"/><text x="195.0" y="231.5" text-anchor="middle" font-size="12" fill="#f59e0b">supports</text><rect x="228.4" y="50" width="143.2" height="40" rx="10" fill="#1d1d28" stroke="rgba(245,158,11,.55)"/><circle cx="243.4" cy="70" r="4" fill="#f59e0b"/><text x="306" y="75" text-anchor="middle" font-size="13.5" fill="#f4f4f5">Current State</text><rect x="43.599999999999994" y="155" width="92.80000000000001" height="40" rx="10" fill="#12121a" stroke="rgba(255,255,255,.14)"/><circle cx="58.599999999999994" cy="175" r="4" fill="#3f3f46"/><text x="96" y="180" text-anchor="middle" font-size="13.5" fill="#f4f4f5">Sources</text><rect x="434.2" y="155" width="151.60000000000002" height="40" rx="10" fill="#12121a" stroke="rgba(255,255,255,.14)"/><circle cx="449.2" cy="175" r="4" fill="#3f3f46"/><text x="516" y="180" text-anchor="middle" font-size="13.5" fill="#f4f4f5">Release thread</text><rect x="207.39999999999998" y="260" width="185.20000000000002" height="40" rx="10" fill="#1d1d28" stroke="rgba(245,158,11,.55)"/><circle cx="222.39999999999998" cy="280" r="4" fill="#f59e0b"/><text x="306" y="285" text-anchor="middle" font-size="13.5" fill="#f4f4f5">Purpose and Design</text><rect x="10.0" y="365" width="160.0" height="40" rx="10" fill="#12121a" stroke="rgba(255,255,255,.14)"/><circle cx="25.0" cy="385" r="4" fill="#3f3f46"/><text x="96" y="390" text-anchor="middle" font-size="13.5" fill="#f4f4f5">Self-Correction</text><rect x="442.6" y="365" width="134.8" height="40" rx="10" fill="#12121a" stroke="rgba(255,255,255,.14)"/><circle cx="457.6" cy="385" r="4" fill="#3f3f46"/><text x="516" y="390" text-anchor="middle" font-size="13.5" fill="#f4f4f5">Session note</text>
+  </svg></div>
+</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap split rev">
+    <div>
+      <span class="eyebrow">The gate</span>
+      <h2>Ordered, durable, checked by tool call</h2>
+      <p style="margin-top:16px">A session commits only after every closing step has run, in order: <code>session</code> → <code>addendum</code> → <code>maintain</code> → <code>remarks</code> → <code>diary</code> → <code>close</code>. The diary comes after the remarks because it is the closing record and should be written with the reflection prompts in hand.</p>
+      <p>The gate's state lives on the day's session note, not in memory, so it survives a restart and behaves the same over stdio or behind a load balancer.</p>
+    </div>
+    <div class="panel">
+  <div class="panel-bar">claude · BrainLLM<span class="tag">close()</span></div>
+  <pre class="term"><span class="c">// the work is done. the session tries to close.</span>
+<span class="p">&gt;</span> <span class="k">close</span>(summary, identity)
+  <span class="no">refused: preclose_incomplete</span>
+  <span class="c">missing:</span> remarks, diary
+
+<span class="c">// saying the steps happened doesn't count.</span>
+<span class="c">// only the tool calls do.</span>
+<span class="p">&gt;</span> <span class="k">remarks</span>()
+<span class="p">&gt;</span> <span class="k">diary</span>(body, identity)
+<span class="p">&gt;</span> <span class="k">close</span>(summary, identity)
+  <span class="ok">session logged · daily log regenerated · backup taken</span></pre>
+</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Editing</span>
+      <h2>Surgery, not rewrites</h2>
+      <p>Large notes are edited by heading, by element or by a few words, never by resending the whole body.</p>
+    </div>
+    <div class="grid g3">
+      <div class="card"><span class="k">section=</span><h3>Edit one heading</h3><p>Replace, insert around or remove a section. Reads take the same parameter, so a heading that reads also writes.</p></div>
+      <div class="card"><span class="k">within="tr"</span><h3>Edit one table row</h3><p>Name a row by a few words inside it and replace it, insert beside it or remove it. Formatting in the stored text doesn't get in the way.</p></div>
+      <div class="card"><span class="k">domain=</span><h3>Rename across a domain</h3><p>One find and replace over every maintained note in an area, previewed first and written only when you say so. Records are never touched.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="wrap">
+    <h2>See it running.</h2>
+    <p>Minutes to a working brain, once Trilium is up.</p>
+    <div class="hero-cta"><a class="btn btn-primary" href="docs.html#quick-start">Quick start</a><a class="btn btn-ghost" href="use-cases.html">Use cases</a></div>
+  </div>
+</section>
+</main>
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <a class="brand" href="index.html"><svg width="22" height="22" viewBox="110 110 292 292" aria-hidden="true"><circle cx="164" cy="164" r="38" fill="#f59e0b"/><circle cx="256" cy="164" r="38" fill="#3f3f46"/><circle cx="348" cy="164" r="38" fill="#f59e0b"/><circle cx="164" cy="256" r="38" fill="#f59e0b"/><circle cx="256" cy="256" r="38" fill="#f59e0b"/><circle cx="348" cy="256" r="38" fill="#3f3f46"/><circle cx="164" cy="348" r="38" fill="#3f3f46"/><circle cx="256" cy="348" r="38" fill="#f59e0b"/><circle cx="348" cy="348" r="38" fill="#f59e0b"/></svg><span class="brand-name">BrainLLM</span></a>
+        <p>Self-hosted memory for LLMs in TriliumNext, structured by the server and editable by you. Open source under the MIT licence, published by miisodev.</p>
+      </div>
+      <div class="foot-links">
+        <div><strong>Product</strong>
+          <a href="how-it-works.html">How it works</a>
+          <a href="use-cases.html">Use cases</a>
+          <a href="connect.html">Connect to Claude</a>
+          <a href="docs.html">Docs</a>
+          <a href="pricing.html">Pricing</a>
+        </div>
+        <div><strong>Project</strong>
+          <a href="https://github.com/miisodev/BrainLLM">GitHub</a>
+          <a href="https://github.com/miisodev/BrainLLM/releases">Releases</a>
+          <a href="https://www.npmjs.com/package/brainllm">npm</a>
+          <a href="https://github.com/sponsors/miisodev">Sponsor</a>
+        </div>
+        <div><strong>Help</strong>
+          <a href="connect.html#support">Support</a>
+          <a href="https://github.com/miisodev/BrainLLM/issues">Issues</a>
+          <a href="https://github.com/miisodev/BrainLLM/security/policy">Security</a>
+          <a href="privacy.html">Privacy</a>
+        </div>
+      </div>
+    </div>
+    <div class="legal">
+      <span>Built on <a href="https://github.com/TriliumNext/Trilium">TriliumNext</a> and the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>.</span>
+      <span>MIT licence · <a href="privacy.html">Privacy</a></span>
     </div>
   </div>
 </footer>
-
+<script>
+  // The one script on the site: the narrow-screen menu.
+  (function () {
+    var nav = document.getElementById("nav");
+    var btn = nav && nav.querySelector(".menu-toggle");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      var open = nav.classList.toggle("open");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  })();
+</script>
 </body>
 </html>

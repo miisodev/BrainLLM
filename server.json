@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.miisodev/brainllm",
-  "description": "Persistent graph-structured memory for LLMs in TriliumNext Notes — readable and editable by humans.",
-  "version": "12.7.1",
-  "websiteUrl": "https://github.com/miisodev/BrainLLM#readme",
+  "description": "Self-hosted memory for LLMs in TriliumNext, structured by the server and editable by you.",
+  "version": "12.8.0",
+  "websiteUrl": "https://miisodev.github.io/BrainLLM/",
   "repository": {
     "url": "https://github.com/miisodev/BrainLLM",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "npm",
       "identifier": "brainllm",
-"version": "12.7.1",
+"version": "12.8.0",
       "transport": {
         "type": "stdio"
       },
@@ -39,7 +39,7 @@
         },
         {
           "name": "BRAINLLM_MODE",
-          "description": "core (default) exposes the 44 brain-aware tools; full additionally exposes the 33 raw ETAPI tools.",
+          "description": "core (default) exposes the 45 brain-aware tools; full additionally exposes the 33 raw ETAPI tools.",
           "isRequired": false,
           "format": "string",
           "default": "core"

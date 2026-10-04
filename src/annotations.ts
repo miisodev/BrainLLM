@@ -3,7 +3,7 @@
 //
 // Clients group tools by their annotation hints. Without them every tool lands
 // in one undifferentiated "Other tools" bucket, and the user's only choice is
-// to allow all 77 or approve each call — which is the same failure mode as a
+// to allow every tool or approve each call — which is the same failure mode as a
 // maintenance flag that always fires: an all-or-nothing prompt gets answered
 // "always allow" once and then never read again.
 //
@@ -53,6 +53,7 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   consistency: READ,
   assembly: READ,
   diff: READ,             // reads a revision snapshot and current content; takes none
+  health: READ,
   master: READ, master_recall: READ,
   llm: READ, llm_recall: READ,
   memory: READ, memory_recall: READ,
@@ -79,11 +80,13 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   claim: APPEND,
   remember: WRITE,
   diary: APPEND,
-  revise: WRITE,
+  // revise can replace a whole body, remove a section or rewrite a domain.
+  // A revision is taken first, but the hint describes the edit, not the undo.
+  revise: DESTRUCTIVE,
   split: WRITE,           // moves sections out of a note into a new one
   close: APPEND,
-  connect: WRITE,
-  label: WRITE,
+  connect: DESTRUCTIVE,   // remove=true deletes an edge
+  label: DESTRUCTIVE,     // remove=true deletes a label; setting one overwrites its value
   attach: WRITE,
   backup: APPEND,
   bootstrap: WRITE,
@@ -117,16 +120,16 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   get_year_note: WRITE,
   get_inbox_note: WRITE,
   create_note: APPEND,
-  patch_note: WRITE,
-  update_note_content: WRITE,
+  patch_note: DESTRUCTIVE,          // overwrites title, type or mime
+  update_note_content: DESTRUCTIVE, // replaces the whole body
   clone_note: APPEND,
   move_note: WRITE,
   undelete_note: WRITE,
   add_label: WRITE,
   add_relation: WRITE,
-  update_attribute: WRITE,
+  update_attribute: DESTRUCTIVE,    // overwrites a value
   create_attachment: APPEND,
-  update_attachment: WRITE,
+  update_attachment: DESTRUCTIVE,   // replaces attachment content
   create_revision: APPEND,
   create_backup: APPEND,
 
@@ -137,15 +140,98 @@ export const TOOL_ANNOTATIONS: Record<string, Hints> = {
   delete_attachment: DESTRUCTIVE,
 };
 
-/** Apply the table to every registered tool.
+/** Human-facing tool titles. Directory review and client permission prompts
+ *  show these where they would otherwise show the bare identifier. */
+export const TOOL_TITLES: Record<string, string> = {
+  start: "Open the brain for this session",
+  session: "Review the session before closing",
+  remarks: "Get diary prompts",
+  close: "Close the session and write its log",
+  backup: "Back up the brain",
+  health: "Check storage and runtime health",
+  diary: "Write the daily diary",
+  remember: "Remember something",
+  recall: "Search the brain",
+  domain: "Read everything about an area",
+  read: "Read several notes",
+  revise: "Edit a note",
+  resolve: "Resolve a thread",
+  split: "Split a note into two",
+  withdraw: "Reopen a thread",
+  label: "Set or remove a label",
+  connect: "Link two notes",
+  explore: "Explore a note's links",
+  consistency: "Check the brain agrees with itself",
+  outline: "Show a note's headings",
+  inspect: "Inspect a note's raw form",
+  claim: "Register or verify a claim",
+  diff: "Show what changed",
+  attach: "Attach a file to a note",
+  detach: "Remove an attachment",
+  addendum: "Find notes with pending addenda",
+  maintain: "Run brain maintenance",
+  forget: "Archive or delete a note",
+  recover: "Restore an archived note",
+  template: "Show a note kind's template",
+  graph: "Render the relation graph",
+  day: "Summarise the day",
+  brain: "List the brain's inventory",
+  assembly: "List what the brain holds",
+  bootstrap: "Create or refresh the brain's structure",
+  master: "Read a note about the user",
+  master_recall: "Skim notes about the user",
+  llm: "Read the model's operating notes",
+  llm_recall: "Skim the model's operating notes",
+  memory: "Read a thread or session",
+  memory_recall: "Skim threads and sessions",
+  knowledge: "Read a knowledge note",
+  knowledge_recall: "Skim knowledge",
+  insights: "Read a day's change log",
+  insights_recall: "Skim insights",
+  get_note: "Get note metadata (raw)",
+  get_note_content: "Get note content (raw)",
+  get_attachments: "List attachments (raw)",
+  get_attachment_content: "Get attachment content (raw)",
+  get_attribute: "Get an attribute (raw)",
+  get_branch: "Get a branch (raw)",
+  get_revisions: "List revisions (raw)",
+  get_revision_content: "Get revision content (raw)",
+  search_notes: "Search notes (raw query)",
+  note_history: "List recent changes (raw)",
+  get_app_info: "Get Trilium version (raw)",
+  get_day_note: "Get or create a day note (raw)",
+  get_week_note: "Get or create a week note (raw)",
+  get_month_note: "Get or create a month note (raw)",
+  get_year_note: "Get or create a year note (raw)",
+  get_inbox_note: "Get or create the inbox note (raw)",
+  create_note: "Create a note (raw)",
+  patch_note: "Change note properties (raw)",
+  update_note_content: "Replace note content (raw)",
+  clone_note: "Clone a note (raw)",
+  move_note: "Move a note (raw)",
+  undelete_note: "Undelete a note (raw)",
+  add_label: "Add a label (raw)",
+  add_relation: "Add a relation (raw)",
+  update_attribute: "Update an attribute (raw)",
+  create_attachment: "Create an attachment (raw)",
+  update_attachment: "Update an attachment (raw)",
+  create_revision: "Snapshot a revision (raw)",
+  create_backup: "Create a backup (raw)",
+  delete_note: "Delete a note (raw)",
+  delete_attribute: "Delete an attribute (raw)",
+  delete_branch: "Delete a branch (raw)",
+  delete_attachment: "Delete an attachment (raw)",
+};
+
+/** Apply the table to every registered tool./** Apply the table to every registered tool.
  *
- *  Done as one pass over the registry rather than an extra argument on 77
+ *  Done as one pass over the registry rather than an extra argument on every
  *  registration calls, so the read/write split is legible as a single table.
  *  Scattered across the call sites it could not be reviewed — and reviewing it
  *  is the point, since a wrong entry here is a safety bug rather than a typo. */
 export function applyToolAnnotations(server: McpServer): { annotated: number; unclassified: string[] } {
   const registry = (server as unknown as {
-    _registeredTools?: Record<string, { annotations?: Hints }>;
+    _registeredTools?: Record<string, { annotations?: Hints; title?: string }>;
   })._registeredTools;
   if (!registry) return { annotated: 0, unclassified: [] };
 
@@ -156,11 +242,17 @@ export function applyToolAnnotations(server: McpServer): { annotated: number; un
     if (!hints) {
       // Absent means unclassified, which means treated as a write. Surfaced so
       // a tool added later is noticed rather than silently mis-grouped.
-      tool.annotations = { ...tool.annotations, ...APPEND, title: name };
+      const fallback = TOOL_TITLES[name] ?? name;
+      tool.annotations = { ...tool.annotations, ...APPEND, title: fallback };
+      tool.title = fallback;
       unclassified.push(name);
       continue;
     }
-    tool.annotations = { ...tool.annotations, ...hints, title: name };
+    const title = TOOL_TITLES[name] ?? name;
+    // Both places the spec allows: the tool's own title (preferred by current
+    // clients) and annotations.title (read by older ones).
+    tool.annotations = { ...tool.annotations, ...hints, title };
+    tool.title = title;
     annotated++;
   }
   return { annotated, unclassified };

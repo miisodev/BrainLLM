@@ -103,8 +103,16 @@ export const DATED_PROSE_LIMIT = 4;
 const MONTHS = "Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?";
 const DATED_REF = new RegExp(`\\b20\\d\\d-\\d\\d-\\d\\d\\b|\\b\\d{1,2} (?:${MONTHS}) 20\\d\\d\\b|\\b(?:${MONTHS}) \\d{1,2},? 20\\d\\d\\b`, "g");
 /** Count dated references in a note's visible text. */
-export function datedReferences(html: string): number {
-  return (toText(html, Number.MAX_SAFE_INTEGER).match(DATED_REF) ?? []).length;
+export function datedReferences(html: string, opts: { register?: boolean } = {}): number {
+  // A register (#register) is a maintained table whose rows legitimately carry
+  // evidence dates: a backlog, a closed-defects list, an escalations ledger.
+  // Its table cells are exempt; its prose is still timeless and still counted.
+  const source = opts.register ? html.replace(/<table[\s\S]*?<\/table>/gi, " ") : html;
+  // Cell boundaries become spaces first: toText joins adjacent cells, so a
+  // date followed by the next cell's text ("2026-09-01row") lost its word
+  // boundary and went uncounted.
+  const spaced = source.replace(/<\/?t[dh](?=[\s>])[^>]*>/gi, " ");
+  return (toText(spaced, Number.MAX_SAFE_INTEGER).match(DATED_REF) ?? []).length;
 }
 
 /** How many notes deep's structural lint will read in full. Bounded because it
@@ -569,11 +577,13 @@ export async function sweep(
     const kindHere = ownedLabel(n, "noteType");
     const isCurrentState = kindHere === "information" && /^current state$/i.test(n.title.trim());
     if (kindHere && TIMELESS_KINDS.has(kindHere) && !isCurrentState) {
-      const dated = datedReferences(content);
+      const register = n.attributes.some((a) => a.noteId === n.noteId && a.type === "label" && a.name === "register");
+      const dated = datedReferences(content, { register });
       if (dated >= DATED_PROSE_LIMIT) {
         report.flagged.push(
-          `dated prose: ${n.title} [${n.noteId}] — ${dated} dated references in a timeless ${kindHere} note. ` +
-          `Keep what is true regardless of date; move state to the domain's Current State and history or decisions to a thread entry.`
+          `dated prose: ${n.title} [${n.noteId}] — ${dated} dated references in a timeless ${kindHere} note${register ? " (outside its register tables)" : ""}. ` +
+          `Keep what is true regardless of date; move state to the domain's Current State and history or decisions to a thread entry.` +
+          (register ? "" : ` If the dates sit in a register's rows as evidence (a backlog, a defects list), label(noteId, "register", value="") exempts its tables.`)
         );
       }
     }

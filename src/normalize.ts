@@ -569,6 +569,55 @@ export function addendumIndex(html: string): AddendumBlock[] {
   return out;
 }
 
+/** One addendum block of a record: by its marker time ("14:05"), or by its
+ *  1-based position (negative counts from the end, so "-1" is the newest).
+ *  A busy day entry outgrows the read ceiling long before any one block does,
+ *  so this is the read that stays cheap as a record grows. */
+export function addendumBlock(
+  html: string,
+  block: string
+): { matched: true; marker: string; identity?: string; content: string; position: number; of: number } | { matched: false; available: string[] } {
+  const markerRe = /<h2(?:\s[^>]*)?>\s*((?:Addendum|Withdrawn|Recovered|Reopened)[^<]*)<\/h2>/gi;
+  const hits = [...html.matchAll(markerRe)];
+  const markers = hits.map((m) => decodeEntities(m[1]!).replace(/\s+/g, " ").trim());
+  const want = block.trim();
+  let i = -1;
+  if (/^-?\d+$/.test(want)) {
+    const n = parseInt(want, 10);
+    i = n < 0 ? hits.length + n : n - 1;
+  } else {
+    i = markers.findIndex((m) => m.endsWith(want) || m.includes(`— ${want}`) || m === want);
+  }
+  if (i < 0 || i >= hits.length) return { matched: false, available: markers };
+  const from = hits[i]!.index!;
+  const to = i + 1 < hits.length ? hits[i + 1]!.index! : html.length;
+  const content = html.slice(from, to).trim();
+  const idMatch = content.match(/<h3(?:\s[^>]*)?>([\s\S]*?)<\/h3>/i);
+  const identity = idMatch ? decodeEntities(idMatch[1]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim() : undefined;
+  return { matched: true, marker: markers[i]!, ...(identity ? { identity } : {}), content, position: i + 1, of: hits.length };
+}
+
+/** Readable plain text from stored HTML, keeping the structure a reader needs:
+ *  headings as markdown hashes, list items as "- ", table rows one per line
+ *  with " | " between cells. Smaller than the HTML it replaces (about a fifth
+ *  on table-heavy notes, more on prose with rich markup), for reads that
+ *  orient rather than edit (a find= still needs stored HTML). */
+export function readableText(html: string): string {
+  return decodeEntities(
+    html
+      .replace(/<(style|script)[\s\S]*?<\/\1>/gi, "")
+      .replace(/<h([1-6])[^>]*>/gi, (_, n) => "\n" + "#".repeat(Number(n)) + " ")
+      .replace(/<li[^>]*>/gi, "\n- ")
+      .replace(/<\/t[dh]>\s*<t[dh][^>]*>/gi, " | ")
+      .replace(/<(tr|p|div|br|blockquote|figure|table|ul|ol|hr)[^>]*>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+  )
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export interface NearMatch {
   /** The longest fragment of the search string that IS present in the body. */
   fragment: string;
@@ -1015,6 +1064,82 @@ export function tolerantFindRegex(find: string): RegExp | null {
  *  failure hint at the real problem instead of at the text. */
 export function spansBlockBoundary(find: string): boolean {
   return /<\/[a-zA-Z][a-zA-Z0-9-]*\s*>\s*<[a-zA-Z]/.test(find);
+}
+
+// ── Inline-tag-tolerant matching ──────────────────────────────────────────────
+//
+// The commonest find= miss in practice is text that differs from the stored
+// form only by inline formatting: "Phase 2" against "<strong>Phase 2</strong>",
+// or "unmerged" against "<em>unmerged</em>". The attribute-tolerant pass
+// cannot help — it only relaxes tags the caller wrote. This third pass matches
+// the caller's TEXT against the stored text with any inline tag allowed between
+// characters, and entities read as the characters they encode.
+
+const INLINE_TAGS = "strong|em|b|i|u|s|del|ins|code|a|span|mark|sub|sup|kbd|small";
+const INLINE_TAG_RX = new RegExp(`<\\/?(?:${INLINE_TAGS})(?:\\s[^<>]*)?\\/?>`, "gi");
+const ENTITY_FORMS: Record<string, string> = {
+  "&": "&(?:amp;)?", "<": "&lt;", ">": "&gt;", '"': '(?:"|&quot;)', "'": "(?:'|&#39;|&apos;)",
+};
+
+/** Spans of `source` whose text equals `needle`'s text, ignoring inline tags
+ *  and entity encoding. Each span is widened to swallow inline tags it opens
+ *  or closes without the partner, so replacing it never leaves a dangling
+ *  <strong> behind; a span whose tags cannot be balanced that way is dropped.
+ *  Needles containing block tags return [] — the other passes own those. */
+export function inlineTolerantSpans(source: string, needle: string): Array<{ start: number; length: number }> {
+  if (/<\/?(?!(?:strong|em|b|i|u|s|del|ins|code|a|span|mark|sub|sup|kbd|small)\b)[a-zA-Z]/.test(needle)) return [];
+  // \s covers U+00A0, so a decoded &nbsp; folds into ordinary whitespace below.
+  const text = decodeEntities(needle.replace(INLINE_TAG_RX, "")).trim();
+  if (text.length < 2) return [];
+  const gap = `(?:<\\/?(?:${INLINE_TAGS})(?:\\s[^<>]*)?\\/?>)*`;
+  const esc = (c: string) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts: string[] = [];
+  for (const ch of text.replace(/\s+/g, " ")) {
+    parts.push(ch === " " ? "(?:\\s|&nbsp;|&#160;)+" : ENTITY_FORMS[ch] ?? esc(ch));
+  }
+  let rx: RegExp;
+  try {
+    rx = new RegExp(parts.join(gap), "g");
+  } catch {
+    return [];
+  }
+  const out: Array<{ start: number; length: number }> = [];
+  for (const m of source.matchAll(rx)) {
+    const span = balanceInline(source, m.index!, m.index! + m[0].length);
+    if (span) out.push({ start: span.start, length: span.end - span.start });
+  }
+  // Widening can make neighbouring hits overlap; keep the first of any overlap.
+  return out.filter((s, i) => i === 0 || s.start >= out[i - 1].start + out[i - 1].length);
+}
+
+/** Widen [start, end) until its inline tags pair up: an unmatched closer
+ *  pulls in the opener just before the span, an unmatched opener the closer
+ *  just after it. Null when the partner is not adjacent. */
+function balanceInline(src: string, start: number, end: number): { start: number; end: number } | null {
+  for (let guard = 0; guard < 8; guard++) {
+    const stack: string[] = [];
+    let strayClose: string | null = null;
+    for (const t of src.slice(start, end).matchAll(INLINE_TAG_RX)) {
+      const name = /^<\/?([a-z]+)/i.exec(t[0])![1].toLowerCase();
+      if (t[0].endsWith("/>")) continue;
+      if (t[0].startsWith("</")) {
+        if (stack[stack.length - 1] === name) stack.pop();
+        else if (!strayClose) strayClose = name;
+      } else stack.push(name);
+    }
+    if (!strayClose && !stack.length) return { start, end };
+    if (strayClose) {
+      const before = new RegExp(`<${strayClose}(?:\\s[^<>]*)?>$`, "i").exec(src.slice(0, start));
+      if (!before) return null;
+      start -= before[0].length;
+      continue;
+    }
+    const open = stack[stack.length - 1];
+    const after = new RegExp(`^<\\/${open}\\s*>`, "i").exec(src.slice(end));
+    if (!after) return null;
+    end += after[0].length;
+  }
+  return null;
 }
 
 /** True when the search string carries escaped markup ("&lt;h3&gt;") while

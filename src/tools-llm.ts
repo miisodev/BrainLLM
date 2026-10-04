@@ -5,26 +5,27 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { TriliumClient } from "./trilium.js";
 import type { BrainLLMConfig } from "./config.js";
-import { txt, skim, readFull, previewWithRelations } from "./tools-surface.js";
+import { txt, skim, readFull, previewWithRelations, blockParam } from "./tools-surface.js";
 
 export function registerLlmTools(server: McpServer, trilium: TriliumClient, brainRef: { config: BrainLLMConfig }): void {
   const b = () => brainRef.config;
 
   server.tool(
     "llm",
-    `Read an LLM singleton — responsibilities, protocols or selfcorrection — or a diary entry by id. Self-correction holds general rules learned from mistakes; read it before work that has gone wrong before (audits, large edits, completeness claims). section="<heading>" reads one section.`,
+    `Read an LLM singleton — responsibilities, protocols or selfcorrection — or a diary entry by id (block="14:05" or "-1" reads one of its addendum blocks). Self-correction holds general rules learned from mistakes; read it before work that has gone wrong before (audits, large edits, completeness claims). section="<heading>" reads one section.`,
     {
       which: z.enum(["responsibilities", "protocols", "selfcorrection", "diary"]),
       id: z.string().optional().describe("diary only: the entry id from llm_recall (noteId is accepted as an alias)"),
       noteId: z.string().optional().describe("Alias of id"),
       section: z.string().optional().describe("Read only this heading's section (h2/h3/h4), instead of the whole note"),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
+      ...blockParam,
     },
-    async ({ which, id, noteId: idAlias, section, occurrence }) => {
+    async ({ which, id, noteId: idAlias, section, occurrence, block }) => {
       if (which === "diary") {
         const entry = id ?? idAlias;
         if (!entry) throw new Error("Reading a diary entry needs its id — use llm_recall to find one.");
-        return txt(await readFull(trilium, entry, { section, occurrence }));
+        return txt(await readFull(trilium, entry, { section, occurrence, block }));
       }
       const noteId = b().llm[which];
       if (!noteId) {

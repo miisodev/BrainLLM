@@ -15,6 +15,8 @@ import { FixedWindowRateLimiter } from "./rate-limit.js";
 import { coerceToolArgs } from "./coerce.js";
 import { registerAdvancedTools } from "./tools-advanced.js";
 import { applyToolAnnotations } from "./annotations.js";
+import { capToolResults } from "./cap.js";
+import { BRAND, SERVER_INSTRUCTIONS, brandIcons } from "./brand.js";
 import { BunSseServerTransport } from "./sse.js";
 import { loadConfig, discoverBrainLLM, saveConfig, configFilePath, loadCachedToken, saveCachedToken, EMPTY_BRAINLLM, envDeletionCatchupDays, deletionCatchupDays } from "./config.js";
 import {
@@ -119,8 +121,8 @@ const brainRef = { config: brain ?? EMPTY_BRAINLLM };
 const port      = process.env.PORT ? parseInt(process.env.PORT, 10) : null;
 const authToken = process.env.MCP_AUTH_TOKEN;
 
-// BRAINLLM_MODE=core (default): the 44 brain-aware tools (34 universal verbs + 10 surface reads).
-// BRAINLLM_MODE=full: additionally registers the 33 raw ETAPI tools, for 77.
+// BRAINLLM_MODE=core (default): the 45 brain-aware tools (35 universal verbs + 10 surface reads).
+// BRAINLLM_MODE=full: additionally registers the 33 raw ETAPI tools, for 78.
 const mode: "core" | "full" = process.env.BRAINLLM_MODE === "full" ? "full" : "core";
 const allowUnauthenticatedHttp = process.env.BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP === "true";
 if (port && !authToken && !oauthEnabled() && !allowUnauthenticatedHttp) {
@@ -128,43 +130,20 @@ if (port && !authToken && !oauthEnabled() && !allowUnauthenticatedHttp) {
   process.exit(1);
 }
 
-// Brand identity advertised in the MCP handshake (serverInfo.icons). Clients
-// that render server icons show the BrainLLM logo in their connector list and
-// beside its tool calls.
-//
-// The icons MUST be served from the server's own origin. The MCP spec directs
-// clients to "verify that icon URIs are from the same origin as the server" —
-// it minimises the risk of leaking usage data to a third party — so pointing at
-// raw.githubusercontent.com, as this used to, gets the icons silently dropped
-// and no icon renders at all. In HTTP mode they are served from /icon.png and
-// /icon.svg below. Under stdio there is no server origin to compare against, so
-// the public repo URLs remain the only option there.
-//
-// PNG is listed first deliberately: clients MUST support image/png but only
-// SHOULD support image/svg+xml, and MAY refuse SVG outright because it can
-// carry executable content. Leading with the format everyone renders means the
-// icon shows even where SVG is disallowed.
-const REPO_RAW = "https://raw.githubusercontent.com/miisodev/BrainLLM/main/public";
-
-// Several sizes are offered so a client picks what it renders rather than
-// downscaling a large one — the spec says clients should select the most
-// appropriate icon for their UI.
-function brandingIcons(origin: string | null) {
-  const at = (file: string) => (origin ? `${origin}/${file}` : `${REPO_RAW}/${file}`);
-  return [
-    { src: at("icon-128.png"), mimeType: "image/png", sizes: ["128x128"] },
-    { src: at("icon-512.png"), mimeType: "image/png", sizes: ["512x512"] },
-    { src: origin ? `${origin}/icon.svg` : `${REPO_RAW}/BrainLLM.svg`, mimeType: "image/svg+xml", sizes: ["any"] },
-  ];
-}
-
+// Brand identity advertised in the MCP handshake: name, title, description,
+// website and icons (see brand.ts for why icons are same-origin and PNG-first).
 function createServer(origin: string | null = null): McpServer {
-  const s = new McpServer({
-    name: "BrainLLM",
-    title: "BrainLLM",
-    version: "12.7.1",
-    icons: brandingIcons(origin),
-  });
+  const s = new McpServer(
+    {
+      name: BRAND.name,
+      title: BRAND.name,
+      version: "12.8.0",
+      description: BRAND.description,
+      websiteUrl: BRAND.website,
+      icons: brandIcons(origin),
+    },
+    { instructions: SERVER_INSTRUCTIONS }
+  );
   // The two surfaces, composed here rather than nested inside registerTools —
   // so what each mode actually contains is visible at the point the decision is
   // made, not behind a flag halfway down another module.
@@ -181,7 +160,7 @@ function createServer(origin: string | null = null): McpServer {
 
   // Group the surface into read-only vs write/destructive for the client's
   // permission UI. Without it every tool is "Other", and the only choice on
-  // offer is allow-all-77 or approve-every-call.
+  // offer is allow-everything or approve-every-call.
   const { unclassified } = applyToolAnnotations(s);
   if (unclassified.length) {
     console.error(`[brainllm] Unclassified tools, treated as writes: ${unclassified.join(", ")}`);
@@ -191,6 +170,9 @@ function createServer(origin: string | null = null): McpServer {
   // module-level — so two agents (an interactive session and an automated run,
   // say) writing through one hosted process queue instead of racing, and a
   // read-modify-write can no longer silently discard the other's write.
+  // Cap every result below the hosted clients' size ceiling. Applied before
+  // the write lock so the lock wraps the capped handler and both see one call.
+  capToolResults(s);
   const serialized = serializeWrites(s);
   if (serialized.serialized) {
     console.error(`[brainllm] Write serialization: ${serialized.serialized} write handler(s) queued, ${serialized.readsUntouched} read(s) untouched`);
@@ -255,7 +237,13 @@ if (port) {
     authorize: new FixedWindowRateLimiter(30, 15 * 60_000),
     token: new FixedWindowRateLimiter(120, 15 * 60_000),
     register: new FixedWindowRateLimiter(30, 60 * 60_000),
+    // Hosted clients reach the server from one shared egress range (all of
+    // Claude's connector traffic does), so a per-IP budget alone would let one
+    // user's busy session exhaust everyone's. Authenticated MCP traffic is
+    // budgeted per bearer token; the per-IP budget stays as a looser outer
+    // bound so rotating junk tokens cannot buy unlimited requests.
     transport: new FixedWindowRateLimiter(600, 15 * 60_000),
+    transportIp: new FixedWindowRateLimiter(3_000, 15 * 60_000),
   };
   const rateLimited = (limiter: FixedWindowRateLimiter, key: string): Response | null => {
     const decision = limiter.allow(key);
@@ -300,6 +288,11 @@ if (port) {
     port,
     // 50 MB cap — prevents runaway memory on large note writes in HTTP mode.
     maxRequestBodySize: 50 * 1024 * 1024,
+    // Bun closes a connection idle for 10 seconds by default, and a tool call
+    // sends nothing until it finishes: a deep maintain() or a domain-wide
+    // revise over a large brain was cut off mid-run. 240 seconds is the
+    // longest a hosted Claude client waits for one call (Bun's ceiling is 255).
+    idleTimeout: 240,
     async fetch(req: Request, server): Promise<Response> {
       const url = new URL(req.url);
       const requestKey = clientKey(req, server);
@@ -425,7 +418,13 @@ if (port) {
       if (!isMcpEndpoint && url.pathname !== "/sse" && url.pathname !== "/messages") {
         return withCors(new Response("Not Found", { status: 404 }));
       }
-      const transportLimit = rateLimited(rateLimiters.transport, requestKey);
+      const ipLimit = rateLimited(rateLimiters.transportIp, requestKey);
+      if (ipLimit) return ipLimit;
+      const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+      const transportKey = bearer
+        ? `token:${new Bun.CryptoHasher("sha256").update(bearer).digest("hex").slice(0, 32)}`
+        : requestKey;
+      const transportLimit = rateLimited(rateLimiters.transport, transportKey);
       if (transportLimit) return transportLimit;
 
       // ── Authentication ──────────────────────────────────────────────────────

@@ -71,7 +71,7 @@ const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta
   name?: string;
   version?: string;
 };
-const sourceVersion = /McpServer\(\{[\s\S]*?version:\s*"([^"]+)"/.exec(source)?.[1];
+const sourceVersion = /McpServer\(\s*\{[\s\S]*?version:\s*"([^"]+)"/.exec(source)?.[1];
 const versions: Array<[string, string | undefined]> = [
   ["package.json", pkg.version],
   ["manifest.json", manifest.version],

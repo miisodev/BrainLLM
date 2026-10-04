@@ -3,191 +3,198 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Docs — BrainLLM</title>
-<meta name="description" content="Install, configure and operate BrainLLM: quick start, configuration reference, the tool surface, deployment and the session protocol.">
+<title>BrainLLM documentation</title>
+<meta name="description" content="Install, configure and operate BrainLLM: quick start, client configuration, the tool surface, the session protocol, deployment, OAuth and troubleshooting.">
+<link rel="canonical" href="https://miisodev.github.io/BrainLLM/docs.html">
 <link rel="icon" type="image/svg+xml" href="assets/BrainLLM.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="assets/icon-64.png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <meta name="theme-color" content="#0a0a0f">
+<meta property="og:title" content="BrainLLM documentation">
+<meta property="og:description" content="Install, configure and operate BrainLLM: quick start, client configuration, the tool surface, the session protocol, deployment, OAuth and troubleshooting.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://miisodev.github.io/BrainLLM/docs.html">
+<meta property="og:image" content="https://miisodev.github.io/BrainLLM/assets/BrainLLM.png">
+<meta property="og:image:width" content="512">
+<meta property="og:image:height" content="512">
+<meta name="twitter:card" content="summary">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
-
-<nav class="nav">
-  <div class="nav-inner">
-    <a class="brand" href="index.html">
-      <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
-      <span class="brand-name">BrainLLM</span>
-    </a>
+<a class="skip" href="#main">Skip to content</a>
+<nav class="nav" id="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="BrainLLM home"><svg width="22" height="22" viewBox="110 110 292 292" aria-hidden="true"><circle cx="164" cy="164" r="38" fill="#f59e0b"/><circle cx="256" cy="164" r="38" fill="#3f3f46"/><circle cx="348" cy="164" r="38" fill="#f59e0b"/><circle cx="164" cy="256" r="38" fill="#f59e0b"/><circle cx="256" cy="256" r="38" fill="#f59e0b"/><circle cx="348" cy="256" r="38" fill="#3f3f46"/><circle cx="164" cy="348" r="38" fill="#3f3f46"/><circle cx="256" cy="348" r="38" fill="#f59e0b"/><circle cx="348" cy="348" r="38" fill="#f59e0b"/></svg><span class="brand-name">BrainLLM</span></a>
     <div class="nav-links">
       <a href="how-it-works.html">How it works</a>
       <a href="use-cases.html">Use cases</a>
+      <a href="connect.html">Connect</a>
+      <a href="docs.html" aria-current="page">Docs</a>
       <a href="pricing.html">Pricing</a>
-      <a class="active" href="docs.html">Docs</a>
-      <a class="nav-gh" href="https://github.com/miisodev/BrainLLM">GitHub</a>
     </div>
-    <div class="nav-cta"><a class="btn btn-primary btn-sm" href="#quick-start">Start now</a></div>
+    <div class="nav-cta">
+      <a class="btn btn-ghost btn-sm" href="https://github.com/miisodev/BrainLLM">GitHub</a>
+      <a class="btn btn-primary btn-sm" href="connect.html">Connect to Claude</a>
+      <button class="menu-toggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="nav">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 9h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
   </div>
 </nav>
+<main id="main">
 
-<main>
-
-<section style="padding-top:56px">
-  <div class="wrap docs-layout">
-
-    <aside class="docs-nav">
-      <strong>Getting started</strong>
-      <a href="#quick-start">Quick start</a>
-      <a href="#client">Client configuration</a>
-      <a href="#bootstrap">Bootstrap the brain</a>
-      <a href="#skill">Teach the model</a>
-      <strong>Reference</strong>
-      <a href="#env">Environment variables</a>
-      <a href="#tools">Tool surface</a>
-      <a href="#kinds">Kinds and statuses</a>
-      <a href="#protocol">Session protocol</a>
-      <strong>Deployment</strong>
-      <a href="#deploy">Transports</a>
-      <a href="#oauth">claude.ai and OAuth</a>
-      <strong>Help</strong>
-      <a href="#trouble">Troubleshooting</a>
-      <a href="https://github.com/miisodev/BrainLLM/issues">Report an issue</a>
-    </aside>
-
-    <div class="docs-body">
-      <h1 class="sr-only">BrainLLM documentation</h1>
-
-      <h2 id="quick-start">Quick start</h2>
-      <p>BrainLLM needs a running TriliumNext instance and Bun 1.0+. It uses Bun APIs directly and does not run on Node.</p>
-
-      <h3>1 · Get Trilium running</h3>
-      <p>Install <a href="https://github.com/TriliumNext/Trilium" style="color:var(--accent)">TriliumNext</a> locally, or run it anywhere reachable over HTTP. Then create a token: <strong>Options → ETAPI → Create token</strong>.</p>
-      <p>You can skip the token step by setting <code>TRILIUM_PASSWORD</code> instead — BrainLLM mints a token on first start and caches it.</p>
-
-      <h3>2 · Install</h3>
-<pre class="term" tabindex="0" aria-label="Code example"><span class="c"># via npm (needs bun on PATH)</span>
+<div class="wrap docs">
+  <aside aria-label="Documentation">
+    <strong>Getting started</strong>
+    <a href="#quick-start">Quick start</a>
+    <a href="#clients">Client configuration</a>
+    <a href="#bootstrap">Bootstrap the brain</a>
+    <a href="#skill">Teach the model</a>
+    <a href="connect.html">Connect to Claude</a>
+    <strong>Reference</strong>
+    <a href="#env">Environment variables</a>
+    <a href="#tools">Tool surface</a>
+    <a href="#kinds">Kinds and statuses</a>
+    <a href="#protocol">Session protocol</a>
+    <a href="#editing">Editing large notes</a>
+    <strong>Running it</strong>
+    <a href="#transports">Transports</a>
+    <a href="#oauth">OAuth</a>
+    <a href="#health">Health and backups</a>
+    <strong>Help</strong>
+    <a href="#trouble">Troubleshooting</a>
+    <a href="connect.html#support">Support</a>
+  </aside>
+  <article>
+    <span class="eyebrow">Documentation</span>
+    <h2 id="quick-start">Quick start</h2>
+    <p>BrainLLM needs a running <a href="https://github.com/TriliumNext/Trilium">TriliumNext</a> instance and <a href="https://bun.sh">Bun</a> 1.0 or later. It uses Bun's APIs directly and does not run on Node.</p>
+    <h3>1. Run Trilium and create a token</h3>
+    <p>Install TriliumNext on your computer or anywhere reachable over HTTP, then create a token under Options → ETAPI → Create token. Or skip the token and set <code>TRILIUM_PASSWORD</code>: BrainLLM creates one on first start and caches it.</p>
+    <h3>2. Install</h3>
+<pre># from npm (needs bun on PATH)
 npx -y brainllm
 
-<span class="c"># or from source</span>
+# or from source
 git clone https://github.com/miisodev/BrainLLM
 cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
 
-      <h2 id="client">Client configuration</h2>
-      <p>Add BrainLLM to your MCP client's config. The npm form is simplest:</p>
-<pre class="term" tabindex="0" aria-label="Code example">{
-  <span class="a">"mcpServers"</span>: {
-    <span class="a">"BrainLLM"</span>: {
-      <span class="a">"command"</span>: <span class="g">"npx"</span>,
-      <span class="a">"args"</span>: [<span class="g">"-y"</span>, <span class="g">"brainllm"</span>],
-      <span class="a">"env"</span>: {
-        <span class="a">"TRILIUM_BASE_URL"</span>: <span class="g">"http://localhost:8080"</span>,
-        <span class="a">"TRILIUM_ETAPI_TOKEN"</span>: <span class="g">"your-token-here"</span>
+    <h2 id="clients">Client configuration</h2>
+    <p>For Claude Desktop, Claude Code or any client that launches local servers:</p>
+<pre>{
+  "mcpServers": {
+    "BrainLLM": {
+      "command": "npx",
+      "args": ["-y", "brainllm"],
+      "env": {
+        "TRILIUM_BASE_URL": "http://localhost:8080",
+        "TRILIUM_ETAPI_TOKEN": "your-token"
       }
     }
   }
 }</pre>
+    <p>For claude.ai, the Claude apps and Cowork, BrainLLM runs as a remote server instead: see <a href="connect.html">Connect to Claude</a>.</p>
 
-      <h2 id="bootstrap">Bootstrap the brain</h2>
-      <p>On a fresh Trilium, call <code>bootstrap()</code> once from your client — or run <code>bun run init</code> from a checkout. It builds the five-area tree, engraves each container's purpose, and writes <code>brainllm.json</code>.</p>
-      <p>It is safe to call anytime. It verifies an existing root live and only builds a fresh tree on a confirmed 404, so a network blip can never silently produce a duplicate brain.</p>
+    <h2 id="bootstrap">Bootstrap the brain</h2>
+    <p>On a fresh Trilium, call <code>bootstrap()</code> once from your client, or run <code>bun run init</code> from a checkout. It builds the five-area tree, engraves each container's purpose and writes <code>brainllm.json</code>. It is safe to run at any time: it checks an existing root live and builds a new tree only on a confirmed miss.</p>
 
-      <h2 id="skill">Teach the model to operate it</h2>
-      <p>The tools are deliberately terse — single-word verbs. The operational discipline lives in the bundled skill at <code>skills/brainllm/</code>. Copy it to <code>~/.claude/skills/brainllm</code> (or <code>%USERPROFILE%\.agents\skills\brainllm</code> on Windows) so Claude Code and Cowork load it.</p>
-      <p>Without it a model can call every tool correctly and still produce an incoherent brain, because correctness of call is not correctness of practice.</p>
+    <h2 id="skill">Teach the model to operate it</h2>
+    <p>The tools are terse single-word verbs; the working discipline lives in the bundled skill at <code>skills/brainllm/</code>. Copy it to <code>~/.claude/skills/brainllm</code> for Claude Code and Cowork, or upload <code>skills/brainllm.zip</code> to claude.ai. Without it a model can call every tool correctly and still keep an untidy brain, because a correct call is not a correct practice.</p>
 
-      <h2 id="env">Environment variables</h2>
-      <table>
-        <tr><th>Variable</th><th>Required</th><th>Purpose</th></tr>
-        <tr><td><code>TRILIUM_BASE_URL</code></td><td>Yes</td><td>URL of your TriliumNext instance</td></tr>
-        <tr><td><code>TRILIUM_ETAPI_TOKEN</code></td><td>Yes*</td><td>ETAPI bearer token</td></tr>
-        <tr><td><code>TRILIUM_PASSWORD</code></td><td>—</td><td>* Alternative to the token — mints and caches one on first start</td></tr>
-        <tr><td><code>BRAINLLM_MODE</code></td><td>—</td><td><code>core</code> (44 tools, default) or <code>full</code> (+33 raw ETAPI tools)</td></tr>
-        <tr><td><code>BRAINLLM_TZ</code></td><td>—</td><td>IANA timezone for date stamping on hosted deploys</td></tr>
-        <tr><td><code>BRAINLLM_DELETION_CATCHUP_DAYS</code></td><td>—</td><td>Days your Trilium keeps deleted notes, when it differs from Trilium's default of 7. Deletions are reported only within this window</td></tr>
-        <tr><td><code>PORT</code></td><td>—</td><td>Presence switches to HTTP-connector mode. Never set it for local stdio</td></tr>
-        <tr><td><code>MCP_AUTH_TOKEN</code></td><td>—</td><td>Bearer token required on every HTTP transport; HTTP mode fails closed without it or owner OAuth</td></tr>
-        <tr><td><code>BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP</code></td><td>—</td><td>Trusted-network-only escape hatch; never enable on a public interface</td></tr>
-        <tr><td><code>BRAINLLM_CONFIG</code></td><td>—</td><td>Absolute <em>file</em> path for <code>brainllm.json</code> on persistent-volume deploys</td></tr>
-        <tr><td><code>BRAINLLM_OWNER_PASSWORD</code></td><td>—</td><td>Turns on the OAuth 2.1 surface. Unset means OAuth is disabled entirely</td></tr>
-        <tr><td><code>BRAINLLM_PUBLIC_URL</code></td><td>—</td><td>Override the public origin when a proxy rewrites Host</td></tr>
-        <tr><td><code>BRAINLLM_TRUST_PROXY</code></td><td>—</td><td>Trust forwarded host/protocol headers only when a trusted reverse proxy sets them</td></tr>
-      </table>
+    <h2 id="env">Environment variables</h2>
+    <div class="table-wrap"><table><tr><th>Variable</th><th>Required</th><th>Purpose</th></tr><tr><td><code>TRILIUM_BASE_URL</code></td><td>Yes</td><td>URL of your TriliumNext instance</td></tr><tr><td><code>TRILIUM_ETAPI_TOKEN</code></td><td>Yes*</td><td>ETAPI token (Trilium: Options → ETAPI → Create token)</td></tr><tr><td><code>TRILIUM_PASSWORD</code></td><td>*</td><td>Alternative to the token: BrainLLM creates one on first start and caches it</td></tr><tr><td><code>BRAINLLM_MODE</code></td><td></td><td><code>core</code> (45 tools, default) or <code>full</code> (adds 33 raw Trilium tools, 78 in all)</td></tr><tr><td><code>BRAINLLM_TZ</code></td><td></td><td>IANA timezone for date stamps on hosted deploys, e.g. <code>Africa/Johannesburg</code></td></tr><tr><td><code>BRAINLLM_DELETION_CATCHUP_DAYS</code></td><td></td><td>Days your Trilium keeps deleted notes, when it differs from Trilium's default of 7</td></tr><tr><td><code>PORT</code></td><td></td><td>Switches to HTTP mode. Leave unset for local stdio</td></tr><tr><td><code>MCP_AUTH_TOKEN</code></td><td></td><td>Static bearer token for HTTP mode; HTTP refuses to start without it or OAuth</td></tr><tr><td><code>BRAINLLM_OWNER_PASSWORD</code></td><td></td><td>Turns on OAuth 2.1, which claude.ai and the Claude apps need. It is the password on the consent screen</td></tr><tr><td><code>BRAINLLM_OAUTH_SECRET</code></td><td></td><td>Optional 32+ character signing secret; rotate it to invalidate every token</td></tr><tr><td><code>BRAINLLM_CONFIG</code></td><td></td><td>Absolute <em>file</em> path for <code>brainllm.json</code> on a persistent volume</td></tr><tr><td><code>BRAINLLM_PUBLIC_URL</code></td><td></td><td>The public origin, when a proxy rewrites Host</td></tr><tr><td><code>BRAINLLM_TRUST_PROXY</code></td><td></td><td>Trust forwarded host and protocol headers, only behind a trusted proxy</td></tr><tr><td><code>BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP</code></td><td></td><td>Trusted networks only. Never on a public interface</td></tr></table></div>
 
-      <h2 id="tools">Tool surface</h2>
-      <p><strong>44 tools by default</strong> — 34 universal verbs plus 10 dual-mode surface reads. <code>BRAINLLM_MODE=full</code> adds 33 raw ETAPI tools, for a total of 77.</p>
-      <table>
-        <tr><th>Group</th><th>Tools</th></tr>
-        <tr><td>Session lifecycle</td><td><code>start</code> · <code>day</code> · <code>session</code> · <code>remarks</code> · <code>close</code> · <code>backup</code></td></tr>
-        <tr><td>Writing</td><td><code>remember</code> · <code>diary</code> · <code>split</code></td></tr>
-        <tr><td>Reading &amp; search</td><td><code>read</code> · <code>recall</code> · <code>domain</code> · <code>brain</code> · <code>assembly</code> · <code>template</code> · <code>consistency</code></td></tr>
-        <tr><td>Updating</td><td><code>revise</code> · <code>resolve</code> · <code>withdraw</code> · <code>recover</code> · <code>label</code> · <code>forget</code></td></tr>
-        <tr><td>Graph &amp; inspection</td><td><code>connect</code> · <code>explore</code> · <code>graph</code> · <code>outline</code> · <code>inspect</code> · <code>diff</code></td></tr>
-        <tr><td>Attachments</td><td><code>attach</code> · <code>detach</code></td></tr>
-        <tr><td>Maintenance</td><td><code>addendum</code> · <code>maintain</code> · <code>claim</code> · <code>bootstrap</code></td></tr>
-        <tr><td>Surface reads</td><td><code>master</code> · <code>llm</code> · <code>memory</code> · <code>knowledge</code> · <code>insights</code> — each with a <code>_recall</code> skim twin</td></tr>
-      </table>
-      <p>Every tool is classified read-only, write or destructive so your client can group its permission prompts. The default is unsafe-side: an unclassified tool is treated as a write, never a read.</p>
+    <h2 id="tools">Tool surface</h2>
+    <p>45 tools by default: 35 verbs and 10 surface reads. <code>BRAINLLM_MODE=full</code> adds 33 raw Trilium tools, 78 in all. Every tool carries a human-readable title and is marked read-only, write or destructive, so clients can group their permission prompts; an unclassified tool is treated as a write, never a read.</p>
+    <div class="table-wrap"><table><tr><th>Group</th><th>Tools</th></tr><tr><td>Session</td><td>start · day · session · remarks · close · backup · health</td></tr><tr><td>Writing</td><td>remember · diary · split</td></tr><tr><td>Reading and search</td><td>read · recall · domain · brain · assembly · template · consistency</td></tr><tr><td>Updating</td><td>revise · resolve · withdraw · recover · label · forget</td></tr><tr><td>Graph and inspection</td><td>connect · explore · graph · outline · inspect · diff</td></tr><tr><td>Attachments</td><td>attach · detach</td></tr><tr><td>Maintenance</td><td>addendum · maintain · claim · bootstrap</td></tr><tr><td>Surface reads</td><td>master · llm · memory · knowledge · insights, each with a <code>_recall</code> skim twin</td></tr></table></div>
 
-      <h2 id="kinds">Kinds and statuses</h2>
-      <p>Sixteen kinds: <code>biography</code> <code>goals</code> <code>preferences</code> <code>responsibilities</code> <code>protocols</code> <code>selfcorrection</code> <code>diary</code> <code>session</code> <code>thread</code> <code>threadEntry</code> <code>user</code> <code>domain</code> <code>information</code> <code>claim</code> <code>sources</code> <code>log</code>.</p>
-      <p>Five statuses: <code>active</code> · <code>dormant</code> · <code>resolved</code> · <code>superseded</code> · <code>eternal</code>. Only threads age; <code>eternal</code> is exempt from the sweep entirely.</p>
+    <h2 id="kinds">Kinds and statuses</h2>
+    <p>Sixteen kinds: biography, goals, preferences, responsibilities, protocols, selfcorrection, diary, session, thread, threadEntry, user, domain, information, sources, log and claim. Five statuses: active, dormant, resolved, superseded and eternal. Only threads age, and an eternal thread never does.</p>
 
-      <h2 id="protocol">Session protocol</h2>
-<pre class="term" tabindex="0" aria-label="Code example"><span class="c">START</span>   start()                    <span class="c">once, before responding</span>
-        [day()]                    <span class="c">when start() flags a new day</span>
-<span class="c">DURING</span>  remember · diary · recall · domain · revise · connect …
-<span class="c">END</span>     session() → addendum() → maintain()
-        → <span class="a">remarks()</span> → <span class="a">diary(body, identity="LLM · env · agent")</span> → close(summary, identity="LLM · env · agent")</pre>
-      <p><code>close()</code> refuses unless all five pre-close steps have run <em>and</em> <code>session → remarks → diary</code> holds. <code>diary()</code> and <code>close()</code> require the canonical identity line. Gate state lives on today's session note, so it survives a restart. Pass <code>force=true</code> only when a step genuinely has nothing to log — bypassed steps are reported back, never silently skipped.</p>
+    <h2 id="protocol">Session protocol</h2>
+<pre>START   start()                    the first BrainLLM call of a session
+        day()                      when start() reports a new day
+DURING  remember · revise · recall · domain · connect · ...
+END     session() → addendum() → maintain() → remarks() → diary() → close()</pre>
+    <p><code>close()</code> refuses until the closing steps have run, with session → remarks → diary in that order. <code>diary()</code> and <code>close()</code> take an identity line, <code>"LLM · environment · agent/mode"</code>. The gate's state lives on the day's session note, so it survives a restart. <code>session()</code> lists the notes the session changed, so a figure corrected in one note can be checked everywhere it is recorded.</p>
 
-      <h2 id="deploy">Transports</h2>
-      <table>
-        <tr><th>Mode</th><th>Trigger</th><th>Use for</th></tr>
-        <tr><td>stdio</td><td><code>PORT</code> unset</td><td>Claude Desktop, Claude Code — the client spawns BrainLLM as a child process</td></tr>
-        <tr><td>HTTP connector</td><td><code>PORT</code> set</td><td>Docker, Railway, any container host. Serves streamable HTTP at <code>/mcp</code>, legacy SSE at <code>/sse</code> (with <code>POST /messages</code>), and <code>/health</code> — both transports behind the same auth gate</td></tr>
-      </table>
-      <p>For container deploys, mount a volume on the BrainLLM service and set <code>BRAINLLM_CONFIG</code> to a file path inside it — otherwise auto-discovery re-runs on every cold start.</p>
+    <h2 id="editing">Editing large notes</h2>
+    <ul>
+      <li><code>revise(noteId, section="Heading")</code> replaces one section; <code>mode="before"</code>, <code>"after"</code>, <code>"prepend"</code> and <code>"remove"</code> act around it.</li>
+      <li><code>revise(noteId, find="a few words", within="tr")</code> replaces, inserts beside or removes the table row containing them. Inline formatting in the stored text doesn't stop a match.</li>
+      <li><code>revise(domain="Name", find=, body=)</code> previews a find and replace across a whole domain; add <code>dryRun=false</code> to write it.</li>
+      <li>Reads take <code>section=</code>; records take <code>block="14:05"</code> or <code>block="-1"</code> for one addendum; <code>read(ids=[...], text=true)</code> returns readable text for orientation.</li>
+      <li><code>diff(since="today")</code> shows every change made today, with table edits reported cell by cell.</li>
+    </ul>
 
-      <h2 id="oauth">Remote clients and OAuth</h2>
-      <p>Hosted Claude surfaces have no field for a bearer token — their connector UI offers OAuth or nothing. So BrainLLM is its own OAuth 2.1 authorization server, serving <strong>both</strong> registration mechanisms: Client ID Metadata Documents (what Claude selects) and RFC 7591 dynamic registration at <code>/register</code> (what opencode and other MCP TS SDK clients require).</p>
-      <p>Set <code>BRAINLLM_OWNER_PASSWORD</code> to turn it on. Leave it unset and the OAuth surface is disabled entirely — an authorization server that authorises whoever finds the URL is worse than none.</p>
+    <h2 id="transports">Transports</h2>
+    <div class="table-wrap"><table><tr><th>Mode</th><th>When</th><th>Use for</th></tr>
+      <tr><td>stdio</td><td><code>PORT</code> unset</td><td>Claude Desktop and Claude Code, which start BrainLLM themselves</td></tr>
+      <tr><td>HTTP</td><td><code>PORT</code> set</td><td>Docker, Railway or any container host. Streamable HTTP at <code>/mcp</code>, legacy SSE at <code>/sse</code>, and <code>/health</code>, all behind the same authentication</td></tr>
+    </table></div>
+    <p>On a container host, mount a volume and set <code>BRAINLLM_CONFIG</code> to a file inside it, or discovery reruns on every cold start.</p>
 
-      <h2 id="trouble">Troubleshooting</h2>
-      <table>
-        <tr><th>Symptom</th><th>Fix</th></tr>
-        <tr><td>Tools time out</td><td>The backend is unreachable. Check the instance <code>TRILIUM_BASE_URL</code> names. Every call is bounded at 30s, so a hang fails the tool call rather than the session</td></tr>
-        <tr><td><code>start()</code> → <code>uninitialized</code></td><td>Run <code>bootstrap()</code></td></tr>
-        <tr><td>claude.ai says "couldn't reach the MCP server"</td><td>OAuth discovery failed — almost never a network problem. Check <code>BRAINLLM_OWNER_PASSWORD</code> is set and that the resource URL matches what you typed, trailing slash included</td></tr>
-        <tr><td>Every call 401s after an hour</td><td>Token refresh failed because the signing secret changed. <code>BRAINLLM_CONFIG</code> must point at a persistent volume</td></tr>
-        <tr><td><code>ENOENT</code> on a hosted start</td><td><code>BRAINLLM_CONFIG</code> is a directory, not a file path</td></tr>
-        <tr><td><code>revise(find=)</code> returns <code>replaced: 0</code></td><td>Read the hint — it names the cause. Usually an entity-escaped search string: bodies accept escaped markup, <code>find=</code> does not. For a table row, anchor on a few words with <code>within="tr"</code> instead of copying the row</td></tr>
-      </table>
-      <p style="margin-top:28px">Full reference lives in the <a href="https://github.com/miisodev/BrainLLM#readme" style="color:var(--accent)">README</a>, and the operational guide in <code>skills/brainllm/SKILL.md</code>.</p>
+    <h2 id="oauth">OAuth</h2>
+    <p>claude.ai and the Claude apps connect with OAuth only; they have no field for a bearer token. BrainLLM is its own OAuth 2.1 authorization server, with PKCE, Client ID Metadata Documents and dynamic registration at <code>/register</code>. Set <code>BRAINLLM_OWNER_PASSWORD</code> to turn it on; unset, the OAuth surface does not exist. The consent screen names the requesting client and the address it returns to, and warns when that address is your own computer. Refresh tokens rotate on use and are stored only as hashes.</p>
 
-    </div>
-  </div>
-</section>
+    <h2 id="health">Health and backups</h2>
+    <p><code>close()</code> backs up into one of seven weekday slots. <code>backup(name)</code> keeps a named milestone, which stays on Trilium's volume until deleted there. <code>health()</code> reports Trilium's version, an estimate of the database's size, the heaviest notes and their revision counts, and the named backups taken through BrainLLM, and flags growth before the disk fills.</p>
 
+    <h2 id="trouble">Troubleshooting</h2>
+    <div class="table-wrap"><table><tr><th>Symptom</th><th>Fix</th></tr><tr><td>Tools time out</td><td>Trilium is unreachable. Check <code>TRILIUM_BASE_URL</code>. Every call is bounded at 30 seconds, so a hang fails one call rather than the session</td></tr><tr><td><code>start()</code> returns <code>uninitialized</code></td><td>Run <code>bootstrap()</code> once</td></tr><tr><td>claude.ai says it couldn't reach the server</td><td>OAuth discovery failed, which is almost never the network. Check <code>BRAINLLM_OWNER_PASSWORD</code> is set and that the URL you entered matches the server's, trailing slash included</td></tr><tr><td>Every call fails after an hour</td><td>Token refresh failed because the signing secret changed. Point <code>BRAINLLM_CONFIG</code> at a persistent volume</td></tr><tr><td><code>ENOENT</code> on a hosted start</td><td><code>BRAINLLM_CONFIG</code> names a directory; it must be a file path</td></tr><tr><td><code>revise(find=)</code> replaced nothing</td><td>Read the hint: it names the cause and shows the stored text nearby. For a table row, anchor on a few words with <code>within="tr"</code></td></tr><tr><td>A result ends with a note that it was cut</td><td>It passed about 140,000 characters. Narrow the read with <code>section=</code>, <code>block=</code>, <code>limit=</code> or fewer <code>ids=</code></td></tr></table></div>
+    <p>Still stuck? See <a href="connect.html#support">Support</a>.</p>
+  </article>
+</div>
 </main>
-
 <footer>
-  <div class="wrap foot">
-    <div>
-      <a class="brand" href="index.html">
-        <span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>
-        <span class="brand-name">BrainLLM</span>
-      </a>
-      <p>An MCP server that turns TriliumNext into a persistent second brain.</p>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <a class="brand" href="index.html"><svg width="22" height="22" viewBox="110 110 292 292" aria-hidden="true"><circle cx="164" cy="164" r="38" fill="#f59e0b"/><circle cx="256" cy="164" r="38" fill="#3f3f46"/><circle cx="348" cy="164" r="38" fill="#f59e0b"/><circle cx="164" cy="256" r="38" fill="#f59e0b"/><circle cx="256" cy="256" r="38" fill="#f59e0b"/><circle cx="348" cy="256" r="38" fill="#3f3f46"/><circle cx="164" cy="348" r="38" fill="#3f3f46"/><circle cx="256" cy="348" r="38" fill="#f59e0b"/><circle cx="348" cy="348" r="38" fill="#f59e0b"/></svg><span class="brand-name">BrainLLM</span></a>
+        <p>Self-hosted memory for LLMs in TriliumNext, structured by the server and editable by you. Open source under the MIT licence, published by miisodev.</p>
+      </div>
+      <div class="foot-links">
+        <div><strong>Product</strong>
+          <a href="how-it-works.html">How it works</a>
+          <a href="use-cases.html">Use cases</a>
+          <a href="connect.html">Connect to Claude</a>
+          <a href="docs.html">Docs</a>
+          <a href="pricing.html">Pricing</a>
+        </div>
+        <div><strong>Project</strong>
+          <a href="https://github.com/miisodev/BrainLLM">GitHub</a>
+          <a href="https://github.com/miisodev/BrainLLM/releases">Releases</a>
+          <a href="https://www.npmjs.com/package/brainllm">npm</a>
+          <a href="https://github.com/sponsors/miisodev">Sponsor</a>
+        </div>
+        <div><strong>Help</strong>
+          <a href="connect.html#support">Support</a>
+          <a href="https://github.com/miisodev/BrainLLM/issues">Issues</a>
+          <a href="https://github.com/miisodev/BrainLLM/security/policy">Security</a>
+          <a href="privacy.html">Privacy</a>
+        </div>
+      </div>
     </div>
-    <div class="foot-links">
-      <div><strong>Product</strong><a href="how-it-works.html">How it works</a><a href="use-cases.html">Use cases</a><a href="pricing.html">Pricing</a><a href="docs.html">Docs</a></div>
-      <div><strong>Project</strong><a href="https://github.com/miisodev/BrainLLM">GitHub</a><a href="https://github.com/miisodev/BrainLLM/releases">Releases</a><a href="https://github.com/sponsors/miisodev">Sponsor</a></div>
+    <div class="legal">
+      <span>Built on <a href="https://github.com/TriliumNext/Trilium">TriliumNext</a> and the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>.</span>
+      <span>MIT licence · <a href="privacy.html">Privacy</a></span>
     </div>
   </div>
 </footer>
-
+<script>
+  // The one script on the site: the narrow-screen menu.
+  (function () {
+    var nav = document.getElementById("nav");
+    var btn = nav && nav.querySelector(".menu-toggle");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      var open = nav.classList.toggle("open");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  })();
+</script>
 </body>
 </html>

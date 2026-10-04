@@ -30,13 +30,13 @@ DURING   remember(...)                   the moment something is worth keeping
          resolve / withdraw / recover    thread and note lifecycle
          connect(...)                    wire a real relation when you see one
          read: <surface>, domain, recall, read(ids), outline, inspect, assembly, brain
-         verify: consistency(...), claim(...), diff(since="today")
+         verify: consistency(...), claim(...), diff(since="today"), health()
 END      session() → [update singletons] → addendum() → maintain() → remarks() → diary() → close()
 ```
 
 `start()` returns the date, **preferences and protocols in full**, the other singletons as section headings (pull one with `master(which)`/`llm(which)`, `section=` for one section; `depth="full"` inlines all), today's diary and session ids, active and dormant threads, the previous session and notes changed since. `newDay: true` on the first session of a day → call `day()` (previous session, its log, notes touched since). `day(recap=true)` returns everything written today, in order, across sessions, diary and thread entries.
 
-**Close protocol.** `session()` returns singleton stubs, `pending=` (what each remaining step has to do), `audit=` (do the singletons agree, and do the LLM ones still serve the master ones) and `next[]`. Update master singletons with what you learned about the user and LLM singletons with what you learned about yourself, fold any addenda (`addendum()`), `maintain()`, `remarks()` for diary cues, `diary()` your closing record, then `close(summary, identity)`. `close()` refuses until those steps ran and `session → remarks → diary` held; the gate is durable across restarts. `force=true` bypasses a step with nothing to do (reported). `continuing=true` is a second close on the same day. Scoped or autonomous runs pass `session(scope="agent")`.
+**Close protocol.** `session()` returns singleton stubs, `changedToday` (the maintained notes this day's writes touched: check every figure you changed agrees everywhere it is recorded, with `diff(since="today")` and `consistency()`), `pending=` (what each remaining step has to do), `audit=` (do the singletons agree, and do the LLM ones still serve the master ones) and `next[]`. Update master singletons with what you learned about the user and LLM singletons with what you learned about yourself, fold any addenda (`addendum()`), `maintain()`, `remarks()` for diary cues, `diary()` your closing record, then `close(summary, identity)`. `close()` refuses until those steps ran and `session → remarks → diary` held; the gate is durable across restarts. `force=true` bypasses a step with nothing to do (reported). `continuing=true` is a second close on the same day. Scoped or autonomous runs pass `session(scope="agent")`.
 
 **Write during the session, not at the end** — a fact written mid-conversation survives a crash.
 
@@ -89,13 +89,14 @@ worth keeping?
 | Need | Tool |
 |---|---|
 | a singleton | `master(which)` / `llm(which)` — `section=` for one section |
-| a thread or session | `memory(id)` — dated index (newest days, up to 30 and ~24k characters; `limit=` for more) or collection entries; `date=` for one day; `index=true` for ids, dates and block markers only |
+| a thread or session | `memory(id)` — dated index (newest days, up to 30 and ~24k characters; `limit=` for more) or collection entries; `date=` for one day; `index=true` for ids, dates and block markers only; `block="14:05"` (or `"-1"`, the newest) for one addendum of a session or day entry — `llm("diary", id, block=)` likewise |
 | a knowledge note | `knowledge(id)` — `section=` for one section |
 | a day's change log | `insights(date?)` |
 | skim a surface | `<surface>_recall` |
 | everything about an area | `domain(name)` — the reliable path; reach here first |
 | search | `recall(query, domain=…)` — scope it; `regex=` for structure; fuzzy hits are leads |
-| several bodies at once | `read(ids=[…])` (≤ 10) |
+| several bodies at once | `read(ids=[…])` (≤ 10). Bodies stop at ~80k characters; the rest come back in `deferred[]` for a second call. `text=true` returns readable plain text for orienting (not for building a `find=` anchor) |
+| storage and growth | `health()` — Trilium version, estimated database size, heaviest notes and their revisions, named backups |
 | what the brain holds | `assembly(area?)` — titles by surface with purposes |
 | inventory / locate by id | `brain()` — read `parent`, not position |
 | a note's heading tree | `outline(id)` — before any `section=` edit you're unsure of |
@@ -146,15 +147,16 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 | `section=` + `mode="before"/"after"` | insert a sibling block around the whole section |
 | `section=` + `mode="prepend"` | insert at the top of the section's body |
 | `section=` + `mode="remove"` | delete the section |
-| `find="<exact stored text>"` | replace every occurrence (`nth=` for one) |
+| `find="<text>"` | replace every occurrence (`nth=` for one) — exact first, then through re-serialized tags, then ignoring inline formatting (`matchMode` says which) |
 | `edits=[{find, body}]` | several surgeries in one read and one write |
 | `find="<short anchor>"` + `within="tr"` | act on the element containing the anchor: replace it (default), `mode="before"/"after"` to insert a row beside it, `mode="remove"` to delete it (`li`, `p`, `td` … too) |
+| `domain="<name>"` + `find=`/`edits=` (no noteId) | the same find/replace across every maintained note in a domain; a dry run listing each match unless `dryRun=false`. Records are never touched. `dryRun` anywhere else is refused |
 
 - **Tables are edited by row.** Anchor on a few words unique to the row and pass `within="tr"`; never copy a whole stored row into `find=`. An anchor in several rows is refused with previews; `nth=` picks one.
 - A replacement equal to its match writes nothing and reports `unchanged`.
 - A revision is taken before every content write; `diff(noteId)` shows what the last write changed, and `diff(since="today")` reviews every note you changed today in one call — run it before closing.
 - **Check the receipt.** `matched: false` means a new section was written — `available[]` lists real headings and `didYouMean` catches typos; `strict=true` refuses instead. `headingCount > 1` means only the first match was touched. `replacedSubsections[]` names nested headings a section replace took with it.
-- **`find=` matches stored HTML, not rendered text.** Pass tags literally; `outline()` gives the `raw` form of headings with inline markup. On a miss the hint names the cause and shows the stored text nearby.
+- **`find=` prefers stored HTML.** Plain text also matches through inline formatting (`<strong>`, `<code>`, `<em>`, entities), so a short anchor rarely needs its markup; a span that opens or closes formatting is widened to keep it balanced. Block tags still match literally; `outline()` gives the `raw` form of headings. On a miss the hint names the cause and shows the stored text nearby.
 - A section replace swaps everything under the heading — use `find=` for anything smaller.
 - **Oversized note (past the read ceiling)?** It usually holds two subjects: `split(noteId, sections=[…], into="<title>")` moves whole sections to a new sibling and leaves a pointer.
 - Concurrent writers are serialised server-side; reads stay parallel.
@@ -191,7 +193,7 @@ Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=tr
 |---|---|
 | stale | revise, resolve, or `ack=[id]` if correct as it stands |
 | orphan / sink | `connect()` |
-| dated prose | a timeless note carrying dates — move state to Current State, history to a thread entry |
+| dated prose | a timeless note carrying dates — move state to Current State, history to a thread entry. A register (a backlog, a defects list) whose rows carry evidence dates takes `label(id, "register", value="")`, which exempts its tables but not its prose |
 | duplicate heading / unbalanced tags / incomplete | fix with `revise` |
 | oversized / section-edit-risk / size trajectory | `section=` reads, `split()` |
 | dated / long title | retitle, fold into the note it should have updated, or split |
@@ -208,7 +210,7 @@ Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=tr
 
 ## Other tools
 
-`attach`/`detach` — raw artifacts on a note. `backup(name)` — milestone snapshot (close already backs up into a rolling weekday slot; every named backup is a full database copy kept on Trilium's volume, so name them sparingly). `bootstrap()` — create or refresh the structure. `template(kind)` — the canonical skeleton. **Full mode** (`BRAINLLM_MODE=full`) adds raw ETAPI tools with none of the server's guarantees. Read `references/fullmode.md` before any raw work.
+`attach`/`detach` — raw artifacts on a note. `backup(name)` — milestone snapshot (close already backs up into a rolling weekday slot; every named backup is a full database copy kept on Trilium's volume, so name them sparingly; `health()` lists the named ones). `health()` — storage health: estimated database size, revision-heavy notes, named backups, with flags on growth. `bootstrap()` — create or refresh the structure. `template(kind)` — the canonical skeleton. **Full mode** (`BRAINLLM_MODE=full`) adds raw ETAPI tools with none of the server's guarantees. Read `references/fullmode.md` before any raw work.
 
 ## Quick-fix
 

@@ -36,6 +36,7 @@
 // failure and produces no auth prompt at all.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { BRAND, markSvg } from "./brand.js";
 import { createHmac, randomBytes, createHash, timingSafeEqual } from "crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { configFilePath } from "./config.js";
@@ -705,9 +706,7 @@ const PAGE_CSS = `
     border:1px solid var(--border); border-radius:16px; padding:32px;
   }
   .brand { display:flex; align-items:center; gap:10px; margin-bottom:26px; }
-  .brand-mark { display:grid; grid-template-columns:repeat(3,4px); gap:3px; }
-  .brand-mark i { width:4px; height:4px; border-radius:50%; background:var(--accent); display:block; }
-  .brand-mark i.off { background:#3f3f46; }
+  .brand-mark { display:block; flex:none; }
   .brand-name { font-family:var(--font-display); font-size:19px; font-weight:700; letter-spacing:-.475px; }
   h1 { font-family:var(--font-display); font-size:24px; font-weight:700; letter-spacing:-.02em; line-height:1.2; margin:0 0 8px; }
   p { margin:0 0 20px; color:var(--text-muted); font-size:14.5px; }
@@ -739,6 +738,12 @@ const PAGE_CSS = `
   .approve:hover { transform:translateY(-1px); box-shadow:0 0 56px rgba(245,158,11,.42); }
   .deny { background:transparent; color:var(--text); border-color:var(--border-strong); font-weight:500; }
   .deny:hover { background:rgba(255,255,255,.04); }
+  .redirect { margin-top:-8px; }
+  .warn {
+    background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); color:#fcd34d;
+    padding:11px 14px; border-radius:9px; font-size:14px; margin-bottom:18px;
+  }
+  a { color:var(--accent); }
   .err {
     background:rgba(239,68,68,.1); border:1px solid rgba(239,68,68,.3); color:#fca5a5;
     padding:11px 14px; border-radius:9px; font-size:14px; margin-bottom:18px;
@@ -750,8 +755,7 @@ const PAGE_CSS = `
 
 /** The 3×3 node grid the site uses as its mark — six lit, three dark. Pure CSS,
  *  so it costs no request and cannot go stale against a rasterised copy. */
-const BRAND_MARK =
-  `<span class="brand-mark"><i></i><i class="off"></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i></i><i></i></span>`;
+const BRAND_MARK = markSvg(22);
 
 const shell = (title: string, body: string, head = ""): string => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -768,16 +772,16 @@ const shell = (title: string, body: string, head = ""): string => `<!doctype htm
  *  screen's no-external-request policy, for the same reasons. */
 export function landingPage(base: string, oauthOn: boolean, sseOn: boolean): string {
   return shell(
-    "BrainLLM — a persistent memory server",
+    `${BRAND.name} - ${BRAND.tagline}`,
     `<div class="card">
-  <div class="brand">${BRAND_MARK}<span class="brand-name">BrainLLM</span></div>
+  <div class="brand">${BRAND_MARK}<span class="brand-name">${BRAND.name}</span></div>
   <h1>A brain is listening</h1>
-  <p>This is a <strong>BrainLLM</strong> MCP memory server — a persistent, graph-structured second brain served over the Model Context Protocol.</p>
-  <p>Point an MCP client at <span class="host">${esc(base)}/mcp</span>${sseOn ? ` — or, for clients that only speak the legacy SSE transport, <span class="host">${esc(base)}/sse</span>` : ""}.</p>
+  <p>This is a <strong>${BRAND.name}</strong> server: ${esc(BRAND.description.charAt(0).toLowerCase() + BRAND.description.slice(1))}</p>
+  <p>Point an MCP client at <span class="host">${esc(base)}/mcp</span>${sseOn ? `, or, for clients that only speak the legacy SSE transport, <span class="host">${esc(base)}/sse</span>` : ""}.</p>
   <p>${oauthOn
     ? `Authentication: OAuth 2.1 with owner consent, or a static bearer token (<span class="host">MCP_AUTH_TOKEN</span>). Both work against the same brain.`
     : `Authentication: a static bearer token (<span class="host">MCP_AUTH_TOKEN</span>).`}</p>
-  <p class="foot">Health: <span class="host">/health</span> · Everything else is MCP.</p>
+  <p class="foot">Health: <span class="host">/health</span> · Everything else is MCP · About: <span class="host">${esc(BRAND.website.replace(/^https:\/\//, "").replace(/\/$/, ""))}</span></p>
 </div>`
   );
 }
@@ -799,7 +803,7 @@ function consentResponse(
   error?: string,
   status = 200
 ): Response {
-  return new Response(consentPage({ transaction }, clientHost, error, verifiedHost), {
+  return new Response(consentPage({ transaction }, clientHost, error, verifiedHost, redirectUri), {
     status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
@@ -809,7 +813,24 @@ function consentResponse(
   });
 }
 
-export function consentPage(params: Record<string, string>, clientHost: string, error?: string, verifiedHost = true): string {
+/** Where an approved login is sent, as the consent screen shows it: the host,
+ *  and whether that host is this machine. A loopback redirect is how desktop
+ *  clients (Claude Code, IDE plugins) receive the code, and it is also how a
+ *  local process could ask for access, so the screen says which it is. */
+export function redirectTarget(redirectUri: string | undefined): { host: string; loopback: boolean } | null {
+  if (!redirectUri) return null;
+  try {
+    const u = new URL(redirectUri);
+    const host = u.hostname.replace(/^\[|\]$/g, "");
+    const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+    return { host: u.port ? `${u.hostname}:${u.port}` : u.hostname, loopback };
+  } catch {
+    return null;
+  }
+}
+
+export function consentPage(params: Record<string, string>, clientHost: string, error?: string, verifiedHost = true, redirectUri?: string): string {
+  const target = redirectTarget(redirectUri);
   const hidden = Object.entries(params)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
     .join("");
@@ -824,9 +845,11 @@ export function consentPage(params: Record<string, string>, clientHost: string, 
   return shell(
     "Authorize access to your brain",
     `<form class="card" method="POST" action="/authorize">
-  <div class="brand">${BRAND_MARK}<span class="brand-name">BrainLLM</span></div>
+  <div class="brand">${BRAND_MARK}<span class="brand-name">${BRAND.name}</span></div>
   <h1>Authorize access</h1>
   <p><span class="host">${esc(clientHost)}</span> is requesting access to your brain.</p>
+  ${target ? `<p class="redirect">Approving sends you back to <span class="host">${esc(target.host)}</span>.</p>` : ""}
+  ${target?.loopback ? `<div class="warn">That address is this computer. Approve only if you just started this sign-in from an app on this machine, such as Claude Code.</div>` : ""}
   ${error ? `<div class="err">${esc(error)}</div>` : ""}
   <div class="scope"><span class="dot"></span><span>Read and write everything in your brain — memories, threads, knowledge and your diary.</span></div>
   <label for="pw">Owner password</label>
@@ -864,7 +887,7 @@ function handoff(uri: string, params: Record<string, string>, heading: string, m
     shell(
       heading,
       `<div class="card">
-  <div class="brand">${BRAND_MARK}<span class="brand-name">BrainLLM</span></div>
+  <div class="brand">${BRAND_MARK}<span class="brand-name">${BRAND.name}</span></div>
   <h1>${esc(heading)}</h1>
   <p>${esc(message)}</p>
   <p class="foot"><a href="${href}">Continue</a> if this page does not move on by itself.</p>
@@ -894,7 +917,7 @@ const htmlError = (message: string, status = 400): Response =>
     shell(
       "Authorization error",
       `<div class="card">
-  <div class="brand">${BRAND_MARK}<span class="brand-name">BrainLLM</span></div>
+  <div class="brand">${BRAND_MARK}<span class="brand-name">${BRAND.name}</span></div>
   <h1>Authorization error</h1>
   <div class="err">${esc(message)}</div>
   <p class="foot">Nothing was authorized. Close this window and start again from your client.</p>
@@ -1042,6 +1065,14 @@ const tokenError = (error: string, description: string, status = 400): Response 
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
+/** Refresh tokens are stored by their SHA-256, never in the clear: the store
+ *  is a file on the deployment's volume, and anyone who can read it should not
+ *  thereby hold a working credential. Tokens issued before this were keyed by
+ *  value; refreshKeyOf() still finds those once, and rotation retires them. */
+export function refreshKey(token: string): string {
+  return "sha256:" + createHash("sha256").update(token).digest("hex");
+}
+
 function issueTokens(base: string, clientId: string, resource: string, scope: string) {
   const store = loadStore();
   const now = Math.floor(Date.now() / 1000);
@@ -1050,7 +1081,7 @@ function issueTokens(base: string, clientId: string, resource: string, scope: st
     signingSecret()
   );
   const refreshToken = randomBytes(32).toString("base64url");
-  store.refresh[refreshToken] = { clientId, resource, scope, expiresAt: Date.now() + REFRESH_TOKEN_TTL_MS };
+  store.refresh[refreshKey(refreshToken)] = { clientId, resource, scope, expiresAt: Date.now() + REFRESH_TOKEN_TTL_MS };
   saveStore();
   return {
     access_token: accessToken,
@@ -1101,11 +1132,14 @@ export async function handleToken(req: Request, base: string): Promise<Response>
 
   if (grantType === "refresh_token") {
     const supplied = get("refresh_token");
-    const record = store.refresh[supplied];
-    if (!record) return tokenError("invalid_grant", "Unknown or already-rotated refresh token.");
+    // A token issued before hashing is still keyed by its value: accept it
+    // once, and rotation below replaces it with a hashed successor.
+    const key = supplied && store.refresh[refreshKey(supplied)] ? refreshKey(supplied) : supplied;
+    const record = key ? store.refresh[key] : undefined;
+    if (!record || !key) return tokenError("invalid_grant", "Unknown or already-rotated refresh token.");
     // OAuth 2.1 requires rotation for public clients, and CIMD registers Claude
     // as one: the old token dies in the same response that issues its successor.
-    delete store.refresh[supplied];
+    delete store.refresh[key];
     saveStore();
     if (record.expiresAt < Date.now()) return tokenError("invalid_grant", "Refresh token expired.");
 

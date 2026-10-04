@@ -158,22 +158,23 @@ jobs:
 
       # npm validates every new version (an automated review, shown as
       # "Validating" on the package page) before serving it. v12.7.0 took about
-      # half an hour, so the wait covers 45 minutes. The registry proves
+      # half an hour; the wait covers two hours so a slow review still ends
+      # green on the first run instead of needing a rerun. The registry proves
       # ownership by reading the published package, so it must not start before
       # npm serves the version — v12.3.0 lost a release run to that race.
       - name: Wait for npm review and propagation
-        timeout-minutes: 50
+        timeout-minutes: 125
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          for i in $(seq 1 90); do
+          for i in $(seq 1 240); do
             if [ "$(npm view "brainllm@$TAG" version 2>/dev/null || true)" = "$TAG" ]; then
               echo "npm serves $TAG (attempt $i)"
               exit 0
             fi
-            echo "npm has not served $TAG yet (attempt $i/90)"
+            echo "npm has not served $TAG yet (attempt $i/240)"
             sleep 30
           done
-          echo "::error::npm never served $TAG after 45 minutes; check the package page for its review status, then rerun the failed job."
+          echo "::error::npm never served $TAG after two hours; check the package page for its review status, then rerun the failed job."
           exit 1
 
       - name: Install mcp-publisher
@@ -202,14 +203,14 @@ jobs:
             echo "MCP Registry already serves v${TAG}; skipping immutable republish"
             exit 0
           fi
-          for i in $(seq 1 4); do
+          for i in $(seq 1 8); do
             if ./mcp-publisher publish; then
               exit 0
             fi
-            echo "::warning::MCP Registry publish attempt $i/4 failed; retrying after propagation delay"
-            sleep 15
+            echo "::warning::MCP Registry publish attempt $i/8 failed; retrying after propagation delay"
+            sleep 45
           done
-          echo "::error::MCP Registry publish failed after 4 attempts; inspect the registry directly before re-running."
+          echo "::error::MCP Registry publish failed after 8 attempts; inspect the registry directly before re-running."
           exit 1
 
       # Verify from outside — with retries, because both registries are

@@ -1,15 +1,15 @@
 {
   "name": "brainllm",
-  "version": "12.7.1",
+  "version": "12.8.0",
   "mcpName": "io.github.miisodev/brainllm",
-  "description": "MCP server that turns TriliumNext Notes into a persistent, graph-structured second brain for Claude and other LLM clients.",
+  "description": "Self-hosted memory for LLMs in TriliumNext, structured by the server and editable by you.",
   "author": "Kevin Miiso Novo <miisodev@gmail.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/miisodev/BrainLLM.git"
   },
-  "homepage": "https://github.com/miisodev/BrainLLM#readme",
+  "homepage": "https://miisodev.github.io/BrainLLM/",
   "bugs": {
     "url": "https://github.com/miisodev/BrainLLM/issues"
   },
@@ -22,7 +22,7 @@
     "model-context-protocol",
     "trilium",
     "trilium-next",
-    "second-brain",
+    "memory",
     "knowledge-graph",
     "llm",
     "claude",
@@ -54,6 +54,7 @@
     "test": "bun run src/test.ts",
     "test:unit": "bun test",
     "test:http": "bun run scripts/http-smoke.ts",
+    "test:live": "bun run scripts/live-smoke.ts",
     "init": "bun run src/init.ts",
     "icons": "bun run scripts/icons.ts",
     "validate:release": "bun run scripts/validate-release.ts",

@@ -38,6 +38,12 @@ export interface BrainLLMConfig {
    *  until the first deep run writes it, and loadConfig's spread passes it
    *  through older files unchanged. */
   sizes?: Record<string, { chars: number; date: string }>;
+  /** Named backups this server has taken (name → date). Trilium's backup
+   *  folder is not visible through ETAPI, and every named backup is a full
+   *  database copy that stays until deleted on the server, so health() reads
+   *  this ledger to say how many are accumulating. Rolling slots are not
+   *  listed: there are always seven, overwritten weekly. */
+  backups?: Record<string, string>;
 }
 
 export const EMPTY_BRAINLLM: BrainLLMConfig = {
