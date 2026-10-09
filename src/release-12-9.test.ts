@@ -107,6 +107,16 @@ describe("tableShapeIssues", () => {
   test("a well-formed table is clean, colspan counted", () => {
     expect(tableShapeIssues(`${head}<tr><td>a</td><td>b</td><td>c</td></tr><tr><td colspan="3">wide</td></tr></tbody></table>`)).toEqual([]);
   });
+  test("rowspan covers the cells of the rows below it", () => {
+    const kinds =
+      "<table><thead><tr><th>Area</th><th>Kinds</th><th>Behaviour</th></tr></thead><tbody>" +
+      '<tr><td>Master</td><td>biography</td><td rowspan="2">Singletons</td></tr>' +
+      "<tr><td>LLM</td><td>diary</td></tr>" +
+      "<tr><td>Memory</td><td>session</td><td>Records</td></tr></tbody></table>";
+    expect(tableShapeIssues(kinds)).toEqual([]);
+    // Once the span ends, a short row is short again.
+    expect(tableShapeIssues(kinds.replace("<td>Records</td>", ""))).toEqual(['row "Memory" has 2 cell(s), its header has 3']);
+  });
   test("structureReport carries the finding", () => {
     expect(structureReport(`${head}<tr><td>a</td></tr></tbody></table>`).tableShape.length).toBe(1);
   });

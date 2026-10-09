@@ -1845,27 +1845,40 @@ export function unbalancedTags(html: string): string[] {
  *  Each finding names the row by its first cell's text. */
 export function tableShapeIssues(html: string): string[] {
   const issues: string[] = [];
-  const cellSpan = (attrs: string | undefined) => Number(/colspan\s*=\s*"?(\d+)/i.exec(attrs ?? "")?.[1] ?? 1);
+  const spanOf = (attrs: string | undefined, name: string) => Number(new RegExp(`${name}\\s*=\\s*"?(\\d+)`, "i").exec(attrs ?? "")?.[1] ?? 1);
   for (const table of html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)) {
     const rows = [...table[1].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map((r) =>
       [...r[1].matchAll(/<(t[hd])\b([^>]*)>([\s\S]*?)<\/\1>/gi)].map((c) => ({
-        span: cellSpan(c[2]),
+        span: spanOf(c[2], "colspan"),
+        rows: spanOf(c[2], "rowspan"),
         text: decodeEntities(c[3].replace(/<[^>]+>/g, "")).trim(),
       }))
     );
     if (rows.length < 2) continue;
     const width = rows[0].reduce((sum, c) => sum + c.span, 0);
-    for (const cells of rows.slice(1)) {
-      const label = (cells[0]?.text ?? "").slice(0, 60) || "(empty row)";
-      const count = cells.reduce((sum, c) => sum + c.span, 0);
-      if (count !== width) {
-        issues.push(`row "${label}" has ${count} cell(s), its header has ${width}`);
-        continue;
+    // A cell with rowspan=N occupies its columns in the next N-1 rows too, so
+    // those rows legitimately carry fewer cells (a Kinds table whose first
+    // cell spans two areas was flagged on its first real write, 2026-10-09).
+    // Each entry: columns still covered, and for how many more rows.
+    let spanning: Array<{ columns: number; rowsLeft: number }> = [];
+    for (const [i, cells] of rows.entries()) {
+      const inherited = spanning.reduce((sum, s) => sum + s.columns, 0);
+      if (i > 0) {
+        const label = (cells[0]?.text ?? "").slice(0, 60) || "(empty row)";
+        const count = cells.reduce((sum, c) => sum + c.span, 0) + inherited;
+        if (count !== width) {
+          issues.push(`row "${label}" has ${count} cell(s), its header has ${width}`);
+        } else {
+          const piped = cells.find((c) => (c.text.match(/\s\|\s/g)?.length ?? 0) >= Math.max(1, width - 2) && width > 1);
+          if (piped && cells.filter((c) => c.text).length < width) {
+            issues.push(`row "${label}" carries pipe-separated values inside one cell — send each value as its own <td>`);
+          }
+        }
       }
-      const piped = cells.find((c) => (c.text.match(/\s\|\s/g)?.length ?? 0) >= Math.max(1, width - 2) && width > 1);
-      if (piped && cells.filter((c) => c.text).length < width) {
-        issues.push(`row "${label}" carries pipe-separated values inside one cell — send each value as its own <td>`);
-      }
+      spanning = [
+        ...spanning.map((s) => ({ ...s, rowsLeft: s.rowsLeft - 1 })).filter((s) => s.rowsLeft > 0),
+        ...cells.filter((c) => c.rows > 1).map((c) => ({ columns: c.span, rowsLeft: c.rows - 1 })),
+      ];
     }
   }
   return issues;
