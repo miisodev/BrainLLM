@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderBody, sanitizeHtml, tableShapeIssues, identityProblem, structureReport, visibleTextSpans, closedBlockTag } from "./normalize.js";
+import { renderBody, sanitizeHtml, tableShapeIssues, identityProblem, structureReport, visibleTextSpans, closedBlockTag, triliumSearchForm } from "./normalize.js";
 import { editWithin } from "./elements.js";
 import { applyFindEdit } from "./tools.js";
 import { sealText, sealRecord, recordIntact, dayDigest } from "./seal.js";
@@ -30,6 +30,17 @@ describe("find and within", () => {
   test("closedBlockTag names the element a find closes", () => {
     expect(closedBlockTag("Phase 2</strong></li>")).toBe("li");
     expect(closedBlockTag("plain text")).toBeNull();
+  });
+});
+
+describe("triliumSearchForm", () => {
+  test("drops the middle dot and accents the way Trilium's content normaliser does", () => {
+    expect(triliumSearchForm("Thalia · 2026")).toBe("Thalia  2026");
+    expect(triliumSearchForm("café")).toBe("cafe");
+  });
+  test("keeps the em dash, which is not a diacritic, and ASCII regex syntax", () => {
+    expect(triliumSearchForm("Build — Thalia")).toBe("Build — Thalia");
+    expect(triliumSearchForm("^Run `x` \\d+")).toBe("^Run `x` \\d+");
   });
 });
 

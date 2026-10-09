@@ -757,6 +757,16 @@ export function escapeQueryValue(s: string): string {
  *  escape character unconditionally), so a literal backslash must be DOUBLED
  *  on the way out, not merely preserved. Single quotes are escaped for the
  *  same reason — they would otherwise close the token early. */
+/** A regex in the form Trilium's %= pre-filter can match: Trilium searches
+ *  content normalised with NFD and every \p{Diacritic} character removed
+ *  (utils.removeDiacritic), so a pattern carrying "·" or an accent never
+ *  matched. Non-ASCII diacritics are removed the same way; ASCII ones (^, `)
+ *  stay, being regex syntax. Only for the backend candidate query — results
+ *  are always verified against the caller's original pattern. */
+export function triliumSearchForm(pattern: string): string {
+  return pattern.normalize("NFD").replace(/\p{Diacritic}/gu, (c) => (c.charCodeAt(0) < 128 ? c : ""));
+}
+
 export function escapeQueryRegex(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }

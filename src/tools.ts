@@ -67,6 +67,7 @@ import {
   tableShapeIssues,
   closedBlockTag,
   visibleTextSpans,
+  triliumSearchForm,
   leadingIdentification,
   leadingIdentityText,
   identityProblem,
@@ -1783,12 +1784,15 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         // and returned nothing — a silent empty sweep on the tool whose whole
         // job is proving a claim has not leaked. Trilium's lexer also consumes
         // one level of escaping, so backslashes are doubled on the way out.
-        // Trilium's %= pre-filter loses notes on non-ASCII characters: a
-        // pattern carrying "·" returned nothing although the stored bodies
-        // hold that exact character (measured 2026-10-09, "Thalia · 2026").
-        // The backend gets each non-ASCII character widened to ".", which
-        // only ever admits more candidates; the real pattern still decides.
-        const backendPattern = regex.replace(/[^\x00-\x7F]/g, ".");
+        // Trilium matches %= against content it has normalised with
+        // NFD + removal of every \p{Diacritic} character, and U+00B7 "·" is
+        // one: "Thalia · 2026" missed every note although the stored bodies
+        // hold that exact text, while "Build — Thalia" (the em dash is not a
+        // diacritic) matched (measured 2026-10-09; Trilium's
+        // utils.removeDiacritic). The backend therefore gets the pattern
+        // normalised the same way. ASCII diacritics (^ and `) are kept, being
+        // regex syntax. The real pattern still decides every result.
+        const backendPattern = triliumSearchForm(regex);
         const widened = backendPattern !== regex;
         const candidates = (await run(`note.content %= '${escapeQueryRegex(backendPattern)}'`)).filter(filterNote);
         const confirmed: Array<{ note: Note; evidence: string }> = [];
@@ -1832,7 +1836,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         const notes = [
           rejected ? `${rejected} backend candidate(s) did not actually match the pattern and were dropped — results are verified against the real regex, not just the search index.` : null,
           tagSpanning ? `${tagSpanning} match(es) were found only after stripping markup — the phrase is split by an inline tag there.` : null,
-          widened ? "Non-ASCII characters (·, —, quotes) were widened to \".\" for Trilium's pre-filter, which drops them; every result was then verified against your exact pattern." : null,
+          widened ? "Diacritic characters (·, accents) were normalised away for Trilium's pre-filter, which strips them from note text before matching; every result was then verified against your exact pattern." : null,
           recordHits ? `${recordHits} result(s) are records (sessions, diary, dated thread entries) — included by default; kinds= narrows to maintained notes.` : null,
           candidates.length >= 30 && confirmed.length < max ? "The backend returned its 30-candidate cap, so further matches may exist — narrow with domain= or kinds=, or use consistency() for an exhaustive scan." : null,
           results.length === 0 ? "No bodies matched that pattern, searched both as stored HTML and tag-stripped. Note that Trilium's %= pre-filter reads a striptags'd copy, so a pattern anchored ON tags may never reach verification — consistency() scans exhaustively if you need certainty." : null,
