@@ -201,6 +201,25 @@ export function looksLikeHtml(body: string): boolean {
   return false;
 }
 
+/** A tag a note can actually hold: the sanitizer's allowlist plus the block
+ *  elements it converts (div → p). Every other element name — <template>,
+ *  <select>, <title>, <form> — is far more often a placeholder in prose than
+ *  markup a model meant, and treating it as markup is how a markdown body lost
+ *  everything after "<template>": the sanitizer's unclosed-tail rule ate the
+ *  rest of the note (2026-10-08, the Build Method note and a diary block). */
+export function isStructuralTag(name: string): boolean {
+  const tag = name.toLowerCase();
+  return SAFE_TAGS.has(tag) || BLOCK_ELEMENTS.has(tag);
+}
+
+/** True when the body carries a tag a note can hold — the test for "this body
+ *  is HTML". A markdown body that only mentions <template> stays markdown, so
+ *  its placeholder is escaped and shown as written. */
+function looksLikeStructuralHtml(body: string): boolean {
+  for (const m of body.matchAll(HTML_TAG)) if (isStructuralTag(m[1])) return true;
+  return false;
+}
+
 // Entity-encoded markup: a body whose tags arrive as "&lt;p&gt;" rather than
 // "<p>". Models escape their own markup defensively, and without this check the
 // body fails looksLikeHtml, takes the markdown path, and is escaped a SECOND
@@ -343,7 +362,7 @@ export function renderMarkup(raw: string): { html: string; convertedRuns: number
   // delimit the inline tags it protects — a caller's own NULs must not collide.
   const body = raw.replace(/\u0000/g, "");
   if (!body.trim()) return { html: "<p></p>", convertedRuns: 0 };
-  if (looksLikeHtml(body)) return mixedToHtml(body);
+  if (looksLikeStructuralHtml(body)) return mixedToHtml(body);
   if (looksLikeEncodedHtml(body)) return { html: decodeEncodedHtml(body), convertedRuns: 0 };
   return { html: markdownToHtml(body), convertedRuns: 0 };
 }
@@ -409,7 +428,7 @@ function mixedToHtml(body: string): { html: string; convertedRuns: number } {
 function markdownToHtml(body: string, inlineHtml = false): string {
   const kept: string[] = [];
   const source = inlineHtml
-    ? body.replace(HTML_TAG, (tag: string, name: string) => (isHtmlElement(name) ? `\u0000${kept.push(tag) - 1}\u0000` : tag))
+    ? body.replace(HTML_TAG, (tag: string, name: string) => (isStructuralTag(name) ? `\u0000${kept.push(tag) - 1}\u0000` : tag))
     : body;
 
   const lines = source.replace(/\r\n/g, "\n").split("\n");
@@ -899,11 +918,22 @@ export function sanitizeHtml(html: string): SanitizeResult {
     /<(script|style|noscript|iframe|form|object|applet|select|textarea|button|template|svg|math|canvas)(\s[^>]*)?>[\s\S]*?<\/\1>/gi,
     () => { n++; return ""; },
   );
+  // Only a code-bearing opener takes its tail with it: what follows an unclosed
+  // <script> or <style> is code. Any other unclosed forbidden opener is almost
+  // always a placeholder in prose ("<template>", "<form>"), and dropping its
+  // tail truncated real notes, so the opener alone is kept as visible text.
+  let dropped = 0;
   s = s.replace(
-    /<(script|style|noscript|iframe|form|object|applet|select|textarea|button|template|svg|math|canvas)(\s[^>]*)?>[\s\S]*$/gi,
-    () => { n++; return ""; },
+    /<(script|style|noscript|iframe)(\s[^>]*)?>[\s\S]*$/gi,
+    (m) => { n++; dropped += m.length; return ""; },
   );
-  if (n) warnings.push(`Stripped ${n} forbidden element block(s) — active/content-bearing tags are not allowed`);
+  if (n) warnings.push(`Stripped ${n} forbidden element block(s) — active/content-bearing tags are not allowed${dropped ? ` (${dropped} characters removed with an unclosed code element)` : ""}`);
+  let opened = 0;
+  s = s.replace(
+    /<(form|object|applet|select|textarea|button|template|svg|math|canvas)(\s[^>]*)?>/gi,
+    (m) => { opened++; return escapeHtml(m, false); },
+  );
+  if (opened) warnings.push(`Kept ${opened} unclosed forbidden tag(s) as text — written as a placeholder, nothing after it was removed`);
 
   // Comments can hide markup from a later parser and are not part of the note
   // format. Remove them before the allowlist pass.
@@ -1066,6 +1096,36 @@ export function spansBlockBoundary(find: string): boolean {
   return /<\/[a-zA-Z][a-zA-Z0-9-]*\s*>\s*<[a-zA-Z]/.test(find);
 }
 
+/** The innermost block element a find string closes, when it carries one —
+ *  "Phase 2</strong></li>" names li. Such an anchor depends on exactly where
+ *  the editor stored the closing tag, and within= with a short text anchor is
+ *  the reliable way to reach the same element. */
+export function closedBlockTag(find: string): string | null {
+  const m = /<\/(tr|td|th|li|p|blockquote|figure|table|ul|ol)\s*>/i.exec(find);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Spans of `source` naming each <tag> element whose VISIBLE text contains
+ *  `needle`'s text — cells joined by spaces, tags and entities ignored, and a
+ *  "|" in the needle read as a cell boundary. Lets within="tr" take a row's
+ *  text as a reader sees it ("Phase 2 | Claude | Open") when no stored-HTML
+ *  anchor matches. Each span is the element's opening tag, which editWithin
+ *  resolves to the element itself. */
+export function visibleTextSpans(source: string, needle: string, tag: string): Array<{ start: number; length: number }> {
+  const norm = (s: string) => decodeEntities(s).replace(/\\(["'])/g, "$1").replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/\s*\|\s*/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const want = norm(needle.replace(/<[^>]+>/g, " "));
+  if (want.length < 2) return [];
+  const out: Array<{ start: number; length: number }> = [];
+  const rx = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi");
+  for (const m of source.matchAll(rx)) {
+    if (norm(m[1].replace(/<[^>]+>/g, " ")).includes(want)) {
+      const open = /^<[^>]*>/.exec(m[0])![0];
+      out.push({ start: m.index! + open.length, length: 0 });
+    }
+  }
+  return out;
+}
+
 // ── Inline-tag-tolerant matching ──────────────────────────────────────────────
 //
 // The commonest find= miss in practice is text that differs from the stored
@@ -1077,8 +1137,15 @@ export function spansBlockBoundary(find: string): boolean {
 
 const INLINE_TAGS = "strong|em|b|i|u|s|del|ins|code|a|span|mark|sub|sup|kbd|small";
 const INLINE_TAG_RX = new RegExp(`<\\/?(?:${INLINE_TAGS})(?:\\s[^<>]*)?\\/?>`, "gi");
+// Quotes match in any spelling: straight or curly, raw or entity-encoded. An
+// anchor carrying a quote missed whenever the stored text used the other form
+// (2026-10-07), and the caller had no way to see which form was stored.
+const DOUBLE_QUOTE = '(?:"|&quot;|&#34;|“|”|&ldquo;|&rdquo;)';
+const SINGLE_QUOTE = "(?:'|&#39;|&apos;|‘|’|&lsquo;|&rsquo;)";
 const ENTITY_FORMS: Record<string, string> = {
-  "&": "&(?:amp;)?", "<": "&lt;", ">": "&gt;", '"': '(?:"|&quot;)', "'": "(?:'|&#39;|&apos;)",
+  "&": "&(?:amp;)?", "<": "&lt;", ">": "&gt;",
+  '"': DOUBLE_QUOTE, "“": DOUBLE_QUOTE, "”": DOUBLE_QUOTE,
+  "'": SINGLE_QUOTE, "‘": SINGLE_QUOTE, "’": SINGLE_QUOTE,
 };
 
 /** Spans of `source` whose text equals `needle`'s text, ignoring inline tags
@@ -1089,7 +1156,8 @@ const ENTITY_FORMS: Record<string, string> = {
 export function inlineTolerantSpans(source: string, needle: string): Array<{ start: number; length: number }> {
   if (/<\/?(?!(?:strong|em|b|i|u|s|del|ins|code|a|span|mark|sub|sup|kbd|small)\b)[a-zA-Z]/.test(needle)) return [];
   // \s covers U+00A0, so a decoded &nbsp; folds into ordinary whitespace below.
-  const text = decodeEntities(needle.replace(INLINE_TAG_RX, "")).trim();
+  // A quote the caller escaped for its own JSON (\") is still just a quote.
+  const text = decodeEntities(needle.replace(INLINE_TAG_RX, "")).replace(/\\(["'])/g, "$1").trim();
   if (text.length < 2) return [];
   const gap = `(?:<\\/?(?:${INLINE_TAGS})(?:\\s[^<>]*)?\\/?>)*`;
   const esc = (c: string) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1186,10 +1254,30 @@ export function bumpLastUpdated(html: string, date: string): { html: string; bum
  *  The write tools for chronological records (diary, session via close, thread
  *  addendums) require either identity= or a body that already leads with this. */
 export function leadingIdentification(html: string): boolean {
+  return leadingIdentityText(html)?.includes("·") ?? false;
+}
+
+/** The text of a body's leading h3, or null when it opens with anything else. */
+export function leadingIdentityText(html: string): string | null {
   const m = /^(?:\s|<p>(?:\s|&nbsp;)*<\/p>)*<h3(?:\s[^>]*)?>([\s\S]*?)<\/h3>/i.exec(html);
-  if (!m) return false;
-  const text = decodeEntities(m[1].replace(/<[^>]+>/g, "")).trim();
-  return text.includes("·");
+  return m ? decodeEntities(m[1].replace(/<[^>]+>/g, "")).trim() : null;
+}
+
+/** Why an identification line is malformed, or null when it is well formed:
+ *  at least three non-empty "·"-separated parts (LLM · environment ·
+ *  agent/mode [· Run N]), one line of at most 160 characters, and not a
+ *  heading or a draft. An overnight block once stored "Addendum — 07:30?
+ *  Actually compute later — R6 · Open items…" as its identity, and every
+ *  reader after it had to guess who wrote the block. */
+export function identityProblem(text: string): string | null {
+  const line = text.trim();
+  if (/[\r\n]/.test(line)) return "it spans several lines";
+  if (line.length > 160) return `it is ${line.length} characters long (160 at most)`;
+  if (/^addendum\b/i.test(line)) return "it is an addendum marker, not an identity";
+  if (/\?/.test(line)) return "it carries a question mark, which reads as a draft";
+  const parts = line.split("·").map((p) => p.trim());
+  if (parts.length < 3 || parts.some((p) => !p)) return `it has ${parts.filter(Boolean).length} "·"-separated part(s); it needs at least three`;
+  return null;
 }
 
 /** Duplicated heading texts (h2–h4, normalized) in an HTML body — the tell of
@@ -1740,6 +1828,39 @@ export function unbalancedTags(html: string): string[] {
   return [...new Set(stack)];
 }
 
+/** Table rows whose shape disagrees with their header: a row with a different
+ *  cell count, or a single cell carrying pipe-separated values. The second is
+ *  how a row written as "a | b | c" inside one <td> looks once stored — it
+ *  renders as one wide cell and nothing said so (2026-10-09, a register row).
+ *  Each finding names the row by its first cell's text. */
+export function tableShapeIssues(html: string): string[] {
+  const issues: string[] = [];
+  const cellSpan = (attrs: string | undefined) => Number(/colspan\s*=\s*"?(\d+)/i.exec(attrs ?? "")?.[1] ?? 1);
+  for (const table of html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)) {
+    const rows = [...table[1].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map((r) =>
+      [...r[1].matchAll(/<(t[hd])\b([^>]*)>([\s\S]*?)<\/\1>/gi)].map((c) => ({
+        span: cellSpan(c[2]),
+        text: decodeEntities(c[3].replace(/<[^>]+>/g, "")).trim(),
+      }))
+    );
+    if (rows.length < 2) continue;
+    const width = rows[0].reduce((sum, c) => sum + c.span, 0);
+    for (const cells of rows.slice(1)) {
+      const label = (cells[0]?.text ?? "").slice(0, 60) || "(empty row)";
+      const count = cells.reduce((sum, c) => sum + c.span, 0);
+      if (count !== width) {
+        issues.push(`row "${label}" has ${count} cell(s), its header has ${width}`);
+        continue;
+      }
+      const piped = cells.find((c) => (c.text.match(/\s\|\s/g)?.length ?? 0) >= Math.max(1, width - 2) && width > 1);
+      if (piped && cells.filter((c) => c.text).length < width) {
+        issues.push(`row "${label}" carries pipe-separated values inside one cell — send each value as its own <td>`);
+      }
+    }
+  }
+  return issues;
+}
+
 /** Body size past which a whole-note read is a liability rather than a
  *  convenience. A 60k-character thread once blew the tool output ceiling
  *  mid-migration, and the size was only discoverable by hitting the wall — a
@@ -1749,6 +1870,8 @@ export const LARGE_NOTE_CHARS = 40_000;
 export interface StructureReport {
   duplicateHeadings: string[];
   unbalancedTags: string[];
+  /** Table rows whose cell count or shape disagrees with their header. */
+  tableShape: string[];
   /** Body size in characters — a note approaching the tool output ceiling is
    *  worth surfacing before a read hits the wall rather than after. */
   size: number;
@@ -1762,6 +1885,7 @@ export function structureReport(html: string): StructureReport {
   return {
     duplicateHeadings: duplicateHeadings(html),
     unbalancedTags: unbalancedTags(html),
+    tableShape: tableShapeIssues(html),
     size: html.length,
   };
 }

@@ -64,7 +64,12 @@ import {
   fixRecordHeader,
   bumpLastUpdated,
   duplicateHeadings,
+  tableShapeIssues,
+  closedBlockTag,
+  visibleTextSpans,
   leadingIdentification,
+  leadingIdentityText,
+  identityProblem,
   hasAddendumMarker,
   nearestHeading,
   repairedStructure,
@@ -84,9 +89,10 @@ import {
 import { sweep, buildDigest, applyResolution, isStructural, isContainer, type SweepReport } from "./lifecycle.js";
 import { createBrainLLMStructure, containerPurposes } from "./bootstrap.js";
 import { generateDailyLog, catchUpDeletions } from "./journal.js";
+import { sealDay, verifySeals } from "./seal.js";
 import { checkedDate, localToday, localNowTime, sinceCutoff, rollingBackupName } from "./time.js";
 import { blockDiff, firstRevisionSince, revisionsSince } from "./diffing.js";
-import { WITHIN_TAGS, editWithin } from "./elements.js";
+import { WITHIN_TAGS, editWithin, containingElement } from "./elements.js";
 import { registerMasterTools } from "./tools-master.js";
 import { registerLlmTools } from "./tools-llm.js";
 import { registerMemoryTools } from "./tools-memory.js";
@@ -231,6 +237,11 @@ export function registerTools(
   const preCloseSteps = new Map<string, number>();
   let preCloseSeq = 0;
   const REQUIRED_PRECLOSE_STEPS = ["session", "addendum", "maintain", "remarks", "diary"] as const;
+  /** A session with no content writes skips addendum() and maintain(). */
+  const LIGHT_PRECLOSE_STEPS = ["session", "remarks", "diary"] as const;
+  /** In-process cache of the durable "write" gate step, so tracking costs one
+   *  label write per session rather than one per write. */
+  let wroteSinceClose = false;
 
   /** Today's session note, the gate's durable home. Search failures propagate:
    *  a missing note and an unavailable Trilium connection are different states,
@@ -304,6 +315,7 @@ export function registerTools(
     await trilium.updateLabelValue(noteId, "gate", "");
     preCloseSteps.clear();
     preCloseSeq = 0;
+    wroteSinceClose = false;
   };
 
   // Chronological records legitimately repeat headings across addendum blocks —
@@ -325,13 +337,36 @@ export function registerTools(
    *  edit introduced, so the run that creates drift is the one told about it.
    *  Empty for record kinds and for a body that came back clean. */
   const structuralFindings = (kind: string | undefined, html: string | null) => {
-    if (!html || (kind && RECORD_KINDS.has(kind))) return {};
+    if (!html) return {};
+    // Table shape is checked on records too: a register row written with pipes
+    // inside one cell is as wrong in a dated entry as in a book.
+    const tableShape = tableShapeIssues(html);
+    const shape = tableShape.length
+      ? { tableShape, tableHint: "A table row disagrees with its header — rewrite it with one <td> per column (revise(find=<anchor>, within=\"tr\"))." }
+      : {};
+    if (kind && RECORD_KINDS.has(kind)) return shape;
     const dupes = duplicateHeadings(html);
-    if (!dupes.length) return {};
+    if (!dupes.length) return shape;
     return {
       duplicateHeadings: dupes,
       structureHint: "The note now carries duplicated section headings — merge them with revise(section=…, mode=replace), or target one specifically with occurrence=.",
+      ...shape,
     };
+  };
+
+  /** Refuse a malformed identification line before it is stored. The line that
+   *  will head the block is the body's own leading h3 when it has one,
+   *  otherwise identity=. Null when there is none to check or it is well formed. */
+  const identityRefusal = (identity: string | undefined, html: string) => {
+    const text = leadingIdentification(html) ? leadingIdentityText(html) : identity;
+    if (!text) return null;
+    const problem = identityProblem(text);
+    if (!problem) return null;
+    return err(
+      "malformed_identity",
+      `The identification line "${text.slice(0, 100)}" is malformed: ${problem}. Nothing was written.`,
+      'Pass identity="LLM · environment · agent/mode [· Run N]", e.g. "Claude Opus 5.5 · Claude Code · Interactive".'
+    );
   };
 
   /** Set a note's display icon (#iconClass) from an icon request — a full
@@ -556,7 +591,7 @@ export function registerTools(
     "session",
     `Pre-close review. Returns the six singletons as {id, lastModified} stubs (full=true inlines them), today's diary as {id, blocks, size}, the maintained notes changed today with their write counts, runs the lite maintenance sweep, and returns pending= (what each remaining close step has to do), audit= (do the singletons agree, and do the LLM singletons still serve the master ones) and next[]. Records the session step of the close gate. Idempotent.
 
-The close sequence next[] lays out: singleton updates from the session, then addendum(), maintain(), remarks(), diary() and close(). close() checks that addendum, maintain, remarks and diary ran, in the order session → remarks → diary. scope="agent" omits the singleton updates for scoped or autonomous runs.`,
+The close sequence next[] lays out: singleton updates from the session, then addendum(), maintain(), remarks(), diary() and close(). close() checks that addendum, maintain, remarks and diary ran, in the order session → remarks → diary. scope="agent" omits the singleton updates for scoped or autonomous runs. A session that wrote no content gets a light close: session() returns only the short next[] (remarks, a one-paragraph diary, close) and close() does not require addendum() or maintain().`,
     {
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
       full: z.boolean().optional().describe("Inline every singleton's content and the diary body (default: stubs only)"),
@@ -568,6 +603,23 @@ The close sequence next[] lays out: singleton updates from the session, then add
       const cfg = b();
       if (!cfg.master.root || !cfg.llm.root)
         throw new Error("BrainLLM not bootstrapped — run bootstrap.");
+
+      // Light close: nothing was written this session, so there is nothing to
+      // fold, sweep or audit, and the review below would cost more than the
+      // session did. The diary still matters — it is how the team is read.
+      if (!(await readGate(d)).has("write")) {
+        await markStep("session", d);
+        return txt({
+          date: d,
+          closeMode: "light",
+          note: "No content was written this session, so addendum() and maintain() are not required and there is nothing to audit. If you learned something durable about the user or yourself, revise that singleton first — that makes it a full close, and session() will say so when re-run.",
+          next: [
+            "Call remarks() — one short cue for a short session.",
+            "Call diary() — one short paragraph: what the session was and anything worth the team knowing.",
+            "Call close() — commit the session log.",
+          ],
+        });
+      }
       // The gate is marked only after every read/sweep above succeeds.
 
       const fetchSingleton = async (id: string) => {
@@ -760,6 +812,13 @@ The close sequence next[] lays out: singleton updates from the session, then add
       if (!cfg.root) return txt({ status: "uninitialized", action: "Run bootstrap first." });
 
       await markStep("remarks");
+      if (!(await readGate(localToday())).has("write")) {
+        return txt({
+          closeMode: "light",
+          cue: "One short paragraph, first person: what this session was, how it went, and anything about BrainLLM worth the team knowing. Skip what has nothing real to say.",
+          next: ["Write it via diary(body, identity), then call close()."],
+        });
+      }
       return txt({
         cues: {
           experience: [
@@ -784,7 +843,7 @@ The close sequence next[] lays out: singleton updates from the session, then add
 
   server.tool(
     "close",
-    `Writes the session log, normally the last call of a session. Refuses unless session(), addendum(), maintain(), remarks() and diary() ran and session → remarks → diary held (force=true bypasses a step with genuinely nothing to do; bypassed steps are reported). identity= is required. Writes a timestamped block to today's [yyyy-mm-dd] session note (title= becomes its heading), regenerates the daily log, backs up the database and resets the gate. continuing=true is a second close the same day.`,
+    `Writes the session log, normally the last call of a session. Refuses unless session(), addendum(), maintain(), remarks() and diary() ran and session → remarks → diary held; a session that wrote no content (light close) needs only session(), remarks() and diary() (force=true bypasses a step with genuinely nothing to do; bypassed steps are reported). identity= is required. Writes a timestamped block to today's [yyyy-mm-dd] session note (title= becomes its heading), regenerates the daily log, backs up the database and resets the gate. continuing=true is a second close the same day.`,
     {
       summary: z.string().describe("What happened this session — factual, concise prose"),
       title: z.string().optional().describe("Short session title — appears as an <h2> heading above Summary"),
@@ -823,11 +882,13 @@ The close sequence next[] lays out: singleton updates from the session, then add
       }
 
       const gate = await readGate(gateDate);
-      const missing = continued ? [] : REQUIRED_PRECLOSE_STEPS.filter((step) => !gate.has(step));
+      const light = !gate.has("write");
+      const required: readonly string[] = light ? LIGHT_PRECLOSE_STEPS : REQUIRED_PRECLOSE_STEPS;
+      const missing = continued ? [] : required.filter((step) => !gate.has(step));
       if (missing.length && !force) {
         return err(
           "preclose_incomplete",
-          `close() refused — these pre-close steps haven't run yet this session: ${missing.join(", ")}.`,
+          `close() refused — these pre-close steps haven't run yet this session: ${missing.join(", ")}.${light ? " (No content was written this session, so addendum() and maintain() are not required.)" : ""}`,
           `Call ${missing.map((s) => `${s}()`).join(", ")} first, or pass force=true if one of them genuinely has nothing to log.`
         );
       }
@@ -864,6 +925,8 @@ The close sequence next[] lays out: singleton updates from the session, then add
           'Pass identity="Claude … · <environment> · <agent/mode>" on close() — the server renders it as the block\'s h3.'
         );
       }
+      const badIdentity = identityRefusal(identity, summaryHtml);
+      if (badIdentity) return badIdentity;
       const identityBlock = identity && !leadingIdentification(summaryHtml) ? `<h3>${escapeHtml(identity)}</h3>\n` : "";
       const titleBlock = title ? `<h2>${escapeHtml(title)}</h2>\n` : "";
       const sections: string[] = [`${identityBlock}${titleBlock}<h2>Summary</h2>\n${summaryHtml}`];
@@ -935,6 +998,10 @@ The close sequence next[] lays out: singleton updates from the session, then add
         if (!hasEdge(logNote, noteId)) await trilium.addRelation(logReport.noteId, "references", noteId).catch(() => null);
       }
 
+      // Seal the day's records, after this close's own block has landed, so
+      // maintain(deep) can prove later that nothing sealed was rewritten.
+      const sealReport = logReport?.noteId ? await sealDay(trilium, cfg, d, logReport.noteId).catch(() => null) : null;
+
       let backupStatus: "disabled" | "completed" | "failed" = "disabled";
       let backupName = rollingBackupName(d);
       if (backup !== false) {
@@ -962,6 +1029,8 @@ The close sequence next[] lays out: singleton updates from the session, then add
           : {}),
         ...(iconSet ? { icon: iconSet } : {}),
         ...(continued ? { continuing: true } : {}),
+        ...(sealReport ? { seal: `${sealReport.records} record(s) of ${d} sealed (${sealReport.digest.slice(0, 12)}…), chained to the previous sealed day` } : { seal: "not written — the day's log note was unavailable" }),
+        ...(light && !continued ? { closeMode:"light — no content was written this session, so addendum() and maintain() were not required" } : {}),
         ...(missing.length || !orderOk
           ? { bypassed: [...missing, ...(!orderOk ? ["ordering(session→remarks→diary)"] : [])] }
           : {}),
@@ -1095,6 +1164,8 @@ The close sequence next[] lays out: singleton updates from the session, then add
           'Pass identity="Claude … · <environment> · <agent/mode>" on diary() — the server renders it as the block\'s h3.'
         );
       }
+      const badIdentity = identityRefusal(identity, sanitized.html);
+      if (badIdentity) return badIdentity;
       const html = identity && !leadingIdentification(sanitized.html) ? `<h3>${escapeHtml(identity)}</h3>\n${sanitized.html}` : sanitized.html;
 
       const found = await trilium.searchNotes(
@@ -1373,7 +1444,13 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           ...(createdDomain ? { createdDomain: domainTitle } : {}),
           ...(revisionChanges.length ? { revision: revisionChanges } : {}),
           ...sourceMerge,
-          ...(revisionKeys.length ? { revisionRows: revisionKeys } : {}),
+          // A count, not an echo of every row (a heavy receipt on every upsert,
+          // 2026-10-08). The keys come back only when a row was ADDED, the one
+          // case where a misspelt source key needs to be seen beside the rest.
+          ...(revisionKeys.length ? { revisionRows: revisionKeys.length } : {}),
+          ...(revisionChanges.some((c) => c.startsWith("added:")) && revisionKeys.length
+            ? { revisionKeys, revisionKeysNote: "A new Revision row was added. If it was meant to update an existing source, its key must match one of these exactly." }
+            : {}),
           ...(placeholderLeft
             ? { structureHint: "The Revision table still holds only its placeholder row. Every source marked ✅ was verified by someone — record that with revision=[{source, marker, date}] so the table says so too; marker dates live there, never inline." }
             : {}),
@@ -1497,6 +1574,8 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
             'Pass identity="Claude … · <environment> · <agent/mode>" — the server renders it as the addendum\'s h3.'
           );
         }
+        const badIdentity = identityRefusal(identity, html);
+        if (badIdentity) return badIdentity;
         const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
 
         // Threads: content lands in today's day-child, never the book itself.
@@ -1516,7 +1595,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           const connected = await wireRequested(existing.noteId);
           const iconSet = await applyIcon(existing.noteId, icon);
           const relations = relationSnippet(existing);
-          return txt({ action: "updated", noteId: existing.noteId, entryId: entry.noteId, entryAction: entry.action, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+          return txt({ action: "updated", noteId: existing.noteId, entryId: entry.noteId, entryAction: entry.action, entry: `today's [${d}] entry in this thread; revise(entryId) edits it`, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
         }
 
         const current = await trilium.getNoteContent(existing.noteId);
@@ -1596,7 +1675,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
 
   server.tool(
     "recall",
-    `Ranked search across the whole brain — label, title and full-text strategies merged, with kind and status. Pass domain= whenever you know the area. orderBy/orderDirection sort by date; fastSearch= scans titles and labels only; regex= matches note bodies with a real regular expression; a fuzzy pass runs automatically when exact results are thin (hits marked fuzzy: true are leads, not answers). includeArchived= includes archived notes. A thin result is evidence about the query, not the brain.`,
+    `Ranked search across the whole brain — label, title and full-text strategies merged, with kind and status. Pass domain= whenever you know the area. orderBy/orderDirection sort by date; fastSearch= scans titles and labels only; regex= matches note bodies with a real regular expression; a fuzzy pass runs automatically when exact results are thin (hits marked fuzzy: true are leads, not answers). Recently changed notes rank slightly higher at equal relevance. Regex hits carry evidence: the matched passage; records are included unless kinds= narrows. includeArchived= includes archived notes. A thin result is evidence about the query, not the brain.`,
     {
       query: z.string().describe("What to find — natural phrasing is fine"),
       kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds"),
@@ -1704,10 +1783,27 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         // and returned nothing — a silent empty sweep on the tool whose whole
         // job is proving a claim has not leaked. Trilium's lexer also consumes
         // one level of escaping, so backslashes are doubled on the way out.
-        const candidates = (await run(`note.content %= '${escapeQueryRegex(regex)}'`)).filter(filterNote);
-        const confirmed: Note[] = [];
+        // Trilium's %= pre-filter loses notes on non-ASCII characters: a
+        // pattern carrying "·" returned nothing although the stored bodies
+        // hold that exact character (measured 2026-10-09, "Thalia · 2026").
+        // The backend gets each non-ASCII character widened to ".", which
+        // only ever admits more candidates; the real pattern still decides.
+        const backendPattern = regex.replace(/[^\x00-\x7F]/g, ".");
+        const widened = backendPattern !== regex;
+        const candidates = (await run(`note.content %= '${escapeQueryRegex(backendPattern)}'`)).filter(filterNote);
+        const confirmed: Array<{ note: Note; evidence: string }> = [];
         let rejected = 0;
         let tagSpanning = 0;
+        let recordHits = 0;
+        /** The matched passage with a little context either side: the
+         *  evidence for the hit, rather than the note's opening lines. */
+        const evidenceIn = (text: string): string => {
+          const m = new RegExp(re!.source, "i").exec(text);
+          if (!m) return "";
+          const from = Math.max(0, m.index - 80);
+          const to = Math.min(text.length, m.index + m[0].length + 80);
+          return `${from > 0 ? "…" : ""}${text.slice(from, to).replace(/\s+/g, " ").trim()}${to < text.length ? "…" : ""}`;
+        };
         for (const n of candidates) {
           if (confirmed.length >= max) break;
           const content = await trilium.getNoteContent(n.noteId).catch(() => "");
@@ -1717,17 +1813,28 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           // inline <strong> or <code> is a real hit that raw-only checking
           // would have thrown away as a false positive.
           const rawHit = re.test(content);
-          const projectedHit = !rawHit && re.test(stripTagsWithMap(content).text);
+          const projected = stripTagsWithMap(content).text;
+          const projectedHit = re.test(projected);
           if (rawHit || projectedHit) {
-            if (projectedHit) tagSpanning++;
-            confirmed.push(n);
+            if (projectedHit && !rawHit) tagSpanning++;
+            const kind = labelOf(n, "noteType");
+            if (kind === "session" || kind === "diary" || kind === "log" || (kind === "threadEntry" && /^\[\d{4}-\d{2}-\d{2}\]$/.test(n.title.trim()))) recordHits++;
+            confirmed.push({ note: n, evidence: decodeEntities(projectedHit ? evidenceIn(projected) : evidenceIn(toText(content, 100_000))) });
           } else rejected++;
         }
 
-        const results = await Promise.all(confirmed.map(buildResult));
+        const results = await Promise.all(
+          confirmed.map(async ({ note, evidence }, i) => {
+            const { snippet: _snippet, ...base } = (await buildResult(note, i)) as Record<string, unknown>;
+            return { ...base, ...(evidence ? { evidence } : {}) };
+          })
+        );
         const notes = [
           rejected ? `${rejected} backend candidate(s) did not actually match the pattern and were dropped — results are verified against the real regex, not just the search index.` : null,
           tagSpanning ? `${tagSpanning} match(es) were found only after stripping markup — the phrase is split by an inline tag there.` : null,
+          widened ? "Non-ASCII characters (·, —, quotes) were widened to \".\" for Trilium's pre-filter, which drops them; every result was then verified against your exact pattern." : null,
+          recordHits ? `${recordHits} result(s) are records (sessions, diary, dated thread entries) — included by default; kinds= narrows to maintained notes.` : null,
+          candidates.length >= 30 && confirmed.length < max ? "The backend returned its 30-candidate cap, so further matches may exist — narrow with domain= or kinds=, or use consistency() for an exhaustive scan." : null,
           results.length === 0 ? "No bodies matched that pattern, searched both as stored HTML and tag-stripped. Note that Trilium's %= pre-filter reads a striptags'd copy, so a pattern anchored ON tags may never reach verification — consistency() scans exhaustively if you need certainty." : null,
           // An empty sweep over a pattern with backslashes is most often an
           // escaping slip, and it looks exactly like a clean result. Show the
@@ -1817,9 +1924,20 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         add(byFuzzy, 0.5);
       }
 
+      // Recency as a signal, not only a tiebreak: what is current should rank
+      // above what was true once, at equal relevance (the memory benchmarks'
+      // consistent finding on knowledge updates). The boost halves every 14
+      // days and stays under one title-token match (2), so it reorders near
+      // ties and never lifts a weak match over a strong one.
+      const now = Date.now();
+      const recency = (n: Note) => {
+        const age = Math.max(0, (now - new Date(n.dateModified.replace(" ", "T")).getTime()) / 86_400_000);
+        return Number.isFinite(age) ? 0.9 * Math.pow(0.5, age / 14) : 0;
+      };
       const ranked = [...scores.values()]
         .filter(({ note }) => filterNote(note))
-        .sort((a, b2) => b2.score - a.score || (a.note.dateModified < b2.note.dateModified ? 1 : -1))
+        .map((s) => ({ ...s, rank: s.score + recency(s.note) }))
+        .sort((a, b2) => b2.rank - a.rank || (a.note.dateModified < b2.note.dateModified ? 1 : -1))
         .slice(0, max);
 
       const results = await Promise.all(
@@ -1841,12 +1959,13 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
 
   server.tool(
     "domain",
-    `Everything for a domain, topic or project: its knowledge book (if any) plus every note carrying a matching #domain or #topic slug, grouped by kind, each with idle days and a stale flag. The reliable retrieval path for an area; use recall() for keyword search.`,
+    `Everything for a domain, topic or project: its knowledge book (if any) plus every note carrying a matching #domain or #topic slug, grouped by kind, each with idle days and a stale flag; outline=true adds every maintained note's headings and size. The reliable retrieval path for an area; use recall() for keyword search.`,
     {
       name: z.string().describe("Domain, topic, or project name"),
       includeArchived: z.boolean().optional().describe("Include archived/resolved items (default: false)"),
+      outline: z.boolean().optional().describe("Also return each maintained note's headings (h2–h4) and size — plan a multi-note rewrite in one call instead of one outline() per note"),
     },
-    async ({ name, includeArchived }) => {
+    async ({ name, includeArchived, outline }) => {
       const cfg = b();
       const slug = slugify(name);
       // A note the listing omits is one nobody will ever correct, so the cap is
@@ -1891,7 +2010,27 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         Math.max(0, Math.floor((Date.now() - new Date(iso.replace(" ", "T")).getTime()) / 86_400_000));
       const RECORD_ROWS = new Set(["session", "diary", "log", "threadEntry"]);
 
-      const groups: Record<string, Array<{ id: string; title: string; status?: string; created: string; modified: string; idleDays?: number; stale?: true; archived?: true; relations?: RelationEdge[] }>> = {};
+      // Headings for maintained notes only: a record's headings are its
+      // addendum markers, which say nothing about how to edit it.
+      const outlines = new Map<string, { headings: string[]; size: number }>();
+      if (outline) {
+        await Promise.all(
+          all
+            .filter((n) => {
+              const k = ownedLabel(n, "noteType");
+              return k && k !== "domain" && !RECORD_ROWS.has(k);
+            })
+            .map(async (n) => {
+              const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+              outlines.set(n.noteId, {
+                headings: headingOutline(content).filter((h) => !/^Last updated\b/i.test(h.text)).map((h) => `${"#".repeat(h.level - 1)} ${h.text}`),
+                size: content.length,
+              });
+            })
+        );
+      }
+
+      const groups: Record<string, Array<{ id: string; title: string; status?: string; created: string; modified: string; idleDays?: number; stale?: true; archived?: true; relations?: RelationEdge[]; headings?: string[]; size?: number }>> = {};
       let staleCount = 0;
       for (const n of all) {
         const kind = ownedLabel(n, "noteType");
@@ -1912,6 +2051,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           ...(hasLabel(n, "mandate") ? { mandate: true as const } : {}),
           ...(hasLabel(n, "archived") ? { archived: true as const } : {}),
           ...(relations ? { relations } : {}),
+          ...(outlines.has(n.noteId) ? outlines.get(n.noteId)! : {}),
         });
       }
 
@@ -2076,7 +2216,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     "revise",
     `Edit a note by id. A revision is taken first; "Last updated" lines are bumped on content writes.
 
-Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
+Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup. within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). closure={thread, body} with within="tr" and mode="remove" closes a register row: the row is removed and the closure appended to that thread's entry for today, in one call. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
 
 Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled.`,
     {
@@ -2092,6 +2232,10 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
       nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them). With within=: the Nth containing element"),
       within: z.enum(WITHIN_TAGS).optional().describe('With find=: act on the <tag> element that contains the find text (a short unique anchor) — mode="replace" (default) swaps it for body=, "before"/"after" insert body= as a sibling (add a table row), "remove" deletes it'),
+      closure: z.object({
+        thread: z.string().describe("The dated thread to record the closure in: its id or title (e.g. \"Escalations\")"),
+        body: z.string().describe("The closure: what settled it, who ruled, and where its durable substance went"),
+      }).optional().describe('With within= and mode="remove": close a register row in one call. The row is removed and body= is appended to the thread\'s entry for today, quoting the removed row. Needs identity=. Run consistency() afterwards on any fact the row asserted elsewhere'),
       edits: z.array(z.object({
         find: z.string().describe("Exact raw string to replace"),
         body: z.string().describe("Raw replacement string"),
@@ -2101,7 +2245,9 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
-    async ({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, edits, identity, icon, date, strict }) => {
+    async ({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, closure, edits, identity, icon, date, strict }) => {
+      if (closure && !(within && mode === "remove"))
+        return err("conflicting_params", 'closure= closes a register row and needs within= with mode="remove"; nothing was written.', 'e.g. revise(noteId, find="<row anchor>", within="tr", mode="remove", closure={thread: "Escalations", body: "Closed on …"}, identity="…")');
       if (domain !== undefined) {
         if (noteIdArg)
           return err("conflicting_params", "Pass noteId= or domain=, not both.", "domain= edits every note in the domain; noteId= edits one.");
@@ -2175,11 +2321,16 @@ Check the receipt: matched=false means a NEW section was written (available= lis
         const missHint = (needle: string, source: string, alreadyConsumed: boolean): string => {
           if (alreadyConsumed)
             return `Not found — but an EARLIER edit in this same edits= array already replaced this exact string. The array is applied in order against one body, so the second pass had nothing left to match. This is the expected result, not a failure.`;
+          if (/Last updated/i.test(needle))
+            return `Not found — "Last updated" lines are server-owned and every content write bumps them to today, so this one most likely already moved. Leave it out of find=; the server keeps it current.`;
           if (looksEntityEscaped(needle))
             return `Not found — the search string carries escaped markup (&lt;…&gt;) while note bodies store real tags. Pass the tag literally, e.g. "<h3>Typography</h3>".`;
           if (spansBlockBoundary(needle))
             return `Not found — this string spans an element boundary (a closing tag followed by an opening one). Anchor the find INSIDE a single element instead, or target the heading directly with section= (with mode="before"/"after" to insert around it).`;
-          return `Not found in the note body (exact, attribute-tolerant or ignoring inline tags) — already replaced on a retry, or the text genuinely differs.`;
+          const closed = closedBlockTag(needle);
+          if (closed && !within)
+            return `Not found — the string ends inside a closing </${closed}>, and where the editor stored that tag decides whether it matches. Use within="${closed}" with a short plain-text anchor from inside the element instead: revise(noteId, find="<a few words>", within="${closed}", body="<${closed}>…</${closed}>").`;
+          return `Not found in the note body (exact, attribute-tolerant, ignoring inline tags${within ? `, or by the visible text of a <${within}>` : ""}) — already replaced on a retry, or the text genuinely differs.${within ? "" : ' To act on a whole table row by its visible text, use within="tr".'}`;
         };
 
         /** The nearest real text, attached to a miss. Answers "how does it
@@ -2210,7 +2361,11 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           for (let at = current.indexOf(find!); at !== -1; at = current.indexOf(find!, at + find!.length)) exact.push({ start: at, length: find!.length });
           const rx = exact.length ? null : tolerantFindRegex(find!);
           const tolerantHits = rx ? [...current.matchAll(rx)].map((m) => ({ start: m.index!, length: m[0].length })) : [];
-          const hits = exact.length ? exact : tolerantHits.length ? tolerantHits : inlineTolerantSpans(current, find!);
+          const inlineHits = exact.length || tolerantHits.length ? [] : inlineTolerantSpans(current, find!);
+          // Last resort: the element's visible text, as a reader sees it — a
+          // row's cells joined, "|" read as a cell boundary.
+          const visibleHits = exact.length || tolerantHits.length || inlineHits.length ? [] : visibleTextSpans(current, find!, within);
+          const hits = exact.length ? exact : tolerantHits.length ? tolerantHits : inlineHits.length ? inlineHits : visibleHits;
           const res = editWithin(current, hits, within, action, body ?? "", nth);
           if (!res.ok) {
             const hint =
@@ -2225,6 +2380,28 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           }
           if (res.html === current)
             return txt({ ok: true, noteId, mode: `within:${within}:${action}`, unchanged: true, date: d, note: "The body equals the element it would replace, so nothing was written and no revision was taken." });
+
+          // Resolve and validate the closure target BEFORE the row moves, so a
+          // bad thread or identity never leaves a row removed and unrecorded.
+          let closureThread: Note | null = null;
+          let closureBlock = "";
+          if (closure) {
+            closureThread = /^[A-Za-z0-9]{12}$/.test(closure.thread)
+              ? await trilium.getNote(closure.thread).catch(() => null)
+              : await findExisting("thread", closure.thread);
+            if (!closureThread || ownedLabel(closureThread, "noteType") !== "thread")
+              return err("not_found", `closure.thread "${closure.thread}" is not a thread; nothing was written.`, "Pass the thread's id or exact title, e.g. \"Escalations\".");
+            if (isCollectionThread(closureThread)) return collectionAppendRefusal(closureThread);
+            const rendered = renderBody(closure.body).html;
+            const removedText = toText(res.element, 400);
+            const closureHtml = `<p><strong>Closed:</strong> ${escapeHtml(removedText)}</p>\n${rendered}`;
+            if (!identity)
+              return err("missing_identity", "closure= appends to a dated thread, which needs identity=; nothing was written.", 'Pass identity="LLM · environment · agent/mode".');
+            const badIdentity = identityRefusal(identity, closureHtml);
+            if (badIdentity) return badIdentity;
+            closureBlock = `<h3>${escapeHtml(identity)}</h3>\n${closureHtml}`;
+          }
+
           await trilium.createRevision(noteId).catch(() => null);
           const withinResult = sanitizeHtml(res.html);
           const stampedWithin = bumpLastUpdated(withinResult.html, d);
@@ -2234,13 +2411,28 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           await trilium.updateLabelValue(noteId, "updated", d);
           if (labelOf(note, "status") === "dormant") await trilium.updateLabelValue(noteId, "status", "active");
           const relsWithin = relationSnippet(note);
+          let closureReceipt: Record<string, unknown> | null = null;
+          if (closureThread) {
+            const entry = await appendThreadEntry(closureThread.noteId, closureBlock, d);
+            await trilium.updateLabelValue(closureThread.noteId, "updated", d);
+            if (labelOf(closureThread, "status") === "dormant") await trilium.updateLabelValue(closureThread.noteId, "status", "active");
+            closureReceipt = {
+              threadId: closureThread.noteId,
+              thread: closureThread.title,
+              entryId: entry.noteId,
+              action: entry.action,
+              next: "Run consistency() on any fact the closed row asserted elsewhere, so no stale sentence survives it.",
+            };
+          }
           return txt({
             ok: true, noteId, mode: `within:${within}:${action}`, date: d,
             element: toText(res.element, 200),
+            ...(closureReceipt ? { closure: closureReceipt } : {}),
             ...(titledWithin.retitled ? { retitled: titledWithin.retitled } : {}),
             ...(iconWithin ? { icon: iconWithin } : {}),
             ...(relsWithin ? { relations: relsWithin } : {}),
             ...structuralFindings(noteKind, stampedWithin.html),
+            ...(stampedWithin.bumped ? { lastUpdated: "bumped to today — the line is server-owned" } : {}),
             ...(withinResult.warnings.length ? { sanitized: withinResult.warnings } : {}),
           });
         }
@@ -2319,6 +2511,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           ...(iconApplied ? { icon: iconApplied } : {}),
           ...(rels ? { relations: rels } : {}),
           ...structure,
+          ...(stamped.bumped ? { lastUpdated: "bumped to today — the line is server-owned" } : {}),
           ...(replacedResult.warnings.length ? { sanitized: replacedResult.warnings } : {}),
         });
       }
@@ -2455,6 +2648,8 @@ Check the receipt: matched=false means a NEW section was written (available= lis
               'Pass identity="Claude … · <environment> · <agent/mode>" — the server renders it as the addendum\'s h3.'
             );
           }
+          const badIdentity = identityRefusal(identity, html);
+          if (badIdentity) return badIdentity;
           const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
           threadEntryResult = await appendThreadEntry(noteId, block, d);
           if (threadEntryResult.action === "already_written") {
@@ -2511,7 +2706,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           : {}),
         ...sectionMiss,
         ...(sectionHint ? { hint: sectionHint } : {}),
-        ...(threadEntryResult ? { entryId: threadEntryResult.noteId, entryAction: threadEntryResult.action } : {}),
+        ...(threadEntryResult ? { entryId: threadEntryResult.noteId, entryAction: threadEntryResult.action, entry: `today's [${d}] entry in this thread; revise(entryId) edits it` } : {}),
         ...(titled.retitled ? { retitled: titled.retitled } : {}),
         ...(titled.cascaded ? { domainCascade: `#domain updated on ${titled.cascaded} descendant note(s)` } : {}),
         ...structuralFindings(noteKind, finalContent),
@@ -2869,9 +3064,11 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
   server.tool(
     "consistency",
-    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Records (sessions, diary, logs, dated thread entries) are skipped by default because they are never rewritten; includeRecords=true or a kinds= naming them brings them back. Scans every in-scope note (fast=true uses Trilium's lossy pre-filter). Run it after correcting any fact recorded in more than one place.`,
+    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Records (sessions, diary, logs, dated thread entries) are skipped by default because they are never rewritten; includeRecords=true or a kinds= naming them brings them back. Scans every in-scope note (fast=true uses Trilium's lossy pre-filter). Matching ignores case unless caseSensitive=true (a leading (?i) is accepted). Without a capture group the whole match is the value compared. patterns=[…] checks several facts in one call over one read of each note. Run it after correcting any fact recorded in more than one place.`,
     {
-      pattern: z.string().optional().describe("Regex over note bodies. One capture group = the value that should agree across notes. Omit when using subject= (prose mode)."),
+      pattern: z.string().optional().describe("Regex over note bodies. One capture group = the value that should agree across notes; with none, the whole match is the value. Omit when using subject= (prose mode)."),
+      patterns: z.array(z.string()).max(10).optional().describe("Several patterns checked in one call (each reported as its own result, in order); every note is read once"),
+      caseSensitive: z.boolean().optional().describe("Match case exactly (default false: \"Blueprints\" and \"blueprints\" both match)"),
       subject: z.string().optional().describe("A fact in prose — returns notes asserting about it however phrased (instead of pattern=)"),
       staleAfterDays: z.number().optional().describe("With pattern: also report values held in exactly one note untouched N+ days (staleSingles)"),
       domain: z.string().optional().describe("Restrict to one knowledge domain"),
@@ -2881,7 +3078,31 @@ calling twice is safe. Use remove=true to delete an edge.`,
       limit: z.number().optional().describe("Max notes to examine (default 60)"),
       fast: z.boolean().optional().describe("Use Trilium's faster but lossy %= pre-filter (default: scan every in-scope note)"),
     },
-    async ({ pattern, subject, staleAfterDays, domain, kinds, includeRecords, includeArchived, limit, fast }) => {
+    async (args) => {
+      // One read per note across every pattern of a patterns=[…] call.
+      const contentCache = new Map<string, Promise<string>>();
+      const contentOf = (id: string) => {
+        let p = contentCache.get(id);
+        if (!p) {
+          p = trilium.getNoteContent(id).catch(() => "");
+          contentCache.set(id, p);
+        }
+        return p;
+      };
+      if (args.patterns?.length) {
+        if (args.pattern || args.subject)
+          return err("conflicting_params", "Pass patterns=[…] alone, not with pattern= or subject=.", "Put every pattern in the patterns array.");
+        const results: unknown[] = [];
+        for (const p of args.patterns) {
+          const r = await checkOne({ ...args, pattern: p, patterns: undefined });
+          results.push(JSON.parse(r.content[0]!.text));
+        }
+        const disagreeing = results.filter((r) => (r as { agreement?: string }).agreement === "DISAGREEMENT").length;
+        return txt({ mode: "multi", patterns: args.patterns.length, disagreeing, results });
+      }
+      return checkOne(args);
+
+      async function checkOne({ pattern, subject, staleAfterDays, domain, kinds, includeRecords, includeArchived, limit, fast, caseSensitive }: typeof args) {
       // Records are history: matching them buries the maintained notes that can
       // actually be corrected. A kinds= that names a record kind is an explicit ask.
       const wantsRecords = includeRecords === true || (kinds ?? []).some((k) => RECORD_KINDS.has(k));
@@ -2924,7 +3145,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
         const threshold = Math.max(1, Math.ceil(tokens.length / 2));
         const hits: Array<{ id: string; title: string; kind: string; matchedTokens: string[]; snippet: string }> = [];
         for (const n of scoped) {
-          const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+          const content = await contentOf(n.noteId);
           if (!content) continue;
           const text = stripTagsWithMap(content).text.toLowerCase();
           const matchedTokens = tokens.filter((t) => text.includes(t));
@@ -2948,11 +3169,20 @@ calling twice is safe. Use remove=true to delete an edge.`,
       }
       if (!pattern) return err("missing_param", "No regex pattern given for consistency.", 'Pass pattern="(\\\\d+) users" — or subject="<a fact in prose>" for the prose-subject mode.');
       let re: RegExp;
+      // JavaScript has no inline flags, and "(?i)" came back as invalid_pattern
+      // (2026-10-07). A leading one is read as what it means.
+      const inlineInsensitive = /^\(\?i\)/.test(pattern);
+      const source = inlineInsensitive ? pattern.slice(4) : pattern;
+      const flags = caseSensitive && !inlineInsensitive ? "g" : "gi";
       try {
-        re = new RegExp(pattern, "gi");
+        re = new RegExp(source, flags);
       } catch (e) {
         return err("invalid_pattern", `Not a valid regular expression: ${(e as Error).message}`, "Escape backslashes — a JSON string needs \\\\d for \\d.");
       }
+      // A pattern with no capture group compares its whole match: "is every
+      // note's spelling of this the same" is a real question, and answering
+      // it with presence only told callers which notes mention a term.
+      const groupCount = new RegExp(`${source}|`).exec("")!.length - 1;
 
       const max = limit ?? 60;
       // Candidate acquisition. The %= pre-filter is opt-in because it is lossy
@@ -2993,8 +3223,8 @@ calling twice is safe. Use remove=true to delete an edge.`,
         let m: RegExpExecArray | null;
         while ((m = re.exec(haystack)) !== null) {
           matched = true;
-          const captured = m.slice(1).find((g) => g !== undefined);
-          if (captured !== undefined) values.push(toText(captured, 120).trim() || captured.trim());
+          const captured = groupCount === 0 ? m[0] : m.slice(1).find((g) => g !== undefined);
+          if (captured !== undefined && captured !== "") values.push(toText(captured, 120).trim() || captured.trim());
           if (m[0] === "") re.lastIndex++; // guard against a zero-width match looping
         }
         return { values, matched };
@@ -3004,7 +3234,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
       const idleSince = (iso: string) =>
         Math.max(0, Math.floor((Date.now() - new Date(iso.replace(" ", "T")).getTime()) / 86_400_000));
       for (const n of scoped) {
-        const content = await trilium.getNoteContent(n.noteId).catch(() => "");
+        const content = await contentOf(n.noteId);
         if (!content) continue;
         const stub = { id: n.noteId, title: n.title, kind: ownedLabel(n, "noteType") ?? "", idleDays: idleSince(n.dateModified) };
 
@@ -3063,6 +3293,8 @@ calling twice is safe. Use remove=true to delete an edge.`,
       return txt({
         mode: "consistency",
         pattern,
+        ...(groupCount === 0 ? { valueFrom: "the whole match (the pattern has no capture group)" } : {}),
+        ...(caseSensitive && !inlineInsensitive ? { caseSensitive: true } : {}),
         scan: fast ? "fast (%= pre-filter)" : "exhaustive",
         ...(domain ? { domain: slugify(domain) } : {}),
         notesExamined: scoped.length,
@@ -3082,6 +3314,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
             : `All ${groups[0]!.count} note(s) agree on "${groups[0]!.value}".`
           : `${groups.length} DIFFERENT values are asserted across ${scoped.length} notes. Establish which is true from evidence, correct every note that disagrees, and wire ~corrects from the note that overturns the old claim — revising in place leaves no trace the wrong value was ever believed.`,
       });
+      }
     }
   );
 
@@ -3153,7 +3386,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
   server.tool(
     "inspect",
-    `Everything about one note: every label, relation and attachment, type/mime, parent and child ids, dates. content=true adds the raw body (section= narrows it). find="<literal>" counts occurrences (total, per addendum block, per section) and on a miss shows the nearest stored text. Read-only, safe on any note.`,
+    `Everything about one note: every label, relation and attachment, type/mime, parent and child ids, dates. content=true adds the raw body (section= narrows it). find="<literal>" counts occurrences (total, per addendum block, per section), returns the stored element around each one (up to 10: its row, list item or paragraph, ready to anchor a revise), and on a miss shows the nearest stored text. Read-only, safe on any note.`,
     {
       noteId: z.string().describe("Note to inspect"),
       content: z.boolean().optional().describe("Include the note's raw body content (default: false)"),
@@ -3179,7 +3412,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
       // Literal-occurrence count, total + per addendum block. Blocks are keyed
       // by their marker heading; content before the first marker is "(head)".
-      let findReport: { find: string; total: number; blocks: Array<{ block: string; count: number }>; sections?: Array<{ section: string; count: number }>; matchedUpTo?: string; storedNearby?: string; hint?: string } | undefined;
+      let findReport: { find: string; total: number; blocks: Array<{ block: string; count: number }>; sections?: Array<{ section: string; count: number }>; matches?: Array<{ section: string; element: string; stored: string }>; matchedUpTo?: string; storedNearby?: string; hint?: string } | undefined;
       if (find && rawBody !== undefined) {
         const countIn = (s: string) => s.split(find).length - 1;
         // Which heading each occurrence sits under — the locator that turns
@@ -3229,11 +3462,36 @@ calling twice is safe. Use remove=true to delete an edge.`,
         }
         const total = countIn(rawBody);
         const near = total === 0 ? nearestContext(rawBody, find) : null;
+        // The element around each occurrence, as stored — the row, list item or
+        // paragraph a follow-up edit would target. Counting alone sent callers
+        // back for a second read to see what they had found.
+        const matches: Array<{ section: string; element: string; stored: string }> = [];
+        const seenSpans = new Set<number>();
+        for (let at = rawBody.indexOf(find); at !== -1 && matches.length < 10; at = rawBody.indexOf(find, at + Math.max(1, find.length))) {
+          let el: { start: number; end: number } | null = null;
+          let tag = "";
+          for (const t of ["tr", "li", "p", "blockquote", "td"]) {
+            el = containingElement(rawBody, t, at, at + find.length);
+            if (el) { tag = t; break; }
+          }
+          const start = el?.start ?? Math.max(0, at - 120);
+          const end = el?.end ?? Math.min(rawBody.length, at + find.length + 120);
+          if (seenSpans.has(start)) continue;
+          seenSpans.add(start);
+          let sectionName = "(head)";
+          for (const h of headings) {
+            if (h.index < at) sectionName = h.text;
+            else break;
+          }
+          const stored = rawBody.slice(start, end);
+          matches.push({ section: sectionName, element: tag || "text", stored: stored.length > 600 ? `${stored.slice(0, 600)}…` : stored });
+        }
         findReport = {
           find,
           total,
           blocks,
           ...(sections.length ? { sections } : {}),
+          ...(matches.length ? { matches } : {}),
           ...(near ? { matchedUpTo: near.fragment, storedNearby: near.context } : {}),
           ...(total === 0 && !near ? { hint: "Not present, and no fragment of it is either — the string is unrelated to this note's content." } : {}),
         };
@@ -3666,7 +3924,7 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
 
   server.tool(
     "maintain",
-    `Brain hygiene. Lite (automatic in start/close): ages threads active → dormant → archived and checks labels. deep=true adds stale notes, orphans and sinks, structural lint (duplicate headings, unbalanced tags, missing required sections, dated prose in timeless notes, oversized notes), duplicate titles, lapsed or broken claims and hygiene passes. dryRun previews. ack=[ids] silences a note you reviewed until its content changes. domain= narrows deep passes to one lane. repair=[ids] unwinds entity double-escaping in place. coverage names any capped pass: structural lint reads at most 40 notes per run and rotates through the rest day by day, so a whole-brain lint spans several runs.`,
+    `Brain hygiene. Lite (automatic in start/close): ages threads active → dormant → archived and checks labels. deep=true adds stale notes, orphans and sinks, structural lint (duplicate headings, unbalanced tags, missing required sections, dated prose in timeless notes, oversized notes), duplicate titles, lapsed or broken claims, table rows that disagree with their header, record seals (whether any record of the last seven sealed days was rewritten after close() sealed it) and hygiene passes. dryRun previews. ack=[ids] silences a note you reviewed until its content changes. domain= narrows deep passes to one lane. repair=[ids] unwinds entity double-escaping in place. coverage names any capped pass: structural lint reads at most 40 notes per run and rotates through the rest day by day, so a whole-brain lint spans several runs.`,
     {
       deep: z.boolean().optional().describe("Deep pass: stale-review + orphan/sink + structural lint + duplicate titles across Memory/Threads and Knowledge (default: false)"),
       dryRun: z.boolean().optional().describe("Report what would change without changing it"),
@@ -3682,6 +3940,19 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
         ...(ack?.length ? { ack } : {}),
         ...(repair?.length ? { repair } : {}),
       });
+      // Record seals: the last seven sealed days, whole-brain runs only (a
+      // domain-scoped lane does not own the day's records).
+      if (deep && !domain) {
+        const seals = await verifySeals(trilium, b(), localToday()).catch(() => null);
+        if (seals) {
+          for (const f of seals.findings) {
+            report.flagged.push(`record seal: ${f.date}${f.noteId ? ` [${f.noteId}]` : ""} — ${f.problem}. Records are append-only; read the revisions to see whether the change was intended. The finding ages out with the seven-day window.`);
+          }
+          (report as { seals?: string }).seals = seals.checked
+            ? `${seals.checked} sealed day(s) verified, ${seals.findings.length} finding(s)`
+            : "no sealed days yet — the first close of 12.9.0 seals its day";
+        }
+      }
       // The size-trajectory baselines live in brainllm.json, written by the
       // deep lint pass onto the live config object. Without this save the
       // baselines reset on restart and every run reads as first-sighting.
@@ -4435,4 +4706,44 @@ and every thread day-child, in time order with its identification line.`,
   registerMemoryTools(server, trilium, brainRef);
   registerKnowledgeTools(server, trilium, brainRef);
   registerInsightsTools(server, trilium, brainRef);
+
+  // ── Content-write tracking for the light close ────────────────────────────
+  // A session that wrote nothing has no addenda to fold and nothing new for
+  // maintain() to find, and the full close ceremony cost it more than the
+  // session itself (2026-10-04, 2026-10-08). The first successful content
+  // write since the gate was last cleared records a "write" step in the same
+  // durable gate label; close() asks for the full protocol only when it is there.
+  const registry = (server as unknown as { _registeredTools?: Record<string, { handler?: (...a: unknown[]) => Promise<unknown> }> })._registeredTools ?? {};
+  for (const name of CONTENT_WRITE_TOOLS) {
+    const tool = registry[name];
+    const inner = tool?.handler;
+    if (!tool || typeof inner !== "function") continue;
+    tool.handler = async (...args: unknown[]) => {
+      const result = await inner(...args);
+      if (!wroteSinceClose && wroteContent(result)) {
+        await markStep("write").catch(() => null);
+        wroteSinceClose = true;
+      }
+      return result;
+    };
+  }
+}
+
+/** Tools whose success changes note content, relations or lifecycle. */
+const CONTENT_WRITE_TOOLS = ["remember", "revise", "split", "resolve", "withdraw", "recover", "forget", "label", "connect", "attach", "detach", "claim"] as const;
+
+/** True when a tool result reports a write rather than an error, a refusal or
+ *  a no-op. Conservative: anything unreadable counts as a write, which only
+ *  ever asks for the full close. */
+function wroteContent(result: unknown): boolean {
+  const text = (result as { content?: Array<{ text?: string }> })?.content?.[0]?.text;
+  if (typeof text !== "string") return true;
+  try {
+    const r = JSON.parse(text) as Record<string, unknown>;
+    if (r.error || r.ok === false || r.unchanged === true || r.action === "already_written" || r.mode === "already_written") return false;
+    if (r.replaced === 0 && !r.closure) return false;
+    return true;
+  } catch {
+    return true;
+  }
 }

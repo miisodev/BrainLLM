@@ -119,12 +119,12 @@ cd BrainLLM &amp;&amp; bun install &amp;&amp; bun run build</pre>
         day()                      when start() reports a new day
 DURING  remember · revise · recall · domain · connect · ...
 END     session() → addendum() → maintain() → remarks() → diary() → close()</pre>
-    <p><code>close()</code> refuses until the closing steps have run, with session → remarks → diary in that order. <code>diary()</code> and <code>close()</code> take an identity line, <code>"LLM · environment · agent/mode"</code>. The gate's state lives on the day's session note, so it survives a restart. <code>session()</code> lists the notes the session changed, so a figure corrected in one note can be checked everywhere it is recorded.</p>
+    <p><code>close()</code> refuses until the closing steps have run, with session → remarks → diary in that order. <code>diary()</code> and <code>close()</code> take an identity line, <code>"LLM · environment · agent/mode"</code>. The gate's state lives on the day's session note, so it survives a restart. A session that wrote nothing has a light close: only <code>session()</code>, <code>remarks()</code> and a short <code>diary()</code>. Each close seals the day's records into a digest chained to the previous day's, and <code>maintain(deep=true)</code> reports any sealed record rewritten afterwards. <code>session()</code> lists the notes the session changed, so a figure corrected in one note can be checked everywhere it is recorded.</p>
 
     <h2 id="editing">Editing large notes</h2>
     <ul>
       <li><code>revise(noteId, section="Heading")</code> replaces one section; <code>mode="before"</code>, <code>"after"</code>, <code>"prepend"</code> and <code>"remove"</code> act around it.</li>
-      <li><code>revise(noteId, find="a few words", within="tr")</code> replaces, inserts beside or removes the table row containing them. Inline formatting in the stored text doesn't stop a match.</li>
+      <li><code>revise(noteId, find="a few words", within="tr")</code> replaces, inserts beside or removes the table row containing them. Inline formatting in the stored text doesn't stop a match, and the row's visible text works as an anchor too. Add <code>mode="remove", closure={thread, body}</code> to close a register row and record the closure in one call.</li>
       <li><code>revise(domain="Name", find=, body=)</code> previews a find and replace across a whole domain; add <code>dryRun=false</code> to write it.</li>
       <li>Reads take <code>section=</code>; records take <code>block="14:05"</code> or <code>block="-1"</code> for one addendum; <code>read(ids=[...], text=true)</code> returns readable text for orientation.</li>
       <li><code>diff(since="today")</code> shows every change made today, with table edits reported cell by cell.</li>

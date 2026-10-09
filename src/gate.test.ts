@@ -61,3 +61,41 @@ describe("close-gate steps after midnight", () => {
     expect([...labels.values()].filter((x) => x.noteType === "session")).toHaveLength(1);
   });
 });
+
+describe("light close", () => {
+  const setup = () => {
+    const fake = fakeTrilium();
+    const cfg: BrainLLMConfig = { ...EMPTY_BRAINLLM, root: "root", memory: { ...EMPTY_BRAINLLM.memory, sessions: "sessions" } };
+    const server = new McpServer({ name: "BrainLLM", version: "0.0.0-test" });
+    registerTools(server, fake.client, { config: cfg });
+    const tools = (server as unknown as { _registeredTools: Record<string, { handler?: Function; callback?: Function }> })._registeredTools;
+    const call = (name: string, args: object = {}) => (tools[name]!.handler ?? tools[name]!.callback)!(args, {});
+    return { ...fake, call };
+  };
+
+  test("remarks() gives one short cue when nothing was written", async () => {
+    const { call } = setup();
+    const text = JSON.stringify(await call("remarks"));
+    expect(text).toContain("light");
+    expect(text).not.toContain("Capabilities");
+  });
+
+  test("a recorded write brings back the full cues", async () => {
+    const { call, labels } = setup();
+    await call("remarks");
+    const [id] = [...labels.entries()].find(([, l]) => l.noteType === "session")!;
+    labels.get(id)!.gate = `${labels.get(id)!.gate},write:9`;
+    const text = JSON.stringify(await call("remarks"));
+    expect(text).toContain("Capabilities");
+  });
+
+  test("close() without a write asks only for session, remarks and diary", async () => {
+    const { call } = setup();
+    const text = JSON.stringify(await call("close", { summary: "s", identity: "Claude · Test · Unit" }));
+    expect(text).toContain("preclose_incomplete");
+    expect(text).toContain("session, remarks, diary");
+    expect(text).not.toContain("maintain()\\\", \\\"");
+    expect(text).toContain("hint");
+    expect(text).toMatch(/Call session\(\), remarks\(\), diary\(\) first/);
+  });
+});

@@ -81,3 +81,18 @@ describe("coerceToolArgs — string-encoded params through a strict schema", () 
     expect(() => registeredSchema(server, "arr").parse({ list: "not json [" })).toThrow();
   });
 });
+
+describe("coerceToolArgs — objects", () => {
+  test("a JSON-encoded object parses into an object field", () => {
+    const server = new McpServer({ name: "t", version: "0.0.0" });
+    server.tool(
+      "demo",
+      "demo",
+      { closure: z.object({ thread: z.string(), body: z.string() }).optional() },
+      async () => ({ content: [{ type: "text" as const, text: "ok" }] })
+    );
+    coerceToolArgs(server);
+    const parsed = registeredSchema(server, "demo").parse({ closure: '{"thread":"Escalations","body":"Closed"}' }) as { closure: { thread: string } };
+    expect(parsed.closure.thread).toBe("Escalations");
+  });
+});

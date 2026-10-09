@@ -6,8 +6,8 @@ Security fixes ship on the latest release line. Older versions may remain useful
 
 | Version | Supported |
 |---|---|
-| 12.8.x | ✅ |
-| 12.7.x and earlier | ❌ |
+| 12.9.x | ✅ |
+| 12.8.x and earlier | ❌ |
 
 ## Reporting a vulnerability
 
@@ -27,6 +27,8 @@ Please use a private channel until a fix and coordinated disclosure path are agr
 Run the latest tagged release rather than an unreleased branch or a mutable dependency lock. For an HTTP deployment reachable outside a trusted network, set `MCP_AUTH_TOKEN`; configure `BRAINLLM_OWNER_PASSWORD` only when hosted OAuth clients require it. Keep the Trilium instance, ETAPI token, OAuth store, and `brainllm.json` on protected storage, and restrict network access at the platform edge.
 
 Since 12.8.0 the OAuth store keeps refresh tokens only as SHA-256 hashes (a token issued earlier is accepted once and replaced by a hashed successor on its next refresh), MCP traffic is rate-limited per bearer token with a looser per-IP bound, and the consent screen shows where an approval will be sent and warns when that is the local machine.
+
+Since 12.9.0 the body sanitizer keeps an unclosed `form`, `select`, `template` or similar opener as escaped, inert text instead of removing everything after it; unclosed `script`, `style`, `noscript` and `iframe` still take their tail with them, and closed active blocks are still removed whole. Each close also seals the day's records in a hash chain that `maintain(deep=true)` verifies, so a rewritten session, diary or thread entry is reported rather than silently trusted.
 
 For credential rotation, replace `MCP_AUTH_TOKEN` and the ETAPI token in the provider/Trilium, set a fresh `BRAINLLM_OAUTH_SECRET` (32+ characters) to invalidate existing OAuth tokens, and remove obsolete local `*.oauth.json` / `*.token` files. Never put recovered credentials in a repository, shared context note, Docker context, or release artifact.
 

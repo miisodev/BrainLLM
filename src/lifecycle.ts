@@ -606,6 +606,9 @@ export async function sweep(
     if (structure.unbalancedTags.length) {
       report.flagged.push(`unbalanced tags: ${n.title} [${n.noteId}] — <${structure.unbalancedTags.join(">, <")}> left open; the next write will auto-close them, or fix now with revise(mode=replace)`);
     }
+    if (structure.tableShape.length) {
+      report.flagged.push(`table shape: ${n.title} [${n.noteId}] — ${structure.tableShape.slice(0, 3).join("; ")}${structure.tableShape.length > 3 ? ` (+${structure.tableShape.length - 3} more)` : ""}. Rewrite the row with one <td> per column: revise(find=<anchor>, within="tr")`);
+    }
 
     // Has this note outgrown safe section-targeted editing? A different
     // question from "can it be read whole", and it goes wrong earlier: picking
@@ -723,14 +726,19 @@ export async function sweep(
         // relation shape or reputation instead of reading either body — which is
         // acking a finding without evaluating it, the exact habit ack= exists to
         // avoid.
-        const headingCache = new Map<string, string[]>();
-        const headingsOf = async (n: Note): Promise<string[]> => {
+        const headingCache = new Map<string, { headings: string[]; words: Set<string> }>();
+        const shapeOf = async (n: Note): Promise<{ headings: string[]; words: Set<string> }> => {
           if (!headingCache.has(n.noteId)) {
             const content = await trilium.getNoteContent(n.noteId).catch(() => "");
-            headingCache.set(n.noteId, headingOutline(content).filter((h) => h.level <= 3).map((h) => h.text));
+            const words = new Set(
+              content.replace(/<[^>]+>/g, " ").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3)
+            );
+            headingCache.set(n.noteId, { headings: headingOutline(content).filter((h) => h.level <= 3).map((h) => h.text), words });
           }
           return headingCache.get(n.noteId)!;
         };
+        // Headings every note of a kind carries say nothing about a shared subject.
+        const GENERIC_HEADING = /^(last updated\b.*|overview|context|goal|sources|revision|resolution|notes?|summary)$/i;
 
         for (const [domSlug, notes] of byDomain) {
           const reported = new Set<string>();
@@ -759,16 +767,25 @@ export async function sweep(
               // it spends the reader's trust in every other hint the tool gives.
               if (acknowledged(a) || acknowledged(bn)) continue;
 
-              const [ha, hb] = await Promise.all([headingsOf(a), headingsOf(bn)]);
-              const overlap = ha.filter((h) => hb.some((x) => x.toLowerCase() === h.toLowerCase()));
+              const [sa, sb] = await Promise.all([shapeOf(a), shapeOf(bn)]);
+              const ha = sa.headings, hb = sb.headings;
+              const overlap = ha.filter((h) => !GENERIC_HEADING.test(h) && hb.some((x) => x.toLowerCase() === h.toLowerCase()));
+              // A shared title word alone ("model", "agents") flagged pairs that
+              // had nothing else in common (2026-10-08). Flag only when the bodies
+              // also agree: a real heading in common, or most of their vocabulary.
+              let common = 0;
+              for (const w of sa.words) if (sb.words.has(w)) common++;
+              const union = sa.words.size + sb.words.size - common;
+              const similarity = union ? common / union : 0;
+              if (!overlap.length && similarity < 0.45) continue;
               const show = (h: string[]) => (h.length ? h.slice(0, 8).join(" · ") + (h.length > 8 ? " · …" : "") : "(no headings)");
 
               report.flagged.push(
                 `near-duplicate subject: '${a.title}' [${a.noteId}] and '${bn.title}' [${bn.noteId}] in Domain/${domSlug} ` +
-                `share '${shared.join("', '")}'. Sections — '${a.title}': ${show(ha)} | '${bn.title}': ${show(hb)}. ` +
+                `share '${shared.join("', '")}' and ${Math.round(similarity * 100)}% of their vocabulary. Sections — '${a.title}': ${show(ha)} | '${bn.title}': ${show(hb)}. ` +
                 (overlap.length
                   ? `${overlap.length} heading(s) in common (${overlap.slice(0, 5).join(", ")}), which is what a genuine split subject looks like — read both, merge into the older one, and forget() the other.`
-                  : `No headings in common, so these are most likely distinct notes that happen to share a title word — maintain(ack=["${a.noteId}"]) to silence this once you have confirmed it.`)
+                  : `No headings in common, but most of their wording is shared — read both; if they are distinct, maintain(ack=["${a.noteId}"]) silences this.`)
               );
             }
           }

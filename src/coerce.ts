@@ -75,10 +75,25 @@ const asArray = (v: unknown): unknown => {
   }
 };
 
+// An object-typed field (revise's closure=) arrives as JSON text from the
+// same clients that stringify arrays.
+const asObject = (v: unknown): unknown => {
+  if (typeof v !== "string") return v;
+  const t = v.trim();
+  if (!t.startsWith("{")) return v;
+  try {
+    const parsed: unknown = JSON.parse(t);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : v;
+  } catch {
+    return v;
+  }
+};
+
 const COERCERS: Record<string, (v: unknown) => unknown> = {
   ZodBoolean: asBoolean,
   ZodNumber: asNumber,
   ZodArray: asArray,
+  ZodObject: asObject,
 };
 
 export interface CoerceReport {

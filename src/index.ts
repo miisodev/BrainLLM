@@ -137,7 +137,7 @@ function createServer(origin: string | null = null): McpServer {
     {
       name: BRAND.name,
       title: BRAND.name,
-      version: "12.8.0",
+      version: "12.9.0",
       description: BRAND.description,
       websiteUrl: BRAND.website,
       icons: brandIcons(origin),
