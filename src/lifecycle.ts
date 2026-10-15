@@ -91,8 +91,19 @@ function isoDaysAgo(days: number): string {
 /** The acknowledgement key for a note: its content blob, which changes when and
  *  only when the body does. Deliberately NOT dateModified — writing the
  *  acknowledgement label would bump that and instantly invalidate itself. */
-function reviewKey(n: Note): string {
+export function reviewKey(n: Note): string {
   return n.blobId ?? n.dateModified;
+}
+
+/** Is this note quiet because its CURRENT content was acknowledged?
+ *
+ *  The single check behind maintain(ack=)'s "quiet until content changes"
+ *  promise, shared so every reader of that promise agrees with its writer.
+ *  domain()'s stale flag used to ignore the mechanism, so a note acknowledged
+ *  correctly under maintain(deep) still arrived there wearing stale:true and
+ *  inflating the count — an ack that worked in one lane and not another. */
+export function isAcknowledged(n: Note): boolean {
+  return ownedLabel(n, "reviewed") === reviewKey(n);
 }
 
 /** Kinds that hold timeless knowledge: no state, version or decision history.
@@ -172,7 +183,7 @@ export async function sweep(
 
   let suppressed = 0;
   const acknowledged = (n: Note): boolean => {
-    if (ownedLabel(n, "reviewed") !== reviewKey(n)) return false;
+    if (!isAcknowledged(n)) return false;
     suppressed++;
     return true;
   };

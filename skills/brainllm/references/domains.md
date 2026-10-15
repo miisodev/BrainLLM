@@ -21,7 +21,7 @@ Markers are just the emoji on each source; their dates live only in the Revision
 
 ## The Sources note
 
-Creating a domain creates the book and its Sources note together. `remember(kind="sources", domain=…)` merges into the Sources section; pass `revision=[{source, marker, date?}]` to upsert Revision rows by source name (the name must match the list exactly).
+Creating a domain creates the book and its Sources note together. `remember(kind="sources", domain=…)` merges into the Sources section; pass `revision=[{source, marker, date?}]` to upsert Revision rows by source name (the name must match the list exactly). `dryRun=true` previews the row additions/updates without writing; a new key near an existing one comes back with `didYouMean` (and `didYouMeanNote` naming the pair) — on the dry run and on the real call — so a qualifier added to a name updates its row instead of creating a second one.
 
 ## 1. Creating a domain
 

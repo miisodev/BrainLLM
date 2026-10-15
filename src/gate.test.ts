@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerTools } from "./tools.js";
+import { registerTools, markWithRetry } from "./tools.js";
 import { EMPTY_BRAINLLM, type BrainLLMConfig } from "./config.js";
 import type { TriliumClient, Note } from "./trilium.js";
 
@@ -77,6 +77,7 @@ describe("light close", () => {
     const { call } = setup();
     const text = JSON.stringify(await call("remarks"));
     expect(text).toContain("light");
+    expect(text).toContain("no content was written this session");
     expect(text).not.toContain("Capabilities");
   });
 
@@ -97,5 +98,35 @@ describe("light close", () => {
     expect(text).not.toContain("maintain()\\\", \\\"");
     expect(text).toContain("hint");
     expect(text).toMatch(/Call session\(\), remarks\(\), diary\(\) first/);
+  });
+});
+
+// The V13 write-gate policy: one retry, then a visible failure. The old
+// wrapper swallowed the first failure and cached "no write" in-process, so a
+// single Trilium hiccup on the first write could downgrade the day's close to
+// light forever (2026-10-07).
+describe("markWithRetry", () => {
+  test("a mark that lands costs one attempt", async () => {
+    let calls = 0;
+    const ok = await markWithRetry(async () => { calls++; });
+    expect(ok).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  test("one failure retries, and the retry carries the mark", async () => {
+    let calls = 0;
+    const ok = await markWithRetry(async () => {
+      calls++;
+      if (calls === 1) throw new Error("Trilium blinked");
+    });
+    expect(ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  test("two failures return false rather than looping", async () => {
+    let calls = 0;
+    const ok = await markWithRetry(async () => { calls++; throw new Error("down"); });
+    expect(ok).toBe(false);
+    expect(calls).toBe(2);
   });
 });

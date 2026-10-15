@@ -825,16 +825,22 @@ const SAFE_TAGS = new Set([
 ]);
 const URL_ATTRIBUTES = new Set(["href", "src", "cite", "action", "formaction", "xlink:href"]);
 const SAFE_SCHEMES = new Set(["http", "https", "mailto", "tel"]);
+/** Per-tag attribute allowlist; everything else on the tag strips with a
+ *  warning. It must include the attributes CKEditor writes into stored content
+ *  itself and regenerates on every save, or a re-sanitized note mutates and
+ *  reports the editor's own markup as injection: spellcheck="false" on inline
+ *  <code>, data-list-item-id on <li> (list ids since CKEditor 45.1.1). */
 const TAG_ATTRIBUTES: Record<string, Set<string>> = {
   a: new Set(["href", "target", "rel", "download"]),
   img: new Set(["src", "alt", "width", "height", "loading"]),
   th: new Set(["colspan", "rowspan", "scope", "headers"]),
   td: new Set(["colspan", "rowspan", "headers"]),
-  code: new Set(["class"]),
+  code: new Set(["class", "spellcheck"]),
   pre: new Set(["class"]),
   span: new Set(["class"]),
   mark: new Set(["class"]),
   ol: new Set(["start", "reversed", "type"]),
+  li: new Set(["data-list-item-id"]),
 };
 
 function safeHtmlUrl(value: string): string | null {
@@ -2051,4 +2057,156 @@ export function upsertTableRow(
     matched: !!matchedRow,
     created: !matchedRow,
   };
+}
+
+// ── Register rows: append, fit a moved row, catch a near-duplicate key ───────
+//
+// Registers are maintained tables whose rows carry evidence dates (a backlog,
+// a defects list, a domain's Revision list). Three conveniences live here,
+// pure and testable: appending one row without first locating an anchor row
+// (revise's append=), moving a closed row into another register's table
+// (closure={note}), and warning when a newly-added source key sits one word
+// away from an existing one.
+
+/** Where a row can be appended in a note's table: the insertion point in the
+ *  tbody, the shape every row is held to, and the skeleton placeholder row a
+ *  new row replaces rather than follows. */
+export interface TableSpot {
+  /** Index just before `</tbody>` — where a new last row is inserted. */
+  insertAt: number;
+  /** Columns of the table's first row, colspan-aware — the same convention
+   *  tableShapeIssues() uses. */
+  columns: number;
+  /** A lone placeholder row ("— none yet —" / an empty first cell) that a new
+   *  row replaces instead of following, the rule upsertTableRow follows. */
+  placeholder?: { start: number; end: number };
+}
+
+/** Locate the table a row lands in: the first table under `heading` (h2/h3/h4,
+ *  in that order — the same contract section= and upsertTableRow use), or the
+ *  note's first table when no heading is given. Null when there is no such
+ *  table or no <tbody> to append to. */
+export function findTable(html: string, heading?: string): TableSpot | null {
+  let scope = html;
+  let scopeStart = 0;
+  if (heading !== undefined) {
+    const section = locateSection(html, heading);
+    if (!section) return null;
+    scope = html.slice(section.contentStart, section.end);
+    scopeStart = section.contentStart;
+  }
+
+  const tableMatch = /<table[^>]*>[\s\S]*?<\/table>/i.exec(scope);
+  if (!tableMatch) return null;
+  const tbodyMatch = /<tbody[^>]*>([\s\S]*?)<\/tbody>/i.exec(tableMatch[0]);
+  if (!tbodyMatch) return null;
+
+  const firstRow = /<tr[^>]*>([\s\S]*?)<\/tr>/i.exec(tableMatch[0]);
+  if (!firstRow) return null;
+  const columns = [...firstRow[1].matchAll(/<t[hd](?=[\s>/])([^>]*)>/gi)].reduce(
+    (sum, c) => sum + Number(/colspan\s*=\s*"?(\d+)/i.exec(c[1] ?? "")?.[1] ?? 1),
+    0
+  );
+  if (!columns) return null;
+
+  // Offsets are absolute in `html`, so callers can splice without re-parsing.
+  const tbodyInner = tbodyMatch[1];
+  const tbodyInnerStart = scopeStart + tableMatch.index + tbodyMatch.index + tbodyMatch[0].indexOf(">") + 1;
+  const insertAt = tbodyInnerStart + tbodyInner.length;
+
+  let placeholder: TableSpot["placeholder"];
+  const rowRe = /<tr[^>]*>[\s\S]*?<\/tr>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = rowRe.exec(tbodyInner)) !== null) {
+    const first = /<td[^>]*>([\s\S]*?)<\/td>/i.exec(m[0]);
+    const text = first ? decodeEntities(first[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase() : "";
+    if (text === "" || text === "— none yet —") {
+      placeholder = { start: tbodyInnerStart + m.index, end: tbodyInnerStart + m.index + m[0].length };
+      break;
+    }
+  }
+
+  return { insertAt, columns, ...(placeholder ? { placeholder } : {}) };
+}
+
+/** Append one <tr> to the table at `spot`. `cells` are cell inner HTML: a
+ *  plain-text caller escapes first, a moved row passes its stored cells as
+ *  they are. A placeholder row is replaced, never left beside the new one. */
+export function appendRowToTable(html: string, spot: TableSpot, cells: string[]): string {
+  const row = `<tr>${cells.map((c) => `<td>${c}</td>`).join("")}</tr>`;
+  const at = spot.placeholder ?? { start: spot.insertAt, end: spot.insertAt };
+  return html.slice(0, at.start) + row + html.slice(at.end);
+}
+
+/** Fit a moved row's cells to a table's shape: exact when the counts match,
+ *  padded with empty cells when the table is wider. Null when the row carries
+ *  MORE cells than the table has columns — appending it would silently drop
+ *  data, and a row that disagrees with the target's shape is exactly what a
+ *  register must never hold. */
+export function fitRowCells(cells: string[], columns: number): string[] | null {
+  if (columns <= 0 || cells.length > columns) return null;
+  return [...cells, ...Array.from({ length: columns - cells.length }, () => "")];
+}
+
+/** The inner HTML of each cell of one stored <tr> — what a moved register row
+ *  carries with it into the note that closes it. */
+export function rowCells(row: string): string[] {
+  return [...row.matchAll(/<(t[hd])(?=[\s>/])[^>]*>([\s\S]*?)<\/\1>/gi)].map((m) => m[2]!.trim());
+}
+
+/** The existing source key a newly-added one most likely meant, or null.
+ *  The section handler's rule — small character edit distance, threshold
+ *  scaling with length — catches typos ("Coudflare Pages" → "Cloudflare
+ *  Pages"). It cannot catch the compound duplicate that keeps happening:
+ *  "OpenRouter management API" added beside "OpenRouter API" (2026-10-15) is
+ *  eleven characters away but one word away, so keys are also compared as
+ *  word sets — one containing the other with at most two extra words is near,
+ *  and a compound match outranks a plain distance one. */
+export function nearestKey(
+  requested: string,
+  available: string[]
+): { key: string; distance: number; reason: "typo" | "compound" } | null {
+  const clean = (s: string) => decodeEntities(s).replace(/\s+/g, " ").trim();
+  const req = clean(requested);
+  if (!req) return null;
+  const wordSet = (s: string) =>
+    new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean));
+  const reqWords = wordSet(req);
+
+  let best: { key: string; distance: number; reason: "typo" | "compound" } | null = null;
+  const rank = (c: { distance: number; reason: "typo" | "compound" }): [number, number] =>
+    c.reason === "compound" ? [0, c.distance] : [1, c.distance];
+
+  for (const key of available) {
+    const cand = clean(key);
+    if (!cand || cand.toLowerCase() === req.toLowerCase()) continue;
+    let hit: { distance: number; reason: "typo" | "compound" } | null = null;
+
+    const candWords = wordSet(cand);
+    const small = reqWords.size <= candWords.size ? reqWords : candWords;
+    const large = reqWords.size <= candWords.size ? candWords : reqWords;
+    if (small.size) {
+      let extra = 0;
+      let subset = true;
+      for (const w of small) if (!large.has(w)) { subset = false; break; }
+      if (subset) {
+        for (const w of large) if (!small.has(w)) extra++;
+        if (extra <= 2) hit = { distance: extra, reason: "compound" };
+      }
+    }
+    if (!hit) {
+      const d = editDistance(req, cand);
+      if (d > 0 && d <= Math.max(2, Math.floor(req.length / 5))) hit = { distance: d, reason: "typo" };
+    }
+    if (!hit) continue;
+
+    if (!best) {
+      best = { key, ...hit };
+      continue;
+    }
+    const [r1, d1] = rank(hit);
+    const [r2, d2] = rank(best);
+    if (r1 < r2 || (r1 === r2 && d1 < d2)) best = { key, ...hit };
+  }
+  return best;
 }

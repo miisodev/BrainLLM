@@ -489,6 +489,35 @@ describe("HTML allowlist sanitizer", () => {
     expect(result.html).not.toContain("style");
     expect(result.html).not.toContain("onmouseover");
   });
+
+  test("round-trips CKEditor's own attributes unchanged and without warnings", () => {
+    // Editor output as stored after any UI edit: list ids on <li>, spellcheck on
+    // inline <code>. Re-sanitizing one row edit reported ~30 of these as unsafe
+    // and stripped attributes the editor regenerates on its next save.
+    const editorOutput =
+      '<ul><li data-list-item-id="e7d08274683ec8b718748ef80ba16c6d8">Pinboard push</li></ul>' +
+      '<p><code spellcheck="false">maintain(deep=true)</code> weekly</p>';
+    const result = sanitizeHtml(editorOutput);
+    expect(result.html).toBe(editorOutput);
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("still strips genuinely unsafe attributes, including on the editor-attribute tags", () => {
+    const result = sanitizeHtml('<p onclick="x" style="color:red">Body</p><ul><li onmouseover="go()" data-rel="x">Item</li></ul>');
+    expect(result.html).toBe("<p>Body</p><ul><li>Item</li></ul>");
+    expect(result.warnings).toEqual(["Stripped an unsafe attribute from <p>", "Stripped an unsafe attribute from <li>"]);
+  });
+
+  test("double-sanitizing editor output changes nothing and warns nothing", () => {
+    const editorOutput =
+      '<ul><li data-list-item-id="e7d08274683ec8b718748ef80ba16c6d8">Pinboard push</li></ul>' +
+      '<p><code spellcheck="false">maintain(deep=true)</code> weekly</p>';
+    const once = sanitizeHtml(editorOutput);
+    const twice = sanitizeHtml(once.html);
+    expect(once.warnings).toEqual([]);
+    expect(twice.html).toBe(once.html);
+    expect(twice.warnings).toEqual([]);
+  });
 });
 
 describe("structural lint", () => {

@@ -42,6 +42,8 @@ Written by the server — you never set `#noteType`, `#status`, `#created`, `#up
 | `#created` | ISO date | Set at creation (the user's local day) |
 | `#updated` | ISO date | Updated on every write |
 | `#closed` | ISO date | Set when `resolve()` or `forget()` archives a note |
+| `#scope` | `interactive` `agent` | On the day's session note — the scope the day's last `session()` ran under; `close()` stamps `#interactive` only when this is `interactive` |
+| `#interactive` | `HH:mm` | Stamped on the session note by an INTERACTIVE `close()`. `start()`/`day()` read its presence as "the day has started" — overnight agent addenda never set it, so the morning still calls `day()` |
 | `#topic` | slugged, repeatable | Subject tags (`ai-tooling`, `infra`) — capitalization normalized server-side |
 | `#domain` | slugged | Knowledge domain — book auto-created on first use |
 | `#archived` | (flag) | Excludes the note from default `recall()`; content preserved in place |

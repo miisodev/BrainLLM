@@ -125,7 +125,7 @@ describe("revise refuses a dry run it cannot honour", () => {
     const s = new McpServer({ name: "t", version: "0" });
     registerTools(s, trilium as never, { config: { root: "r", master: {}, llm: {}, memory: {}, knowledge: {}, insights: {} } as never });
     const tool = (s as unknown as { _registeredTools: Record<string, { handler: (a: unknown, e: unknown) => Promise<{ content: Array<{ text: string }> }> }> })._registeredTools.revise!;
-    const out = await tool.handler({ noteId: "abc", find: "a", within: "tr", body: "x", dryRun: true }, {});
+    const out = await tool.handler({ noteId: "abc", find: "a", body: "x", dryRun: true }, {});
     expect(out.content[0]!.text).toContain("dryRun= applies only to revise(domain=)");
     expect(touched).toEqual([]);
   });

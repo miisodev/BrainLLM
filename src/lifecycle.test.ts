@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyResolution, isContainer, isStructural } from "./lifecycle.js";
+import { applyResolution, isAcknowledged, isContainer, isStructural, reviewKey } from "./lifecycle.js";
 import { labelPlan } from "./router.js";
 import { RESOLUTION_ANCHOR, contentFor, isOpenResolutionOnly, missingSections } from "./templates.js";
 import { ownedLabel, type Note, type Attribute } from "./trilium.js";
@@ -240,6 +240,35 @@ describe("timeless kinds — dated prose", () => {
     const { TIMELESS_KINDS } = await import("./lifecycle.js");
     for (const k of ["thread", "user", "information", "domain"]) expect(TIMELESS_KINDS.has(k)).toBe(true);
     for (const k of ["session", "diary", "log", "threadEntry", "sources", "claim"]) expect(TIMELESS_KINDS.has(k)).toBe(false);
+  });
+});
+
+describe("isAcknowledged — maintain(ack=) parity for every reader", () => {
+  test("a reviewed note whose blob is unchanged is acknowledged", () => {
+    const n = { ...makeTestNote("N1", [{ name: "reviewed", value: "blob-1" }]), blobId: "blob-1" } as Note;
+    expect(reviewKey(n)).toBe("blob-1");
+    expect(isAcknowledged(n)).toBe(true);
+  });
+
+  test("a changed body (different blob) ends the acknowledgement", () => {
+    const n = { ...makeTestNote("N1", [{ name: "reviewed", value: "blob-1" }]), blobId: "blob-2" } as Note;
+    expect(isAcknowledged(n)).toBe(false);
+  });
+
+  test("no reviewed label, no acknowledgement", () => {
+    const n = { ...makeTestNote("N1", []), blobId: "blob-1" } as Note;
+    expect(isAcknowledged(n)).toBe(false);
+  });
+
+  test("without a blobId the key falls back to dateModified", () => {
+    const n = makeTestNote("N1", [{ name: "reviewed", value: "2026-01-01 00:00:00" }]);
+    expect(reviewKey(n)).toBe("2026-01-01 00:00:00");
+    expect(isAcknowledged(n)).toBe(true);
+  });
+
+  test("an inherited reviewed label does not acknowledge", () => {
+    const n = { ...makeTestNote("N1", [{ noteId: "OTHER", name: "reviewed", value: "blob-1", isInheritable: true }]), blobId: "blob-1" } as Note;
+    expect(isAcknowledged(n)).toBe(false);
   });
 });
 

@@ -73,8 +73,14 @@ import {
   identityProblem,
   hasAddendumMarker,
   nearestHeading,
+  nearestKey,
+  findTable,
+  appendRowToTable,
+  fitRowCells,
+  rowCells,
   repairedStructure,
   extractSections,
+  type TableSpot,
 } from "./normalize.js";
 import { contentFor, RESOLUTION_ANCHOR, structureRuleFor, STRUCTURE_RULES, isOpenResolutionOnly, purposeContent } from "./templates.js";
 import {
@@ -87,7 +93,7 @@ import {
   isSingleton,
   type RememberOpts,
 } from "./router.js";
-import { sweep, buildDigest, applyResolution, isStructural, isContainer, type SweepReport } from "./lifecycle.js";
+import { sweep, buildDigest, applyResolution, isStructural, isContainer, isAcknowledged, type SweepReport } from "./lifecycle.js";
 import { createBrainLLMStructure, containerPurposes } from "./bootstrap.js";
 import { generateDailyLog, catchUpDeletions } from "./journal.js";
 import { sealDay, verifySeals } from "./seal.js";
@@ -151,7 +157,141 @@ export function applyFindEdit(
   return inline.length ? spans(inline, "inline-tolerant") : null;
 }
 
+/** How many "changed since last session" rows start() and day() return before
+ *  capping. The cap itself was always there; what was missing was any sign it
+ *  had fired — a silently sliced list reads exactly like a complete one. */
+export const CHANGES_CAP = 25;
 
+/** Bound a dry-run preview, naming how much was cut, so a preview can show an
+ *  element's full extent without pasting a whole multi-paragraph removal. */
+const boundPreview = (s: string, max = 1600): string =>
+  s.length <= max ? s : `${s.slice(0, max)}… (${s.length - max} more characters)`;
+
+/** Cap a change list, reporting what was withheld rather than letting the
+ *  slice read as the whole picture. Every other bounded result in the brain
+ *  states its bound (coverage[], truncated, "more") for the same reason. */
+export function capChanges<T>(
+  changes: T[],
+  cap = CHANGES_CAP
+): { changes: T[]; changesTruncated?: { shown: number; total: number } } {
+  if (changes.length <= cap) return { changes };
+  return { changes: changes.slice(0, cap), changesTruncated: { shown: cap, total: changes.length } };
+}
+
+/** Data-row count of the first table inside a section read, derived from the
+ *  returned HTML alone — no extra read. A register's "Open" section used to
+ *  leave "how many rows" to a second call; the section carries the table, so
+ *  the count rides along. Undefined when the section holds no table. */
+export function sectionTableRows(html: string): number | undefined {
+  const table = /<table[^>]*>[\s\S]*?<\/table>/i.exec(html)?.[0];
+  if (!table) return undefined;
+  const tbody = /<tbody[^>]*>([\s\S]*?)<\/tbody>/i.exec(table)?.[1];
+  const scope = tbody ?? table.replace(/<thead[^>]*>[\s\S]*?<\/thead>/gi, "");
+  return (scope.match(/<tr[^>]*>/gi) ?? []).length;
+}
+
+// ── Recall provenance helpers ─────────────────────────────────────────────────
+
+/** The strategies that can produce a recall hit, in tie-break order (most
+ *  decisive first). "ordered" is the field-sorted path; "regex" the verified
+ *  body-pattern path. */
+export const RECALL_STRATEGIES = ["label", "title", "text", "fuzzy", "ordered", "regex"] as const;
+export type RecallStrategy = (typeof RECALL_STRATEGIES)[number];
+
+/** Which strategy contributed most weight to a hit. Ties go to the earlier
+ *  strategy in RECALL_STRATEGIES, so "why did this rank" is stable. */
+export function dominantStrategy(contributions: Map<string, number>): RecallStrategy | null {
+  let best: RecallStrategy | null = null;
+  let bestWeight = 0;
+  for (const s of RECALL_STRATEGIES) {
+    const w = contributions.get(s) ?? 0;
+    if (w > bestWeight) {
+      bestWeight = w;
+      best = s;
+    }
+  }
+  return best;
+}
+
+/** A bounded, whitespace-collapsed window (±80 chars) around a match — the
+ *  evidence quoted for a recall hit. Ellipses mark where the note continues. */
+export function passageAround(text: string, index: number, length: number): string {
+  const from = Math.max(0, index - 80);
+  const to = Math.min(text.length, index + length + 80);
+  return `${from > 0 ? "…" : ""}${text.slice(from, to).replace(/\s+/g, " ").trim()}${to < text.length ? "…" : ""}`;
+}
+
+/** Evidence for a keyword hit: a window around the LONGEST query token that
+ *  actually occurs in the text (longest = most specific), or null when no
+ *  token occurs — a label hit's evidence is its label, not a body passage. */
+export function tokenPassage(text: string, tokens: string[]): string | null {
+  const lower = text.toLowerCase();
+  let best: { index: number; length: number } | null = null;
+  for (const t of tokens) {
+    const idx = lower.indexOf(t.toLowerCase());
+    if (idx < 0) continue;
+    if (!best || t.length > best.length) best = { index: idx, length: t.length };
+  }
+  return best ? passageAround(text, best.index, best.length) : null;
+}
+
+/** Does a note's last-modified stamp fall inside an optional ISO window?
+ *  Trilium stamps look like "2026-10-15 12:34:56.789+0200". A date-only bound
+ *  means the whole local day (a caller writing a date means a day, not
+ *  midnight UTC); a timestamp bound compares exactly. An unparseable note
+ *  stamp is kept — an unknown date must not silently exclude a note. */
+export function withinModifiedWindow(modified: string, since?: string, until?: string): boolean {
+  const day = modified.slice(0, 10);
+  const dayOk = /^\d{4}-\d{2}-\d{2}$/.test(day);
+  const isDay = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const ms = Date.parse(modified.replace(" ", "T"));
+  if (since) {
+    if (isDay(since)) {
+      if (dayOk && day < since) return false;
+    } else {
+      const s = Date.parse(since);
+      if (Number.isFinite(s) && Number.isFinite(ms) && ms < s) return false;
+    }
+  }
+  if (until) {
+    if (isDay(until)) {
+      if (dayOk && day > until) return false;
+    } else {
+      const u = Date.parse(until);
+      if (Number.isFinite(u) && Number.isFinite(ms) && ms > u) return false;
+    }
+  }
+  return true;
+}
+
+/** Receipt line when a raw strategy query saturated the backend's 30-candidate
+ *  cap — the merged pool crossing 30 is normal and must not trip this. Mirrors
+ *  the wording of the regex path's long-standing cap warning. */
+export function capWarning(saturated: Iterable<string>): string | null {
+  const names = [...new Set(saturated)].sort();
+  if (!names.length) return null;
+  return `The backend returned its 30-candidate cap on the ${names.join(", ")} ${names.length === 1 ? "strategy" : "strategies"}, so further matches may exist — narrow with domain= or kinds=, or use consistency() for an exhaustive scan.`;
+}
+
+/** Receipt copy for a backend search failure — deliberately NOT the no-match
+ *  copy: a failed query says nothing about what the brain holds. */
+export const SEARCH_FAILURE_NOTE =
+  "One or more backend search queries failed — this is a backend failure (Trilium unreachable, or its search index busy), NOT a verdict that nothing matched. Retry the call, and do not conclude from this receipt that the content is unstored.";
+
+/** Run a durable gate write with one retry. A single Trilium label-write
+ *  hiccup used to be swallowed and then cached in-process, permanently
+ *  downgrading the day's close to light; the retry policy lives here so the
+ *  content-write wrapper and session()'s repair share it — and so it is
+ *  testable without a connection (house precedent: applyFindEdit). */
+export async function markWithRetry(mark: () => Promise<void>): Promise<boolean> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await mark();
+      return true;
+    } catch { /* retry once */ }
+  }
+  return false;
+}
 
 /** Structured informational error return — use instead of throw for user-input errors
  *  so the LLM can read and react without the call appearing as a system failure. */
@@ -241,8 +381,15 @@ export function registerTools(
   /** A session with no content writes skips addendum() and maintain(). */
   const LIGHT_PRECLOSE_STEPS = ["session", "remarks", "diary"] as const;
   /** In-process cache of the durable "write" gate step, so tracking costs one
-   *  label write per session rather than one per write. */
+   *  label write per session rather than one per write. It is also the
+   *  EVIDENCE the durable gate is repaired from: if the label write failed,
+   *  session()/close() must not certify the day light just because the first
+   *  write was seen. */
   let wroteSinceClose = false;
+  /** Set when the durable "write" mark failed even after its retry, so the
+   *  failure is reported in the next session()/close() receipt instead of
+   *  being swallowed. Cleared by any later successful mark. */
+  let writeMarkPending: string | null = null;
 
   /** Today's session note, the gate's durable home. Search failures propagate:
    *  a missing note and an unavailable Trilium connection are different states,
@@ -299,6 +446,29 @@ export function registerTools(
     await trilium.updateLabelValue(noteId, "gate", serializeGate(stored));
     preCloseSteps.set(step, next);
     preCloseSeq = next;
+  };
+
+  /** Mark the durable "write" step, retrying once; on double failure record a
+   *  pending nonfatal note for session()/close() to surface. A silently failed
+   *  mark used to be cached in-process, so one Trilium hiccup on the first
+   *  write downgraded the whole session to a light close. */
+  const markWriteStep = async (): Promise<boolean> => {
+    const ok = await markWithRetry(() => markStep("write"));
+    writeMarkPending = ok
+      ? null
+      : "the \"write\" gate mark could not be recorded durably (Trilium label write failed twice)";
+    return ok;
+  };
+
+  /** Durable stamp of the scope the day's session() ran under. close() reads it
+   *  to decide whether the day counts as interactively closed — the
+   *  #interactive label start() checks for newDay — and an agent close must
+   *  never set that label. Never cleared with the gate; the last session() of
+   *  the day wins. Non-fatal on purpose: an unstamped day only ever costs a
+   *  redundant day() call, while a failed session() costs the whole pre-close. */
+  const stampSessionScope = async (date: string, scope: "interactive" | "agent"): Promise<void> => {
+    const noteId = await ensureGateNote(date);
+    if (noteId) await trilium.updateLabelValue(noteId, "scope", scope).catch(() => null);
   };
 
   /** Read the authoritative durable gate state. */
@@ -426,12 +596,16 @@ export function registerTools(
     threadId: string,
     block: string,
     d: string
-  ): Promise<{ noteId: string; action: "created" | "appended" | "already_written" }> {
+  ): Promise<{ noteId: string; action: "created" | "appended" | "already_written"; marker?: string }> {
     const found = await trilium.searchNotes(
       `#noteType=threadEntry #created='${d}'`,
       { ancestorNoteId: threadId, fastSearch: true, limit: 1 },
     );
     const time = localNowTime();
+    // The block marker this call writes (or wrote). Returned so the receipt can
+    // name the exact block — citing one's own "Build" block used to take another
+    // read of the entry (2026-10-15).
+    const marker = `Addendum — ${time}`;
 
     if (found.results[0]) {
       const noteId = found.results[0].noteId;
@@ -441,21 +615,21 @@ export function registerTools(
       const blocks = current.split(/<h2>Addendum — \d{2}:\d{2}<\/h2>\n?/i).slice(1);
       if (incoming && blocks.some((b) => norm(b) === incoming)) return { noteId, action: "already_written" };
       await trilium.createRevision(noteId);
-      await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Addendum — ${time}</h2>`, block));
+      await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>${marker}</h2>`, block));
       await trilium.updateLabelValue(noteId, "updated", d);
-      return { noteId, action: "appended" };
+      return { noteId, action: "appended", marker };
     }
 
     const created = await trilium.createNote(
       threadId,
       `[${d}]`,
-      contentFor("threadEntry", { date: d, body: `<h2>Addendum — ${time}</h2>\n${block}` })
+      contentFor("threadEntry", { date: d, body: `<h2>${marker}</h2>\n${block}` })
     );
     const noteId = created.note.noteId;
     await trilium.addLabel(noteId, "noteType", "threadEntry");
     await trilium.addLabel(noteId, "created", d);
     await ensureIcon(trilium, noteId);
-    return { noteId, action: "created" };
+    return { noteId, action: "created", marker };
   }
 
   /** A collection thread has no dated children to append to: its entries are
@@ -530,8 +704,18 @@ export function registerTools(
             sessionNoteId = digest.todaySession.id;
             const content = await trilium.getNoteContent(sessionNoteId).catch(() => "");
             sessionPreview = toText(content, 200);
-            // A session note without addendum blocks = nothing logged yet today.
-            newDay = !/<h2(?:\s[^>]*)?>\s*Addendum/i.test(content);
+            // A new day is a day no INTERACTIVE close has opened yet — not a
+            // day without addendum blocks. An overnight agent run (scope="agent")
+            // already writes addenda, and reading those as "the day has
+            // started" is how the morning session saw newDay:false and skipped
+            // day() (2026-10-07). An interactive close() stamps the note with
+            // its #interactive label; without it the day is new, whatever
+            // agents logged. The addendum test survives only as the fallback
+            // for when the note itself cannot be read.
+            const note = await trilium.getNote(sessionNoteId).catch(() => null);
+            newDay = note
+              ? !hasLabel(note, "interactive")
+              : !/<h2(?:\s[^>]*)?>\s*Addendum/i.test(content);
           } else {
             sessionNoteId = await ensureGateNote(todayStr);
             newDay = true;
@@ -541,6 +725,7 @@ export function registerTools(
 
       // Fetch recent changes within the brain since the last session.
       let changesSinceLastSession: Array<{ id: string; title: string; changed: string; deleted?: true }> = [];
+      let changesTruncated: { shown: number; total: number } | undefined;
       if (digest.lastSession && cfg.root) {
         const sinceDate = digest.lastSession.date;
         try {
@@ -555,14 +740,14 @@ export function registerTools(
               deduped.set(h.noteId, h);
             }
           }
-          changesSinceLastSession = [...deduped.values()]
-            .slice(0, 25)
-            .map((h) => ({
-              id: h.noteId,
-              title: h.current_title,
-              changed: h.date.slice(0, 10),
-              ...(h.current_isDeleted ? { deleted: true as const } : {}),
-            }));
+          const capped = capChanges([...deduped.values()].map((h) => ({
+            id: h.noteId,
+            title: h.current_title,
+            changed: h.date.slice(0, 10),
+            ...(h.current_isDeleted ? { deleted: true as const } : {}),
+          })));
+          changesSinceLastSession = capped.changes;
+          changesTruncated = capped.changesTruncated;
         } catch { /* non-fatal */ }
       }
 
@@ -579,6 +764,7 @@ export function registerTools(
           : [],
         lastSession: digest.lastSession ?? null,
         changesSinceLastSession: changesSinceLastSession.length ? changesSinceLastSession : undefined,
+        ...(changesTruncated ? { changesTruncated } : {}),
         ...(newDay ? { newDay: true, newDayHint: "First session of the day — call day() for the sweep payload (previous session + log + changes in one call)." } : {}),
         ...((depth ?? "digest") === "digest"
           ? { depthHint: "Preferences and protocols came back IN FULL — the two needed whole to orient from the first message. Biography, goals and responsibilities are section headings + preview; pull one with master(which) / llm(which), or a single section with their section= parameter. start(depth=\"full\") serves all five inline." }
@@ -592,28 +778,64 @@ export function registerTools(
     "session",
     `Pre-close review. Returns the six singletons as {id, lastModified} stubs (full=true inlines them), today's diary as {id, blocks, size}, the maintained notes changed today with their write counts, runs the lite maintenance sweep, and returns pending= (what each remaining close step has to do), audit= (do the singletons agree, and do the LLM singletons still serve the master ones) and next[]. Records the session step of the close gate. Idempotent.
 
-The close sequence next[] lays out: singleton updates from the session, then addendum(), maintain(), remarks(), diary() and close(). close() checks that addendum, maintain, remarks and diary ran, in the order session → remarks → diary. scope="agent" omits the singleton updates for scoped or autonomous runs. A session that wrote no content gets a light close: session() returns only the short next[] (remarks, a one-paragraph diary, close) and close() does not require addendum() or maintain().`,
+The close sequence next[] lays out: singleton updates from the session, then addendum(), maintain(), remarks(), diary() and close(). close() checks that addendum, maintain, remarks and diary ran, in the order session → remarks → diary. scope="agent" omits the singleton updates for scoped or autonomous runs. A session that wrote no content gets a light close: session() returns only the short next[] (remarks, a one-paragraph diary, close) and close() does not require addendum() or maintain(). continuing=true is a second session on a day already closed — verified against the day's addendum, it returns the short continuation receipt (no singleton review or audit) while still recording the session step.`,
     {
       date: z.string().optional().describe("ISO date YYYY-MM-DD (default: today)"),
       full: z.boolean().optional().describe("Inline every singleton's content and the diary body (default: stubs only)"),
       scope: z.enum(["interactive", "agent"]).optional().describe('"agent" for a scoped/autonomous run whose brief excludes the user\'s personal singletons — omits those steps from next[] (default: "interactive")'),
+      continuing: z.boolean().optional().describe("A second session on a day already closed — verified against today's addendum, returns the short continuation receipt (no singleton review). Refused on the day's first session."),
       light: z.boolean().optional().describe("Deprecated — light is now the default; accepted for compatibility and ignored"),
     },
-    async ({ date, full, scope }) => {
+    async ({ date, full, scope, continuing }) => {
       const d = checkedDate(date);
       const cfg = b();
       if (!cfg.master.root || !cfg.llm.root)
         throw new Error("BrainLLM not bootstrapped — run bootstrap.");
 
-      // Light close: nothing was written this session, so there is nothing to
-      // fold, sweep or audit, and the review below would cost more than the
-      // session did. The diary still matters — it is how the team is read.
-      if (!(await readGate(d)).has("write")) {
+      // continuing=true mirrors close(): it is only a continuation when today's
+      // note already carries an addendum. An unearned skip on the day's FIRST
+      // session is exactly what the gate exists to prevent.
+      let continued = false;
+      if (continuing) {
+        const prior = await trilium.searchNotes(
+          `#noteType=session #created='${d}'`,
+          { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 1 },
+        );
+        const priorContent = prior.results[0]
+          ? await trilium.getNoteContent(prior.results[0].noteId).catch(() => "")
+          : "";
+        continued = /<h2(?:\s[^>]*)?>\s*Addendum/i.test(priorContent);
+        if (!continued) {
+          return err(
+            "not_a_continuation",
+            `continuing=true needs a session note for ${d} that already carries an addendum — there is none, so this is the day's first session.`,
+            "Run the full pre-close protocol: session() → addendum() → maintain() → remarks() → diary() → close()."
+          );
+        }
+      }
+
+      // Light close: no content was written this session, so there is nothing
+      // to fold, sweep or audit, and the review below would cost more than the
+      // session did. "Light" means exactly that and nothing else — it is never
+      // the stubs mode of a normal receipt. The durable gate decides, but
+      // in-process evidence repairs it first: one failed "write" label write
+      // must not silently downgrade the day's close to light.
+      const writeGate = await readGate(d);
+      let gateNote: string | undefined;
+      if (wroteSinceClose && !writeGate.has("write")) {
+        if (await markWriteStep()) writeGate.set("write", 1);
+        else gateNote = writeMarkPending ?? "the durable write gate could not be repaired";
+      }
+      // Evidence counts even when the repair failed — a written session must
+      // never be certified light.
+      if (!(writeGate.has("write") || wroteSinceClose)) {
         await markStep("session", d);
+        await stampSessionScope(d, scope ?? "interactive");
         return txt({
           date: d,
+          ...(continued ? { continuing: true } : {}),
           closeMode: "light",
-          note: "No content was written this session, so addendum() and maintain() are not required and there is nothing to audit. If you learned something durable about the user or yourself, revise that singleton first — that makes it a full close, and session() will say so when re-run.",
+          note: "Light close — strictly because no content was written this session: addendum() and maintain() are not required and there is nothing to audit. If you learned something durable about the user or yourself, revise that singleton first — that makes it a full close, and session() will say so when re-run.",
           next: [
             "Call remarks() — one short cue for a short session.",
             "Call diary() — one short paragraph: what the session was and anything worth the team knowing.",
@@ -622,6 +844,80 @@ The close sequence next[] lays out: singleton updates from the session, then add
         });
       }
       // The gate is marked only after every read/sweep above succeeds.
+
+      // Today's diary entry as a stub: the id (which is all diary() needs) plus
+      // how much is already written. Inlining a whole day's entry costs real
+      // context on a day several addendum blocks deep, and a second same-day
+      // close is exactly when that context is scarcest. Extracted so a
+      // continuing session serves it too.
+      const diaryEntryOfToday = async (): Promise<{ id: string; content?: string; blocks?: number; size?: number } | null> => {
+        if (!cfg.llm.diary) return null;
+        const diarySearch = await trilium
+          .searchNotes(`#noteType=diary #created='${d}'`, { ancestorNoteId: cfg.llm.diary, fastSearch: true, limit: 1 })
+          .catch(() => ({ results: [] as Note[] }));
+        if (!diarySearch.results[0]) return null;
+        const id = diarySearch.results[0].noteId;
+        const content = await trilium.getNoteContent(id).catch(() => "");
+        return full
+          ? { id, content }
+          : { id, blocks: (content.match(/<h2(?:\s[^>]*)?>\s*Addendum/gi) ?? []).length, size: content.length };
+      };
+
+      // How many notes elsewhere carry pending addendum markers — measured, not
+      // listed. The counter and addendum()'s search must agree on what a
+      // pending addendum IS, or session() manufactures a step for the one
+      // field that exists to prevent empty steps — `pending.addendums: 6`
+      // against `addendum() found: 0` was confirmed three times before this
+      // was read side by side. Both require the structural marker (an h2–h4
+      // "Addendum —" heading), not the bare word, which prose mentions of the
+      // tool matched freely.
+      const pendingAddendumCount = async (): Promise<number | null> => {
+        try {
+          const r = await trilium.searchNotes("#noteType note.content *=* 'Addendum'", { ancestorNoteId: cfg.root, fastSearch: false, limit: 40 });
+          const candidates = r.results.filter((n) => {
+            const kind = labelOf(n, "noteType");
+            return kind && !["session", "diary", "log", "threadEntry", "thread"].includes(kind);
+          });
+          const contents = await Promise.all(
+            candidates.map((n) => trilium.getNoteContent(n.noteId).catch(() => ""))
+          );
+          return contents.filter(hasAddendumMarker).length;
+        } catch {
+          return null;
+        }
+      };
+
+      // A verified continuation gets the door close() already has: the
+      // singleton review and audit ran with the day's first close, and
+      // repeating them was the whole preamble a second close paid for nothing.
+      // The gate is untouched — markStep("session") still runs below — so
+      // continuing narrows the review, never the gate.
+      if (continued) {
+        const hygiene = await sweep(trilium, cfg, { deep: false, dryRun: false }).catch(() => null);
+        const pendingAddendums = await pendingAddendumCount();
+        await markStep("session", d);
+        await stampSessionScope(d, scope ?? "interactive");
+        return txt({
+          date: d,
+          continuing: true,
+          note: "Continuing session — the singleton review and audit already ran with the day's first close, so this receipt carries only what the next close needs. If this stretch changed a singleton, revise() it before close() all the same.",
+          diary: await diaryEntryOfToday(),
+          maintenance: hygiene
+            ? { scanned: hygiene.scanned, fixed: hygiene.fixed.length, transitions: hygiene.transitions, flagged: hygiene.flagged, ...(hygiene.suppressed ? { suppressed: hygiene.suppressed } : {}) }
+            : "skipped",
+          pending: { addendums: pendingAddendums === null ? "unknown" : pendingAddendums },
+          next: [
+            pendingAddendums === 0
+              ? "Call addendum() — 0 notes currently carry addendum markers, so this should come back clean; the call still satisfies the gate."
+              : pendingAddendums === null
+              ? "Call addendum() — fold what this stretch's work left behind."
+              : `Call addendum() — ${pendingAddendums} note(s) carry addendum markers; fold each into its section.`,
+            "Call maintain() — the same hygiene pass as any session.",
+            "Call remarks(), then diary() — the cues, then this stretch's record.",
+            "Call close(continuing=true) — commit this stretch's log; the day's first close already carried the full sequence.",
+          ],
+        });
+      }
 
       const fetchSingleton = async (id: string) => {
         if (!full) {
@@ -654,23 +950,7 @@ The close sequence next[] lays out: singleton updates from the session, then add
         cfg.llm.selfcorrection ? fetchSingleton(cfg.llm.selfcorrection) : Promise.resolve(null),
       ]);
 
-      // Today's diary entry. Light mode returns a stub: the id (which is all
-      // diary() needs) plus how much is already written. Inlining a whole day's
-      // entry costs real context on a day several addendum blocks deep, and a
-      // second same-day close is exactly when that context is scarcest.
-      let diaryEntry: { id: string; content?: string; blocks?: number; size?: number } | null = null;
-      if (cfg.llm.diary) {
-        const diarySearch = await trilium
-          .searchNotes(`#noteType=diary #created='${d}'`, { ancestorNoteId: cfg.llm.diary, fastSearch: true, limit: 1 })
-          .catch(() => ({ results: [] as Note[] }));
-        if (diarySearch.results[0]) {
-          const id = diarySearch.results[0].noteId;
-          const content = await trilium.getNoteContent(id).catch(() => "");
-          diaryEntry = full
-            ? { id, content }
-            : { id, blocks: (content.match(/<h2(?:\s[^>]*)?>\s*Addendum/gi) ?? []).length, size: content.length };
-        }
-      }
+      const diaryEntry = await diaryEntryOfToday();
 
       // Lightweight maintenance sweep (non-fatal).
       const hygiene = await sweep(trilium, cfg, { deep: false, dryRun: false }).catch(() => null);
@@ -683,26 +963,7 @@ The close sequence next[] lays out: singleton updates from the session, then add
       // this call before it returned; reporting them lets the remaining context
       // go to the diary and the log, which are the two things only the agent
       // can write.
-      // The counter and addendum()'s search must agree on what a pending
-      // addendum IS, or session() manufactures a step for the one field that
-      // exists to prevent empty steps — `pending.addendums: 6` against
-      // `addendum() found: 0` was confirmed three times before this was read
-      // side by side. Both now require the structural marker (an h2–h4
-      // "Addendum —" heading), not the bare word, which prose mentions of the
-      // tool matched freely.
-      const pendingAddendums = await trilium
-        .searchNotes("#noteType note.content *=* 'Addendum'", { ancestorNoteId: cfg.root, fastSearch: false, limit: 40 })
-        .then(async (r) => {
-          const candidates = r.results.filter((n) => {
-            const kind = labelOf(n, "noteType");
-            return kind && !["session", "diary", "log", "threadEntry", "thread"].includes(kind);
-          });
-          const contents = await Promise.all(
-            candidates.map((n) => trilium.getNoteContent(n.noteId).catch(() => ""))
-          );
-          return contents.filter(hasAddendumMarker).length;
-        })
-        .catch(() => null);
+      const pendingAddendums = await pendingAddendumCount();
 
       // A Record keyed by SingletonKind, not a list — and that is the whole
       // point. Record<SingletonKind, …> is exhaustive, so a kind added to the
@@ -741,11 +1002,13 @@ The close sequence next[] lays out: singleton updates from the session, then add
       };
 
       await markStep("session", d);
+      await stampSessionScope(d, scope ?? "interactive");
       const scoped = scope === "agent";
       return txt({
         date: d,
         ...(scoped ? { scope: "agent" } : {}),
-        ...(!full ? { mode: "light", note: "Singleton content and the diary body are omitted (default) — fetch via master()/llm() only where lastModified indicates a revision is needed; start() already served all singletons in full, and diary() needs only the id." } : {}),
+        ...(!full ? { singletons: "stubs", note: "Singleton content and the diary body are omitted (default) — fetch via master()/llm() only where lastModified indicates a revision is needed; start() already served all singletons in full, and diary() needs only the id. This is stub mode, not a light close: 'light' means only that no content was written this session." } : {}),
+        ...(gateNote ? { gateNote } : {}),
         master: { biography, goals, preferences },
         llm: { responsibilities, protocols, ...(selfcorrection ? { selfcorrection } : {}) },
         diary: diaryEntry,
@@ -816,6 +1079,7 @@ The close sequence next[] lays out: singleton updates from the session, then add
       if (!(await readGate(localToday())).has("write")) {
         return txt({
           closeMode: "light",
+          note: "Light close — strictly because no content was written this session: addendum() and maintain() are not required and nothing is audited. The full cues return the moment any content is written.",
           cue: "One short paragraph, first person: what this session was, how it went, and anything about BrainLLM worth the team knowing. Skip what has nothing real to say.",
           next: ["Write it via diary(body, identity), then call close()."],
         });
@@ -883,7 +1147,11 @@ The close sequence next[] lays out: singleton updates from the session, then add
       }
 
       const gate = await readGate(gateDate);
-      const light = !gate.has("write");
+      // Same repair as session(): in-process evidence of a content write beats
+      // a stale gate. And the evidence counts even when the repair fails — a
+      // written session must never be certified light by a failed label write.
+      if (wroteSinceClose && !gate.has("write") && (await markWriteStep())) gate.set("write", 1);
+      const light = !(gate.has("write") || wroteSinceClose);
       const required: readonly string[] = light ? LIGHT_PRECLOSE_STEPS : REQUIRED_PRECLOSE_STEPS;
       const missing = continued ? [] : required.filter((step) => !gate.has(step));
       if (missing.length && !force) {
@@ -1016,6 +1284,18 @@ The close sequence next[] lays out: singleton updates from the session, then add
 
       await clearGate(d);
 
+      // The durable mark that an INTERACTIVE close happened today — start()
+      // reads it to tell a genuinely new day from one only agents have logged
+      // (an overnight agent addendum used to make the morning session skip
+      // day(), 2026-10-07). Only an explicit interactive scope stamps: a
+      // missing scope (midnight-crossing or forced close) stays unstamped on
+      // purpose, because an unstamped day only ever costs a redundant day()
+      // call while a wrongly stamped one would hide the day.
+      const closeScope = await trilium.getNote(noteId).then((n) => labelOf(n, "scope")).catch(() => null);
+      if (closeScope === "interactive") {
+        await trilium.updateLabelValue(noteId, "interactive", localNowTime()).catch(() => null);
+      }
+
       return txt({
         action,
         noteId,
@@ -1032,6 +1312,7 @@ The close sequence next[] lays out: singleton updates from the session, then add
         ...(continued ? { continuing: true } : {}),
         ...(sealReport ? { seal: `${sealReport.records} record(s) of ${d} sealed (${sealReport.digest.slice(0, 12)}…), chained to the previous sealed day` } : { seal: "not written — the day's log note was unavailable" }),
         ...(light && !continued ? { closeMode:"light — no content was written this session, so addendum() and maintain() were not required" } : {}),
+        ...(writeMarkPending ? { gateNote: writeMarkPending } : {}),
         ...(missing.length || !orderOk
           ? { bypassed: [...missing, ...(!orderOk ? ["ordering(session→remarks→diary)"] : [])] }
           : {}),
@@ -1223,7 +1504,7 @@ The close sequence next[] lays out: singleton updates from the session, then add
     "remember",
     `Store something the moment it matters; the server owns placement, labels and dedup.
 
-Kinds: biography | goals | preferences | responsibilities | protocols (singletons, upsert) · thread (goal= required to create; shape="collection" for a titled-entry thread; appends need identity=) · threadEntry (a titled entry in a collection thread: thread= + title) · user (knowledge about the user) · information (domain= + title) · sources (domain=; revision=[…] upserts rows).
+Kinds: biography | goals | preferences | responsibilities | protocols (singletons, upsert) · thread (goal= required to create; shape="collection" for a titled-entry thread; appends need identity=) · threadEntry (a titled entry in a collection thread: thread= + title) · user (knowledge about the user) · information (domain= + title) · sources (domain=; revision=[…] upserts rows; dryRun=true previews rows and near-duplicate keys without writing).
 
 Collection kinds dedup by title — mustCreate=true refuses instead of adopting an existing note, and check action= on the receipt. connect=[{relation, toNoteId}] wires relations in the same call. diary/session/log/claim/domain have dedicated paths.`,
     {
@@ -1245,6 +1526,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       mandate: z.boolean().optional().describe("kind=information: flag the note as a standing brief a session must follow (#mandate)"),
       mustCreate: z.boolean().optional().describe("Refuse instead of adopting a note that already has this title"),
       strict: z.boolean().optional().describe("Refuse the write when the body needs structural repair (unclosed tags, <br> runs) instead of accepting the repaired form"),
+      dryRun: z.boolean().optional().describe('kind="sources": preview which Revision rows would be added or updated — and which body groups would merge — without writing anything. The way to check a new source key before it lands; default false (the call writes), so re-run without dryRun to apply'),
       connect: z.array(z.object({
         relation: z.enum(RelationTypes),
         toNoteId: z.string(),
@@ -1252,7 +1534,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name ("brain"); normalized server-side'),
       date: z.string().optional().describe("ISO date override (default: today)"),
     },
-    async ({ kind, title, body, goal, shape, thread, identity, domain, revision, topics, supersedes, mandate, mustCreate, strict, connect: connectRels, icon, date }) => {
+    async ({ kind, title, body, goal, shape, thread, identity, domain, revision, topics, supersedes, mandate, mustCreate, strict, dryRun, connect: connectRels, icon, date }) => {
       /** mustCreate turns adoption into a refusal.
        *
        *  Dedup-by-title is what makes remember() idempotent, and it is also a
@@ -1272,6 +1554,12 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       const opts: RememberOpts = { domain, topics, date, ...(mandate ? { mandate: true } : {}) };
       const d = checkedDate(date);
       const { html, warnings: sanitizeWarnings } = renderBody(body ?? "");
+
+      // dryRun is the sources upsert's preview, not a general switch: accepting
+      // it silently on other kinds would let a caller who asked for a preview
+      // get a write instead (the same refusal revise(domain=) gets).
+      if (dryRun !== undefined && kind !== "sources")
+        return err("conflicting_params", 'dryRun= applies only to remember(kind="sources"); nothing was written.', 'For other kinds, read first (or use maintain(dryRun=true) for hygiene) and then write without dryRun.');
 
       // strict= mirrors revise(): a body whose tag structure the sanitizer had
       // to repair is a refusal, not a receipt field the caller reads as
@@ -1339,6 +1627,23 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       const ORPHAN_HINT =
         "Unconnected — wire a real relation now with connect() (or pass connect=[{relation, toNoteId}] on remember) so this note doesn't surface as an orphan in maintain(deep=true).";
 
+      /** Near-duplicate hints for newly-added Revision keys: pair each added
+       *  key with its closest existing one so the trap — "OpenRouter management
+       *  API" beside "OpenRouter API" (2026-10-15) — is visible in the same
+       *  receipt that records the write. */
+      const sourceKeyHints = (added: string[], existing: string[]) => {
+        const pairs: Array<{ added: string; near: { key: string; distance: number; reason: "typo" | "compound" } }> = [];
+        for (const a of added) {
+          const near = nearestKey(a, existing);
+          if (near) pairs.push({ added: a, near });
+        }
+        if (!pairs.length) return null;
+        return {
+          didYouMean: pairs[0]!.near.key,
+          didYouMeanNote: `${pairs.map((p) => `"${p.added}" → "${p.near.key}"`).join("; ")}. New Revision row(s) sit beside an existing source whose key is close — if one was meant to update that source, its key must match it exactly.`,
+        };
+      };
+
       // 1 ── Global singletons: one fixed maintained note (biography, goals, …).
       if (isSingleton(kind)) {
         const id = kindHome(b(), kind);
@@ -1357,6 +1662,50 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       if (kind === "sources") {
         if (!domain)
           return err("missing_param", 'kind="sources" requires a domain.', 'Call remember(kind="sources", domain="<domain name>", body="...")');
+        // dryRun: preview the whole call without writing. Locate the domain and
+        // its Sources note WITHOUT resolveDomain (which creates a missing
+        // domain), simulate the Revision upserts with the same pure machinery
+        // the write path uses, and report what would change — including
+        // near-duplicate source keys, the case this exists for.
+        if (dryRun) {
+          const slug = slugify(domain) || "general";
+          const domRes = await trilium
+            .searchNotes(`#noteType=domain #domain='${escapeQueryValue(slug)}'`, { ancestorNoteId: b().knowledge.domains, fastSearch: true, limit: 1 })
+            .catch(() => ({ results: [] as Note[] }));
+          const domainNote = domRes.results[0];
+          const srcRes = domainNote
+            ? await trilium.searchNotes("#noteType=sources", { ancestorNoteId: domainNote.noteId, fastSearch: true, limit: 1 }).catch(() => ({ results: [] as Note[] }))
+            : { results: [] as Note[] };
+          const display = domainNote?.title ?? domain.replace(/\s+/g, " ").trim();
+          const preview: Record<string, unknown> = { ok: true, action: "dry_run", dryRun: true, kind, date: d, domain: display };
+          const sidPreview = srcRes.results[0]?.noteId;
+          if (!domainNote) preview.wouldCreate = `domain "${display}" and its canonical Sources note`;
+          else if (!sidPreview) preview.wouldCreate = `${domainNote.title} → Sources note`;
+          else {
+            const content = await trilium.getNoteContent(sidPreview);
+            const existingKeys = tableRows(content, "Revision").map((cells) => cells[0]!).filter(Boolean);
+            const previewChanges: string[] = [];
+            const previewAdded: string[] = [];
+            let sim = content;
+            for (const row of revision ?? []) {
+              const result = upsertTableRow(sim, "Revision", row.source, [row.marker, row.date ?? d]);
+              if (result.matched || result.created) {
+                sim = result.html;
+                previewChanges.push(`${result.matched ? "would update" : "would add"}: ${row.source}`);
+                if (!result.matched) previewAdded.push(row.source);
+              }
+            }
+            if (previewChanges.length) preview.revision = previewChanges;
+            if (html && toText(html, 50) && !content.includes(html)) {
+              const merged = mergeUnderSection(content, html, "Sources");
+              preview.body = `would merge into the Sources section${merged.mergedInto.length ? `: ${merged.mergedInto.join(", ")}` : ""}${merged.appended.length ? `; new group(s): ${merged.appended.join(", ")}` : ""}`;
+            }
+            const hints = sourceKeyHints(previewAdded, existingKeys);
+            if (hints) { preview.didYouMean = hints.didYouMean; preview.didYouMeanNote = hints.didYouMeanNote; }
+          }
+          preview.next = "Nothing was written. Re-run without dryRun (or with dryRun=false) to apply exactly this.";
+          return txt(preview);
+        }
         const { domainId, domainTitle, createdDomain, sourcesId } = await resolveDomain(trilium, b(), domain);
         const found = sourcesId
           ? { results: [] as Note[] }
@@ -1395,8 +1744,13 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         // what keeps the table current-state instead of growing a new row
         // every time the same source gets re-verified.
         const revisionChanges: string[] = [];
+        const addedKeys: string[] = [];
+        let existingKeys: string[] = [];
         if (sid && revision?.length) {
           let current = await trilium.getNoteContent(sid);
+          // The keys as they stand BEFORE this call: what a newly-added key is
+          // compared against for the near-duplicate hint below.
+          existingKeys = tableRows(current, "Revision").map((cells) => cells[0]!).filter(Boolean);
           let changed = false;
           for (const row of revision) {
             const result = upsertTableRow(current, "Revision", row.source, [row.marker, row.date ?? d]);
@@ -1404,6 +1758,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
               current = result.html;
               changed = true;
               revisionChanges.push(`${result.matched ? "updated" : "added"}: ${row.source}`);
+              if (!result.matched) addedKeys.push(row.source);
             }
           }
           if (changed) {
@@ -1438,6 +1793,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         // that the body write actually happened rather than any write.
         const bodyWritten = !!html && !!toText(html, 50);
         const looseProse = bodyWritten && !createdDomain && !/<(?:ul|ol|li|h[34]|table)\b/i.test(html);
+        const keyHints = sourceKeyHints(addedKeys, existingKeys);
 
         return txt({
           action: wrote ? "maintained" : "already_written",
@@ -1452,6 +1808,9 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           ...(revisionChanges.some((c) => c.startsWith("added:")) && revisionKeys.length
             ? { revisionKeys, revisionKeysNote: "A new Revision row was added. If it was meant to update an existing source, its key must match one of these exactly." }
             : {}),
+          // The sharpened form of revisionKeysNote: not just "here are the
+          // keys", but "this new key is one word away from that one".
+          ...(keyHints ? { didYouMean: keyHints.didYouMean, didYouMeanNote: keyHints.didYouMeanNote } : {}),
           ...(placeholderLeft
             ? { structureHint: "The Revision table still holds only its placeholder row. Every source marked ✅ was verified by someone — record that with revision=[{source, marker, date}] so the table says so too; marker dates live there, never inline." }
             : {}),
@@ -1582,6 +1941,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         // Threads: content lands in today's day-child, never the book itself.
         if (kind === "thread") {
           if (isCollectionThread(existing)) return collectionAppendRefusal(existing);
+          const runHeading = leadingIdentityText(block);
           const entry = await appendThreadEntry(existing.noteId, block, d);
           if (entry.action === "already_written") {
             return txt({ action: "already_written", noteId: existing.noteId, entryId: entry.noteId, kind, title: existing.title });
@@ -1596,7 +1956,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           const connected = await wireRequested(existing.noteId);
           const iconSet = await applyIcon(existing.noteId, icon);
           const relations = relationSnippet(existing);
-          return txt({ action: "updated", noteId: existing.noteId, entryId: entry.noteId, entryAction: entry.action, entry: `today's [${d}] entry in this thread; revise(entryId) edits it`, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+          return txt({ action: "updated", noteId: existing.noteId, entryId: entry.noteId, entryAction: entry.action, ...(entry.marker ? { entryMarker: entry.marker } : {}), ...(runHeading ? { runHeading } : {}), entry: `today's [${d}] entry in this thread; revise(entryId) edits it`, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
         }
 
         const current = await trilium.getNoteContent(existing.noteId);
@@ -1676,7 +2036,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
 
   server.tool(
     "recall",
-    `Ranked search across the whole brain — label, title and full-text strategies merged, with kind and status. Pass domain= whenever you know the area. orderBy/orderDirection sort by date; fastSearch= scans titles and labels only; regex= matches note bodies with a real regular expression; a fuzzy pass runs automatically when exact results are thin (hits marked fuzzy: true are leads, not answers). Recently changed notes rank slightly higher at equal relevance. Regex hits carry evidence: the matched passage; records are included unless kinds= narrows. includeArchived= includes archived notes. A thin result is evidence about the query, not the brain.`,
+    `Ranked search across the whole brain — label, title and full-text strategies merged, with kind and status. Pass domain= whenever you know the area. orderBy/orderDirection sort by date; fastSearch= scans titles and labels only; regex= matches note bodies with a real regular expression; a fuzzy pass runs automatically when exact results are thin (hits marked fuzzy: true are leads, not answers). Recently changed notes rank slightly higher at equal relevance. since=/until= (ISO dates) keep only notes last modified inside the window — ordered, ranked, regex and fuzzy paths all honour them. Every hit names matchedBy (label, title, text, ordered, fuzzy, regex) and the top hits carry evidence — the matched passage; a label hit quotes its label, a title hit its title, regex hits carry evidence on every hit. Records are included unless kinds= narrows. includeArchived= includes archived notes. A thin result is evidence about the query, not the brain.`,
     {
       query: z.string().describe("What to find — natural phrasing is fine"),
       kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds"),
@@ -1688,8 +2048,10 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       fastSearch: z.boolean().optional().describe("Title/label only — faster, skips full-text body scan"),
       regex: z.string().optional().describe("Regular expression matched against note bodies (Trilium %= operator). Takes precedence over the keyword strategies; escape backslashes."),
       fuzzy: z.boolean().optional().describe("Force the fuzzy pass on (default: automatic when exact strategies return few results) or off"),
+      since: z.string().optional().describe("Only notes last modified on or after this ISO date (YYYY-MM-DD covers that whole day; a full ISO timestamp compares exactly)"),
+      until: z.string().optional().describe("Only notes last modified on or before this ISO date (inclusive; a date-only bound covers that whole day)"),
     },
-    async ({ query, kinds, domain, includeArchived, limit, orderBy, orderDirection, fastSearch, regex, fuzzy }) => {
+    async ({ query, kinds, domain, includeArchived, limit, orderBy, orderDirection, fastSearch, regex, fuzzy, since, until }) => {
       const cfg = b();
       const max = limit ?? 10;
       const fast = fastSearch ?? false;
@@ -1698,7 +2060,19 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       const domSlug = domain ? slugify(domain) : null;
       const kindSet = kinds?.length ? new Set<string>(kinds) : null;
 
-      const run = (q: string, useFast = false, ord?: { orderBy: string; orderDirection: "asc" | "desc" }) =>
+      // A window that cannot be parsed must not silently return unfiltered
+      // results — filtering is the caller's explicit request.
+      for (const [name, value] of [["since", since], ["until", until]] as const) {
+        if (value !== undefined && Number.isNaN(Date.parse(value)))
+          return err("invalid_param", `${name}="${value}" is not an ISO date.`, `Use YYYY-MM-DD (covers that whole day) or a full ISO timestamp, e.g. ${name}=2026-10-01.`);
+      }
+
+      // Failures and cap saturation are tracked per raw strategy query so every
+      // path can report them; the merged pool crossing the cap is normal and
+      // must never trip the warning.
+      let strategyErrors = 0;
+      const saturated = new Set<string>();
+      const run = (q: string, useFast = false, strategy?: string, ord?: { orderBy: string; orderDirection: "asc" | "desc" }) =>
         trilium
           .searchNotes(q, {
             ancestorNoteId: cfg.root,
@@ -1707,18 +2081,45 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
             includeArchivedNotes: includeArchived ?? false,
             ...(ord ?? {}),
           })
-          .then((r) => r.results)
-          .catch(() => [] as Note[]);
+          .then((r) => {
+            if (strategy && r.results.length >= 30) saturated.add(strategy);
+            return r.results;
+          })
+          .catch(() => {
+            strategyErrors++;
+            return [] as Note[];
+          });
 
       const filterNote = (note: Note) => {
         const k = labelOf(note, "noteType");
         if (!k) return false;
         if (kindSet && !kindSet.has(k)) return false;
         if (domSlug && labelOf(note, "domain") !== domSlug) return false;
+        // since/until live in this chokepoint so ordered, ranked, regex and
+        // fuzzy all honour them — one place, no path missed.
+        if (!withinModifiedWindow(note.dateModified, since, until)) return false;
         return true;
       };
 
-      const buildResult = async (note: Note, i: number) => {
+      /** Evidence for a top hit, from what the path already read: a label hit
+       *  shows the label that matched, a title/fuzzy hit its title (the match
+       *  itself), a body hit a bounded window around the query's best token in
+       *  the content already fetched for the snippet. No extra reads. */
+      const evidenceFor = (note: Note, content: string, matchedBy: RecallStrategy): string | null => {
+        if (matchedBy === "label") {
+          const parts = [
+            labelOf(note, "topic") === slug ? `#topic=${slug}` : null,
+            labelOf(note, "domain") === slug ? `#domain=${slug}` : null,
+          ].filter(Boolean);
+          return parts.length ? parts.join(" ") : null;
+        }
+        if (matchedBy === "title" || matchedBy === "fuzzy")
+          return note.title.length > 200 ? `${note.title.slice(0, 199)}…` : note.title;
+        if (matchedBy === "regex") return null; // the regex path quotes its own match window
+        return tokenPassage(toText(content, 100_000), tokens);
+      };
+
+      const buildResult = async (note: Note, i: number, matchedBy?: RecallStrategy | null) => {
         const relations = relationSnippet(note);
         const base = {
           id: note.noteId,
@@ -1728,10 +2129,12 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           updated: note.dateModified.slice(0, 10),
           ...(hasLabel(note, "archived") ? { archived: true } : {}),
           ...(relations ? { relations } : {}),
+          ...(matchedBy ? { matchedBy } : {}),
         };
         if (i < 3) {
           const content = await trilium.getNoteContent(note.noteId).catch(() => "");
-          return { ...base, snippet: toText(content, 280) };
+          const evidence = matchedBy ? evidenceFor(note, content, matchedBy) : null;
+          return { ...base, snippet: toText(content, 280), ...(evidence ? { evidence } : {}) };
         }
         return base;
       };
@@ -1803,10 +2206,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
          *  evidence for the hit, rather than the note's opening lines. */
         const evidenceIn = (text: string): string => {
           const m = new RegExp(re!.source, "i").exec(text);
-          if (!m) return "";
-          const from = Math.max(0, m.index - 80);
-          const to = Math.min(text.length, m.index + m[0].length + 80);
-          return `${from > 0 ? "…" : ""}${text.slice(from, to).replace(/\s+/g, " ").trim()}${to < text.length ? "…" : ""}`;
+          return m ? passageAround(text, m.index, m[0].length) : "";
         };
         for (const n of candidates) {
           if (confirmed.length >= max) break;
@@ -1830,20 +2230,24 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         const results = await Promise.all(
           confirmed.map(async ({ note, evidence }, i) => {
             const { snippet: _snippet, ...base } = (await buildResult(note, i)) as Record<string, unknown>;
-            return { ...base, ...(evidence ? { evidence } : {}) };
+            return { ...base, ...(evidence ? { evidence } : {}), matchedBy: "regex" };
           })
         );
+        // A failed candidate query is not an empty sweep — the no-match copy
+        // below must never read as a verdict about the brain.
+        const failed = strategyErrors > 0 && results.length === 0;
         const notes = [
           rejected ? `${rejected} backend candidate(s) did not actually match the pattern and were dropped — results are verified against the real regex, not just the search index.` : null,
           tagSpanning ? `${tagSpanning} match(es) were found only after stripping markup — the phrase is split by an inline tag there.` : null,
           widened ? "Diacritic characters (·, accents) were normalised away for Trilium's pre-filter, which strips them from note text before matching; every result was then verified against your exact pattern." : null,
           recordHits ? `${recordHits} result(s) are records (sessions, diary, dated thread entries) — included by default; kinds= narrows to maintained notes.` : null,
           candidates.length >= 30 && confirmed.length < max ? "The backend returned its 30-candidate cap, so further matches may exist — narrow with domain= or kinds=, or use consistency() for an exhaustive scan." : null,
-          results.length === 0 ? "No bodies matched that pattern, searched both as stored HTML and tag-stripped. Note that Trilium's %= pre-filter reads a striptags'd copy, so a pattern anchored ON tags may never reach verification — consistency() scans exhaustively if you need certainty." : null,
+          failed ? SEARCH_FAILURE_NOTE : null,
+          results.length === 0 && !failed ? "No bodies matched that pattern, searched both as stored HTML and tag-stripped. Note that Trilium's %= pre-filter reads a striptags'd copy, so a pattern anchored ON tags may never reach verification — consistency() scans exhaustively if you need certainty." : null,
           // An empty sweep over a pattern with backslashes is most often an
           // escaping slip, and it looks exactly like a clean result. Show the
           // pattern as the server received it so the slip is visible.
-          results.length === 0 && regex.includes("\\")
+          results.length === 0 && !failed && regex.includes("\\")
             ? `The pattern reached the server as /${regex}/i. In it, \\d is a digit and \\\\ is one literal backslash (a Windows path separator); a backslash doubled once too often matches a literal backslash instead of escaping. If that is not the pattern you meant, adjust the escaping and retry.`
             : null,
         ].filter(Boolean);
@@ -1851,6 +2255,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           mode: "regex",
           pattern: regex,
           results,
+          ...(failed ? { searchFailed: true } : {}),
           ...(notes.length ? { note: notes.join(" ") } : {}),
         });
       }
@@ -1859,19 +2264,29 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       if (orderBy) {
         const ord = { orderBy, orderDirection: orderDirection ?? (orderBy === "title" ? "asc" as const : "desc" as const) };
         const q = query.trim() ? escapeQueryValue(query) : "#noteType";
-        const notes = await run(q, fast, ord);
+        const notes = await run(q, fast, "ordered", ord);
         const filtered = notes.filter(filterNote).slice(0, max);
-        const results = await Promise.all(filtered.map(buildResult));
-        return txt({ results, ...(results.length === 0 ? noMatch : {}) });
+        const results = await Promise.all(filtered.map((n, i) => buildResult(n, i, "ordered")));
+        const failed = strategyErrors > 0 && results.length === 0;
+        const notices = [capWarning(saturated), results.length === 0 ? (failed ? SEARCH_FAILURE_NOTE : noMatch.note) : null].filter(Boolean) as string[];
+        return txt({
+          results,
+          ...(failed ? { searchFailed: true } : {}),
+          ...(notices.length ? { note: notices.join(" ") } : {}),
+        });
       }
 
       // Multi-strategy scoring for relevance-ranked search.
-      const scores = new Map<string, { note: Note; score: number }>();
-      const add = (notes: Note[], weight: number) => {
+      const scores = new Map<string, { note: Note; score: number; by: Map<string, number> }>();
+      const add = (notes: Note[], weight: number, strategy: string) => {
         for (const n of notes) {
           const entry = scores.get(n.noteId);
-          if (entry) entry.score += weight;
-          else scores.set(n.noteId, { note: n, score: weight });
+          if (entry) {
+            entry.score += weight;
+            entry.by.set(strategy, (entry.by.get(strategy) ?? 0) + weight);
+          } else {
+            scores.set(n.noteId, { note: n, score: weight, by: new Map([[strategy, weight]]) });
+          }
         }
       };
 
@@ -1887,14 +2302,14 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       // decisive bonus when the title actually IS the query, makes an exact
       // title win the way a caller expects.
       const [byLabel, byTitleRaw, byText] = await Promise.all([
-        slug.length >= 3 ? run(`#topic='${slug}' OR #domain='${slug}'`, true) : Promise.resolve([] as Note[]),
+        slug.length >= 3 ? run(`#topic='${slug}' OR #domain='${slug}'`, true, "label") : Promise.resolve([] as Note[]),
         tokens.length
-          ? run(tokens.map((t) => `note.title *=* '${escapeQueryValue(t)}'`).join(" OR "), fast || undefined)
+          ? run(tokens.map((t) => `note.title *=* '${escapeQueryValue(t)}'`).join(" OR "), fast || undefined, "title")
           : Promise.resolve([] as Note[]),
-        fast ? Promise.resolve([] as Note[]) : run(escapeQueryValue(query)),
+        fast ? Promise.resolve([] as Note[]) : run(escapeQueryValue(query), false, "text"),
       ]);
-      add(byLabel, 3);
-      add(byText, 1);
+      add(byLabel, 3, "label");
+      add(byText, 1, "text");
 
       // Per-token title weight (2 each), then an exact/prefix-title bonus.
       const queryKey = titleKey(query);
@@ -1906,7 +2321,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         const noteKey = titleKey(n.title);
         if (noteKey === queryKey) weight += 8;              // the title IS the query
         else if (queryKey.startsWith(noteKey) || noteKey.startsWith(queryKey)) weight += 4;
-        add([n], weight);
+        add([n], weight, "title");
       }
 
       // Fuzzy fallback. Trilium's ~= (fuzzy exact) and ~* (fuzzy contains)
@@ -1922,10 +2337,11 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       if (wantFuzzy && fuzzyTokens.length) {
         const byFuzzy = await run(
           fuzzyTokens.map((t) => `note.title ~* '${escapeQueryValue(t)}'`).join(" OR "),
-          fast
+          fast,
+          "fuzzy"
         );
         for (const n of byFuzzy) if (!scores.has(n.noteId)) fuzzyIds.add(n.noteId);
-        add(byFuzzy, 0.5);
+        add(byFuzzy, 0.5, "fuzzy");
       }
 
       // Recency as a signal, not only a tiebreak: what is current should rank
@@ -1945,18 +2361,28 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         .slice(0, max);
 
       const results = await Promise.all(
-        ranked.map(async ({ note }, i) => {
-          const row = await buildResult(note, i);
+        ranked.map(async ({ note, by }, i) => {
+          const row = await buildResult(note, i, dominantStrategy(by));
           return fuzzyIds.has(note.noteId) ? { ...row, fuzzy: true as const } : row;
         })
       );
       const fuzzyCount = results.filter((r) => "fuzzy" in r).length;
+      const failed = strategyErrors > 0 && results.length === 0;
+      const notices = [
+        capWarning(saturated),
+        failed ? SEARCH_FAILURE_NOTE : null,
+        strategyErrors > 0 && results.length > 0
+          ? `${strategyErrors} of the ranking queries failed at the backend — these results come from the strategies that responded, so the ranking may be partial.`
+          : null,
+        results.length === 0 && !failed ? noMatch.note : null,
+      ].filter(Boolean) as string[];
       return txt({
         results,
         ...(fuzzyCount
           ? { fuzzyMatches: `${fuzzyCount} result(s) came from the fuzzy pass (marked fuzzy: true) — treat them as leads to verify, not as answers.` }
           : {}),
-        ...(results.length === 0 ? noMatch : {}),
+        ...(failed ? { searchFailed: true } : {}),
+        ...(notices.length ? { note: notices.join(" ") } : {}),
       });
     }
   );
@@ -2042,7 +2468,12 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         if (!groups[kind]) groups[kind] = [];
         const relations = relationSnippet(n);
         const idle = idleSince(n.dateModified);
-        const stale = !RECORD_ROWS.has(kind) && idle >= staleAfter && !hasLabel(n, "archived");
+        // A note acknowledged through maintain(ack=) is quiet "until its
+        // content changes" — the same promise, on the same note, so it uses the
+        // same key here. Without this, an acked note kept arriving with
+        // stale:true and inflated the count, and an acknowledgement that only
+        // half the surface honours is not an acknowledgement.
+        const stale = !RECORD_ROWS.has(kind) && idle >= staleAfter && !hasLabel(n, "archived") && !isAcknowledged(n);
         if (stale) staleCount++;
         groups[kind].push({
           id: n.noteId,
@@ -2100,12 +2531,14 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
 
   server.tool(
     "read",
-    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, content, relations}]}. Bodies are returned in order until about 80k characters; the rest come back under deferred[] with their sizes, to read in a second call. text=true returns readable plain text with the markup removed (headings, list items and table rows kept), smaller and easier to read — right for orienting, not for building a find= anchor. For one note prefer the kinded read; for a huge note prefer a section= read.`,
+    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, chars, content, relations}]}. Every entry carries chars, the size of that note's body in characters, so follow-up reads can be planned from this response alone. Bodies are returned in order until about 80k characters; the rest come back under deferred[] with their sizes, to read in a second call. section="<heading>" reads one section of each note instead of its whole body (h2→h3→h4 by heading text, occurrence= among repeats) — the cheap read of a huge note; a section holding a table also reports tableRows, its row count. text=true returns readable plain text with the markup removed (headings, list items and table rows kept), smaller and easier to read — right for orienting, not for building a find= anchor. For one note prefer the kinded read.`,
     {
       ids: z.array(z.string()).min(1).max(10).describe("Note ids to read — one body per id, one round trip (cap 10)"),
-      text: z.boolean().optional().describe("Return readable plain text instead of stored HTML (default false)"),
+      section: z.string().optional().describe('Read only this heading\'s section of each note (h2/h3/h4, same matching as the singletons\' section=) instead of each whole body — the cheap read of a huge note; a miss returns the note\'s real headings under available[]'),
+      occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
+      text: z.boolean().optional().describe("Return readable plain text instead of stored HTML (default false; with section=, the section only)"),
     },
-    async ({ ids, text }) => {
+    async ({ ids, text, section, occurrence }) => {
       const fetched = await Promise.all(
         ids.map(async (id) => {
           try {
@@ -2113,9 +2546,37 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
             const contentResult = await trilium.getNoteContentResult(id, note.type);
             const relations = relationSnippet(note);
             const raw = typeof contentResult === "string" ? contentResult : contentResult.content;
+            // chars is the body's size in characters — the whole stored body,
+            // even when section= returns only a slice of it, so the caller can
+            // tell a 2k read of a 40k note from a 2k note.
+            const identity = { id, title: note.title, kind: ownedLabel(note, "noteType") ?? undefined, chars: raw.length };
+            if (section && typeof contentResult !== "string") {
+              return { ...identity, content: "", section, matched: false as const, hint: "Binary content cannot be sectioned as text; read it without section=." };
+            }
+            if (section) {
+              const found = getSection(raw, section, occurrence ?? 1);
+              if (!found.matched) {
+                return {
+                  ...identity, content: "", section, matched: false as const, available: found.available,
+                  hint: `No "${section}" heading at h2/h3/h4. available= lists the note's real heading texts — re-target from there rather than falling back to a whole-note read.`,
+                };
+              }
+              const tableRows = sectionTableRows(found.content);
+              return {
+                ...identity,
+                content: text ? readableText(found.content) : found.content,
+                section, matched: true as const,
+                ...(found.headingCount && found.headingCount > 1
+                  ? { headingCount: found.headingCount, ...(occurrence ? {} : { hint: `${found.headingCount} headings share that text — this is the FIRST. Pass occurrence= (1-${found.headingCount}) to read another.` }) }
+                  : {}),
+                ...(tableRows !== undefined ? { tableRows } : {}),
+                ...(found.subsections?.length ? { subsections: found.subsections } : {}),
+                ...(relations ? { relations } : {}),
+              };
+            }
             const content = text && typeof contentResult === "string" ? readableText(raw) : raw;
             return {
-              id, title: note.title, kind: ownedLabel(note, "noteType") ?? undefined,
+              ...identity,
               content,
               ...(typeof contentResult === "string" ? {} : { contentEncoding: contentResult.encoding, mime: contentResult.mime }),
               ...(relations ? { relations } : {}),
@@ -2140,7 +2601,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       return txt({
         count: notes.length, notes,
         ...(deferred.length
-          ? { deferred, hint: `${deferred.length} note(s) held back to keep this result under ~${READ_BUDGET / 1000}k characters. Read them with read(ids=[…]) again${text ? "" : ", or pass text=true, which is smaller"}.` }
+          ? { deferred, hint: `${deferred.length} note(s) held back to keep this result under ~${READ_BUDGET / 1000}k characters. Read them with read(ids=[…]) again${text ? "" : ", or pass text=true, which is smaller"}; a huge one is cheapest one section at a time with section=.` }
           : {}),
       });
     }
@@ -2220,13 +2681,13 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     "revise",
     `Edit a note by id. A revision is taken first; "Last updated" lines are bumped on content writes.
 
-Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup. within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). closure={thread, body} with within="tr" and mode="remove" closes a register row: the row is removed and the closure appended to that thread's entry for today, in one call. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
+Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup. within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. dryRun=true with within= previews the change first — the element's full visible text and byte size, and for remove/replace the before/after shape — with nothing written and no revision taken. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). append={table, row} adds one row to the table under that heading with no anchor to locate first — pipes are cell boundaries, a lone placeholder row is replaced, and append= composes with nothing else. closure= with within="tr" and mode="remove" closes a register row in one call: {thread, body} removes the row and appends the closure (quoting it) to that thread's entry for today (needs identity=); {note} moves the removed row into another register note's table, shaped to it instead of into a thread. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
 
-Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled.`,
+Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled. A find= or within= anchor that matches nothing always names the cause in hint=, and a miss shows the stored text nearby when part of the anchor is still there (matchedUpTo= / storedNearby=).`,
     {
       noteId: z.string().optional().describe("Note to update (omit only with domain=)"),
       domain: z.string().optional().describe("Instead of noteId: apply find=/edits= to every maintained note in this domain (#domain or #topic slug). Records (sessions, diary, logs, dated thread entries) are never touched. Dry run unless dryRun=false"),
-      dryRun: z.boolean().optional().describe("domain=: preview the matches without writing (default true). Re-run with dryRun=false to apply"),
+      dryRun: z.boolean().optional().describe("domain= or within=: preview what would change, write nothing, take no revision (domain= defaults to true; within= previews only when true). Re-run with dryRun=false to apply"),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML. Send real tags: entity-escaped markup (&lt;p&gt;) is decoded and reported in sanitized[]. With find=, the raw replacement string (no conversion)."),
       title: z.string().optional().describe("New title (normalized server-side)"),
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
@@ -2235,11 +2696,17 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       mode: z.enum(["append", "replace", "before", "after", "prepend", "remove"]).optional().describe('append (default) | replace | before | after (around the whole section=) | prepend (top of its body) | remove (delete section=, no body needed)'),
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
       nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them). With within=: the Nth containing element"),
-      within: z.enum(WITHIN_TAGS).optional().describe('With find=: act on the <tag> element that contains the find text (a short unique anchor) — mode="replace" (default) swaps it for body=, "before"/"after" insert body= as a sibling (add a table row), "remove" deletes it'),
+      within: z.enum(WITHIN_TAGS).optional().describe('With find=: act on the <tag> element that contains the find text (a short unique anchor) — mode="replace" (default) swaps it for body=, "before"/"after" insert body= as a sibling (add a table row), "remove" deletes it. dryRun=true previews it first'),
       closure: z.object({
-        thread: z.string().describe("The dated thread to record the closure in: its id or title (e.g. \"Escalations\")"),
-        body: z.string().describe("The closure: what settled it, who ruled, and where its durable substance went"),
-      }).optional().describe('With within= and mode="remove": close a register row in one call. The row is removed and body= is appended to the thread\'s entry for today, quoting the removed row. Needs identity=. Run consistency() afterwards on any fact the row asserted elsewhere'),
+        thread: z.string().optional().describe('Thread variant: the dated thread to record the closure in: its id or title (e.g. "Escalations") — together with body='),
+        body: z.string().optional().describe("Thread variant: the closure prose: what settled it, who ruled, and where its durable substance went"),
+        note: z.string().optional().describe('Register variant: the register note (id or exact title) whose table receives the closed row — the row moves there instead of into a thread entry'),
+        table: z.string().optional().describe('Register variant: the heading of the table in that note (default: its first table)'),
+      }).optional().describe('With within= and mode="remove": close a register row in one call. {thread, body} appends the closure to that thread\'s entry for today, quoting the removed row — needs identity=. {note} moves the removed row into another register note\'s table instead, shaped to that table. Run consistency() afterwards on any fact the row asserted elsewhere'),
+      append: z.object({
+        table: z.string().describe("The heading (h2/h3/h4) of the table that receives the row"),
+        row: z.string().describe('One row, cells separated by "|" — e.g. "Item | Owner | Open"'),
+      }).optional().describe('Append one row to the table under append.table without first locating an anchor row — pipes are cell boundaries, one <td> per cell (plain text, escaped server-side). A lone placeholder row is replaced. e.g. append={table: "Backlog", row: "Ship v13 | Claude | 2026-10-15"}'),
       edits: z.array(z.object({
         find: z.string().describe("Exact raw string to replace"),
         body: z.string().describe("Raw replacement string"),
@@ -2249,22 +2716,33 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
-    async ({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, closure, edits, identity, icon, date, strict }) => {
-      if (closure && !(within && mode === "remove"))
-        return err("conflicting_params", 'closure= closes a register row and needs within= with mode="remove"; nothing was written.', 'e.g. revise(noteId, find="<row anchor>", within="tr", mode="remove", closure={thread: "Escalations", body: "Closed on …"}, identity="…")');
+    async ({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, closure, append, edits, identity, icon, date, strict }) => {
+      if (closure) {
+        if (!(within && mode === "remove"))
+          return err("conflicting_params", 'closure= closes a register row and needs within= with mode="remove"; nothing was written.', 'e.g. revise(noteId, find="<row anchor>", within="tr", mode="remove", closure={thread: "Escalations", body: "Closed on …"}, identity="…")');
+        if ((closure.thread !== undefined) === (closure.note !== undefined))
+          return err("conflicting_params", 'closure= targets exactly one of a thread or a register note: pass {thread, body} or {note}.', 'e.g. closure={thread: "Escalations", body: "Closed on …"} or closure={note: "Decisions", table: "Decisions"}');
+        if (closure.thread !== undefined && closure.body === undefined)
+          return err("missing_param", "closure={thread}= records the closure as prose and needs body=.", 'Pass body="<what settled it, who ruled, and where its durable substance went>".');
+        if (closure.note !== undefined && closure.body !== undefined)
+          return err("conflicting_params", 'closure.body= belongs to the {thread} variant; {note} moves the row itself and appends no prose.', "Drop body=, or target a thread instead.");
+        if (closure.note === undefined && closure.table !== undefined)
+          return err("conflicting_params", "closure.table= names a table inside closure.note= and takes no effect without it.", 'Pass closure={note: "<register>", table: "<heading>"}, or drop table=.');
+      }
       if (domain !== undefined) {
         if (noteIdArg)
           return err("conflicting_params", "Pass noteId= or domain=, not both.", "domain= edits every note in the domain; noteId= edits one.");
         if (find === undefined && edits === undefined)
           return err("missing_param", "domain= needs find= (with body=) or edits=.", 'e.g. revise(domain="myClerkBook", find="Code Priority Queue", body="Backlog")');
-        if (within || section || title || mode || identity || icon)
+        if (within || section || title || mode || identity || icon || append)
           return err("conflicting_params", "domain= takes only find=/body=, edits=, nth= and dryRun=.", "Use noteId= for element, section, title or icon edits.");
         return reviseDomain(domain, edits ?? [{ find: find!, body: body ?? "", nth }], dryRun ?? true, checkedDate(date));
       }
-      // dryRun exists only for domain=. Accepting it silently elsewhere would
-      // let a caller who asked for a preview get a write instead.
-      if (dryRun !== undefined)
-        return err("conflicting_params", "dryRun= applies only to revise(domain=); nothing was written.", "For one note, read it first (or outline()) and then revise without dryRun. diff(noteId) shows what a write changed.");
+      // dryRun exists for domain= (defaults to true) and within= (opt-in).
+      // Accepting it silently elsewhere would let a caller who asked for a
+      // preview get a write instead.
+      if (dryRun !== undefined && !within)
+        return err("conflicting_params", "dryRun= applies only to revise(domain=) and revise(within=); nothing was written.", "For one note, read it first (or outline()) and then revise without dryRun. diff(noteId) shows what a write changed.");
       if (!noteIdArg)
         return err("missing_param", "revise needs noteId= (or domain= for a domain-wide find/replace).", "Pass the id of the note to edit.");
       const noteId = noteIdArg;
@@ -2272,6 +2750,15 @@ Check the receipt: matched=false means a NEW section was written (available= lis
         return err("protected_note", `Note ${noteId} is a container — its content cannot be edited directly.`, "Use remember() to write to singletons, or specify a content note id.");
       if (within && find === undefined)
         return err("missing_param", "within= needs find= as its anchor.", 'Pass a short text unique to the element, e.g. revise(noteId, find="Phase 2", within="tr", body="<tr>…</tr>").');
+      // append= is a whole operation of its own: it locates its table by
+      // heading, so an anchor (find=/within=/section=) or competing content
+      // parameter would give the receipt two contradictory stories.
+      if (append) {
+        if (body !== undefined || find !== undefined || edits !== undefined || section !== undefined || within !== undefined || mode !== undefined || closure !== undefined)
+          return err("conflicting_params", "append= is a one-call row append and combines with none of body=/find=/edits=/section=/within=/mode=/closure=.", 'e.g. revise(noteId, append={table: "Backlog", row: "Ship v13 | Claude | 2026-10-15"}).');
+        if (!append.table.trim() || !append.row.split("|").some((c) => c.trim()))
+          return err("missing_param", 'append needs a table heading and one row of cells separated by "|".', 'e.g. append={table: "Backlog", row: "Ship v13 | Claude | 2026-10-15"}.');
+      }
       const d = checkedDate(date);
       const note = await trilium.getNote(noteId);
       const noteKind = labelOf(note, "noteType");
@@ -2302,6 +2789,49 @@ Check the receipt: matched=false means a NEW section was written (available= lis
         }
         return { retitled: cleanTitle, cascaded };
       };
+
+      // ── append=: one row onto a table, no anchor to locate first ───────────
+      // The diarist's ask (2026-10-12): adding a row required naming an existing
+      // row as the anchor with within=; a register only ever grows at the end,
+      // so the table itself is the only address it should need.
+      if (append) {
+        const cells = append.row.split("|").map((c) => c.trim());
+        const current = await trilium.getNoteContent(noteId);
+        const spot = findTable(current, append.table);
+        if (!spot) {
+          const section = getSection(current, append.table);
+          const available = section.available ?? [];
+          const near = !section.matched && available.length ? nearestHeading(append.table, available) : null;
+          const suggestion = near && near.distance <= Math.max(2, Math.floor(append.table.length / 5)) ? near : null;
+          return err(
+            "table_not_found",
+            section.matched
+              ? `"${append.table}" holds no table with a <tbody> to append to — nothing was written.`
+              : `No "${append.table}" heading (h2/h3/h4) with a table under it — nothing was written.`,
+            section.matched
+              ? "Point append.table at the heading a table already sits under, or write the table's skeleton first (mode=\"append\" with a <table> body)."
+              : `Available headings: ${available.length ? available.join(" · ") : "(none)"}${suggestion ? ` — did you mean "${suggestion.heading}"?` : "."} outline(noteId) lists them.`
+          );
+        }
+        await trilium.createRevision(noteId).catch(() => null);
+        const stamped = bumpLastUpdated(appendRowToTable(current, spot, cells.map((c) => escapeHtml(c))), d);
+        await trilium.updateNoteContent(noteId, stamped.html);
+        const titledAppend = await applyTitle();
+        const iconAppend = await applyIcon(noteId, icon);
+        await trilium.updateLabelValue(noteId, "updated", d);
+        if (labelOf(note, "status") === "dormant") await trilium.updateLabelValue(noteId, "status", "active");
+        const relsAppend = relationSnippet(note);
+        return txt({
+          ok: true, noteId, mode: `append-row:${append.table}`, date: d,
+          row: cells.join(" | "),
+          cells: cells.length,
+          ...(titledAppend.retitled ? { retitled: titledAppend.retitled } : {}),
+          ...(iconAppend ? { icon: iconAppend } : {}),
+          ...(relsAppend ? { relations: relsAppend } : {}),
+          ...structuralFindings(noteKind, stamped.html),
+          ...(stamped.bumped ? { lastUpdated: "bumped to today — the line is server-owned" } : {}),
+        });
+      }
 
       // ── find/replace mode: exact-string surgery, raw in and raw out ────────
       if (find !== undefined || edits !== undefined) {
@@ -2378,32 +2908,109 @@ Check the receipt: matched=false means a NEW section was written (available= lis
               : `The anchor sits in ${res.matches} different <${within}> elements. Lengthen it until it is unique, or pass nth= (1-based, in document order) — elements[] previews them.`;
             return txt({
               ok: false, noteId, mode: `within:${within}:${action}`, replaced: 0, date: d, reason: res.reason, hint,
+              ...(dryRun === true ? { dryRun: true } : {}),
               ...(res.elements ? { elements: res.elements } : {}),
               ...(res.reason === "no_match" ? missContext(find!, current) : {}),
             });
           }
-          if (res.html === current)
+          if (res.html === current && dryRun !== true)
             return txt({ ok: true, noteId, mode: `within:${within}:${action}`, unchanged: true, date: d, note: "The body equals the element it would replace, so nothing was written and no revision was taken." });
 
           // Resolve and validate the closure target BEFORE the row moves, so a
-          // bad thread or identity never leaves a row removed and unrecorded.
+          // bad thread, register or identity never leaves a row removed and
+          // unrecorded.
           let closureThread: Note | null = null;
           let closureBlock = "";
+          // Register variant: the removed row lands in another register note's
+          // table, shaped to that table — the diarists' ask (2026-10-15).
+          let closureTarget: { note: Note; heading?: string; content: string; spot: TableSpot } | null = null;
+          let closureCells: string[] = [];
+          let closurePadded = 0;
           if (closure) {
-            closureThread = /^[A-Za-z0-9]{12}$/.test(closure.thread)
-              ? await trilium.getNote(closure.thread).catch(() => null)
-              : await findExisting("thread", closure.thread);
-            if (!closureThread || ownedLabel(closureThread, "noteType") !== "thread")
-              return err("not_found", `closure.thread "${closure.thread}" is not a thread; nothing was written.`, "Pass the thread's id or exact title, e.g. \"Escalations\".");
-            if (isCollectionThread(closureThread)) return collectionAppendRefusal(closureThread);
-            const rendered = renderBody(closure.body).html;
-            const removedText = toText(res.element, 400);
-            const closureHtml = `<p><strong>Closed:</strong> ${escapeHtml(removedText)}</p>\n${rendered}`;
-            if (!identity)
-              return err("missing_identity", "closure= appends to a dated thread, which needs identity=; nothing was written.", 'Pass identity="LLM · environment · agent/mode".');
-            const badIdentity = identityRefusal(identity, closureHtml);
-            if (badIdentity) return badIdentity;
-            closureBlock = `<h3>${escapeHtml(identity)}</h3>\n${closureHtml}`;
+            if (closure.note !== undefined) {
+              const ref = closure.note;
+              let target: Note | null = /^[A-Za-z0-9]{12}$/.test(ref)
+                ? await trilium.getNote(ref).catch(() => null)
+                : null;
+              if (!target) {
+                const hits = await trilium
+                  .searchNotes(`note.title = '${escapeQueryValue(ref)}'`, { fastSearch: true, limit: 10 })
+                  .catch(() => ({ results: [] as Note[] }));
+                const exact = hits.results.filter((n) => titleKey(n.title) === titleKey(ref));
+                if (exact.length > 1)
+                  return err("ambiguous", `closure.note "${ref}" matches ${exact.length} notes — nothing was written.`, `Pass the note's id: ${exact.slice(0, 5).map((n) => `${n.title} [${n.noteId}]`).join(" · ")}`);
+                target = exact[0] ?? null;
+              }
+              if (!target)
+                return err("not_found", `closure.note "${ref}" is not a note; nothing was written.`, "Pass the register note's id or its exact title.");
+              if (isContainer(b(), target.noteId))
+                return err("protected_note", `closure.note "${target.title}" is a container — its content cannot be edited directly.`, "Target a register note (a maintained table).");
+              if (isRecordNote(target))
+                return err("record_note", `closure.note "${target.title}" is a record — records are never rewritten.`, "Use the {thread, body} variant for prose closures, or target the register that should hold the row.");
+              const targetContent = await trilium.getNoteContent(target.noteId);
+              const spot = findTable(targetContent, closure.table);
+              if (!spot)
+                return err("no_table", `closure.note "${target.title}" ${closure.table ? `has no table under "${closure.table}"` : "holds no table with a <tbody> to append to"} — nothing was written.`, closure.table ? "Pass the heading of the table that should receive the row (outline its headings first)." : 'Pass table="<heading>" to name the table, or give the note a table to receive the row.');
+              const removedCells = rowCells(res.element);
+              const fitted = fitRowCells(removedCells, spot.columns);
+              if (!fitted)
+                return err("row_shape", `The row has ${removedCells.length} cell(s) and "${target.title}"'s table has ${spot.columns} column(s): appending it would drop data, so nothing was written.`, "Reshape the row first (revise its cells), or target a register whose table matches the row.");
+              closureTarget = { note: target, ...(closure.table !== undefined ? { heading: closure.table } : {}), content: targetContent, spot };
+              closureCells = fitted;
+              closurePadded = fitted.length - removedCells.length;
+            } else {
+              closureThread = /^[A-Za-z0-9]{12}$/.test(closure.thread!)
+                ? await trilium.getNote(closure.thread!).catch(() => null)
+                : await findExisting("thread", closure.thread!);
+              if (!closureThread || ownedLabel(closureThread, "noteType") !== "thread")
+                return err("not_found", `closure.thread "${closure.thread}" is not a thread; nothing was written.`, "Pass the thread's id or exact title, e.g. \"Escalations\".");
+              if (isCollectionThread(closureThread)) return collectionAppendRefusal(closureThread);
+              const rendered = renderBody(closure.body ?? "").html;
+              const removedText = toText(res.element, 400);
+              const closureHtml = `<p><strong>Closed:</strong> ${escapeHtml(removedText)}</p>\n${rendered}`;
+              if (!identity)
+                return err("missing_identity", "closure= appends to a dated thread, which needs identity=; nothing was written.", 'Pass identity="LLM · environment · agent/mode".');
+              const badIdentity = identityRefusal(identity, closureHtml);
+              if (badIdentity) return badIdentity;
+              closureBlock = `<h3>${escapeHtml(identity)}</h3>\n${closureHtml}`;
+            }
+          }
+
+          // v13: dryRun previews the exact change and stops before any write or
+          // revision. A diarist removed one stored "paragraph" holding eight
+          // logical paragraphs in one removal (2026-10-12); the element's whole
+          // visible extent and stored size, shown first, are the guard that
+          // removal needed.
+          if (dryRun === true) {
+            const elementText = toText(res.element, 1200);
+            const fullText = toText(res.element, Number.MAX_SAFE_INTEGER);
+            const unchanged = res.html === current;
+            return txt({
+              ok: true, noteId, mode: `within:${within}:${action}`, dryRun: true, date: d,
+              element: {
+                tag: within,
+                text: elementText,
+                bytes: Buffer.byteLength(res.element, "utf8"),
+                ...(elementText.length < fullText.length ? { textTruncated: true } : {}),
+              },
+              ...(unchanged
+                ? { unchanged: true, note: "body= equals the element it would replace, so a real run would write nothing and take no revision — this is the element as it stands." }
+                : {
+                    ...(action === "remove"
+                      ? { before: boundPreview(res.element), after: "(removed — the surrounding content closes up)" }
+                      : action === "replace"
+                      ? { before: boundPreview(res.element), after: boundPreview(body ?? "") }
+                      : { inserts: { position: action, body: boundPreview(body ?? "") } }),
+                    ...(closureThread
+                      ? { closure: { threadId: closureThread.noteId, thread: closureThread.title, wouldAppend: toText(closureBlock, 300) } }
+                      : {}),
+                    ...(closureTarget
+                      ? { closure: { noteId: closureTarget.note.noteId, note: closureTarget.note.title, table: closureTarget.heading ?? "(first table)", row: closureCells.map((c) => toText(c, 80)).join(" | "), action: "would-append", ...(closurePadded ? { padded: `${closurePadded} empty cell(s) added so the row matches the table's shape` } : {}) } }
+                      : {}),
+                  }),
+              matchedElements: res.matches,
+              next: "Nothing was written and no revision was taken. Re-run with dryRun=false to apply exactly this change.",
+            });
           }
 
           await trilium.createRevision(noteId).catch(() => null);
@@ -2420,13 +3027,47 @@ Check the receipt: matched=false means a NEW section was written (available= lis
             const entry = await appendThreadEntry(closureThread.noteId, closureBlock, d);
             await trilium.updateLabelValue(closureThread.noteId, "updated", d);
             if (labelOf(closureThread, "status") === "dormant") await trilium.updateLabelValue(closureThread.noteId, "status", "active");
+            const closureHeading = leadingIdentityText(closureBlock);
             closureReceipt = {
               threadId: closureThread.noteId,
               thread: closureThread.title,
               entryId: entry.noteId,
               action: entry.action,
+              ...(entry.marker ? { entryMarker: entry.marker } : {}),
+              ...(closureHeading ? { runHeading: closureHeading } : {}),
               next: "Run consistency() on any fact the closed row asserted elsewhere, so no stale sentence survives it.",
             };
+          }
+          if (closureTarget) {
+            // A same-note target re-reads: the row removal just rewrote this
+            // body, so the pre-write table position would be stale.
+            const sameNote = closureTarget.note.noteId === noteId;
+            const base = sameNote ? await trilium.getNoteContent(noteId) : closureTarget.content;
+            const targetSpot = sameNote ? findTable(base, closureTarget.heading) : closureTarget.spot;
+            if (targetSpot) {
+              await trilium.createRevision(closureTarget.note.noteId).catch(() => null);
+              const regStamped = bumpLastUpdated(appendRowToTable(base, targetSpot, closureCells), d);
+              await trilium.updateNoteContent(closureTarget.note.noteId, regStamped.html);
+              await trilium.updateLabelValue(closureTarget.note.noteId, "updated", d);
+              if (labelOf(closureTarget.note, "status") === "dormant") await trilium.updateLabelValue(closureTarget.note.noteId, "status", "active");
+              const marked = hasLabel(closureTarget.note, "register") || ownedLabel(closureTarget.note, "noteType") === "thread";
+              closureReceipt = {
+                noteId: closureTarget.note.noteId,
+                note: closureTarget.note.title,
+                table: closureTarget.heading ?? "(first table)",
+                row: closureCells.map((c) => toText(c, 80)).join(" | "),
+                action: "appended",
+                ...(closurePadded ? { padded: `${closurePadded} empty cell(s) added so the row matches the table's shape` } : {}),
+                ...(marked ? {} : { registerHint: 'The target is not marked #register — label(noteId, "register", value="") exempts its table\'s evidence dates from maintain\'s dated-prose lint.' }),
+              };
+            } else {
+              closureReceipt = {
+                noteId: closureTarget.note.noteId,
+                note: closureTarget.note.title,
+                action: "missed",
+                hint: "The row was removed, but the table could no longer be found in the target note — nothing was appended there. The source note has a revision from before the removal.",
+              };
+            }
           }
           return txt({
             ok: true, noteId, mode: `within:${within}:${action}`, date: d,
@@ -2453,11 +3094,18 @@ Check the receipt: matched=false means a NEW section was written (available= lis
             // and reporting the second for the first sent callers hunting a
             // discrepancy that did not exist.
             const alreadyConsumed = consumed.has(e.find);
+            // A third diagnosis: the text IS present but nth= points past its
+            // last occurrence. applyFindEdit returns null there, which used to
+            // come back as "the text genuinely differs" while matchedUpTo=
+            // showed the text in place — a receipt that contradicted itself.
+            const nthOvershot = !alreadyConsumed && e.nth !== undefined && working.includes(e.find);
             results.push({
               find: e.find,
               replaced: 0,
-              hint: missHint(e.find, current, alreadyConsumed),
-              ...(alreadyConsumed ? {} : missContext(e.find, working)),
+              hint: nthOvershot
+                ? `nth=${e.nth} is past the last occurrence of this text, so nothing was replaced. The text itself is present — check how many occurrences exist, then re-target, or omit nth= to replace every one.`
+                : missHint(e.find, current, alreadyConsumed),
+              ...(alreadyConsumed || nthOvershot ? {} : missContext(e.find, working)),
             });
             continue;
           }
@@ -2471,7 +3119,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           return txt({
             ok: true, noteId, mode: edits ? "edits" : "find-replace", replaced: 0, date: d,
             ...(edits
-              ? { results }
+              ? { results, hint: `None of the ${plan.length} edit(s) matched anything — see results[].hint for the cause of each; nothing was written.` }
               : {
                   hint: results[0]!.hint,
                   ...(results[0]!.matchedUpTo ? { matchedUpTo: results[0]!.matchedUpTo } : {}),
@@ -2561,7 +3209,10 @@ Check the receipt: matched=false means a NEW section was written (available= lis
 
       let finalContent: string | null = null;
       let sectionMiss: { appendedAtLevel?: number; available?: string[]; didYouMean?: string } = {};
-      let threadEntryResult: { noteId: string; action: "created" | "appended" | "already_written" } | null = null;
+      let threadEntryResult: { noteId: string; action: "created" | "appended" | "already_written"; marker?: string } | null = null;
+      // The run heading (identity h3) the block actually opened with, echoed in
+      // the receipt so a malformed line is caught at write time (2026-10-10).
+      let threadRunHeading: string | null = null;
       if (body) {
         const sanitized = renderBody(body);
         const html = sanitized.html;
@@ -2655,6 +3306,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           const badIdentity = identityRefusal(identity, html);
           if (badIdentity) return badIdentity;
           const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
+          threadRunHeading = leadingIdentityText(block);
           threadEntryResult = await appendThreadEntry(noteId, block, d);
           if (threadEntryResult.action === "already_written") {
             return txt({ ok: true, noteId, mode: "already_written", entryId: threadEntryResult.noteId, date: d });
@@ -2710,7 +3362,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           : {}),
         ...sectionMiss,
         ...(sectionHint ? { hint: sectionHint } : {}),
-        ...(threadEntryResult ? { entryId: threadEntryResult.noteId, entryAction: threadEntryResult.action, entry: `today's [${d}] entry in this thread; revise(entryId) edits it` } : {}),
+        ...(threadEntryResult ? { entryId: threadEntryResult.noteId, entryAction: threadEntryResult.action, ...(threadEntryResult.marker ? { entryMarker: threadEntryResult.marker } : {}), ...(threadRunHeading ? { runHeading: threadRunHeading } : {}), entry: `today's [${d}] entry in this thread; revise(entryId) edits it` } : {}),
         ...(titled.retitled ? { retitled: titled.retitled } : {}),
         ...(titled.cascaded ? { domainCascade: `#domain updated on ${titled.cascaded} descendant note(s)` } : {}),
         ...structuralFindings(noteKind, finalContent),
@@ -3068,7 +3720,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
   server.tool(
     "consistency",
-    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Records (sessions, diary, logs, dated thread entries) are skipped by default because they are never rewritten; includeRecords=true or a kinds= naming them brings them back. Scans every in-scope note (fast=true uses Trilium's lossy pre-filter). Matching ignores case unless caseSensitive=true (a leading (?i) is accepted). Without a capture group the whole match is the value compared. patterns=[…] checks several facts in one call over one read of each note. Run it after correcting any fact recorded in more than one place.`,
+    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. Multiple values co-asserted within one note — two true figures in one cell — are that note's compound fact, not a contradiction; only values no note asserts together flag as a disagreement. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Records (sessions, diary, logs, dated thread entries) are skipped by default because they are never rewritten; includeRecords=true or a kinds= naming them brings them back. Scans every in-scope note (fast=true uses Trilium's lossy pre-filter). Matching ignores case unless caseSensitive=true (a leading (?i) is accepted). Without a capture group the whole match is the value compared. patterns=[…] checks several facts in one call over one read of each note. Run it after correcting any fact recorded in more than one place.`,
     {
       pattern: z.string().optional().describe("Regex over note bodies. One capture group = the value that should agree across notes; with none, the whole match is the value. Omit when using subject= (prose mode)."),
       patterns: z.array(z.string()).max(10).optional().describe("Several patterns checked in one call (each reported as its own result, in order); every note is read once"),
@@ -3204,9 +3856,14 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
       const scoped = notes.filter(inScope).slice(0, max); // the limit counts notes in scope, not the records skipped
 
-      // Group by the captured value. A note asserting the value more than once
-      // contributes each distinct capture, because a note that contradicts
-      // ITSELF is the same defect at smaller scale.
+      // Captured values are grouped BY NOTE first. A note may legitimately
+      // assert more than one captured value — one cell holding two true
+      // figures (a master hash and a branch hash, 2026-10-12) read two values
+      // out of a single fact, and judging value groups alone reported that
+      // note as disagreeing with itself. The note is the unit: several
+      // distinct values from one note are its compound fact, and only values
+      // no note ever asserts together count as a cross-note contradiction.
+      const noteValues = new Map<string, { stub: { id: string; title: string; kind: string; idleDays: number }; values: Set<string> }>();
       const byValue = new Map<string, Array<{ id: string; title: string; kind: string; idleDays: number }>>();
       const noCapture: Array<{ id: string; title: string; kind: string; idleDays: number }> = [];
       let hasCaptureGroup = false;
@@ -3254,12 +3911,19 @@ calling twice is safe. Use remove=true to delete an edge.`,
         const seen = new Set<string>();
         for (const value of [...raw.values, ...projected.values]) {
           hasCaptureGroup = true;
-          if (seen.has(value)) continue;
           seen.add(value);
+        }
+        if (seen.size) noteValues.set(n.noteId, { stub, values: seen });
+        if ((raw.matched || projected.matched) && !seen.size) noCapture.push(stub);
+      }
+
+      // The value→notes view the receipt groups by, inverted from the note
+      // view — same note order and value order the scan produced.
+      for (const { stub, values } of noteValues.values()) {
+        for (const value of values) {
           if (!byValue.has(value)) byValue.set(value, []);
           byValue.get(value)!.push(stub);
         }
-        if ((raw.matched || projected.matched) && !seen.size) noCapture.push(stub);
       }
 
       if (!hasCaptureGroup) {
@@ -3293,7 +3957,23 @@ calling twice is safe. Use remove=true to delete an edge.`,
             .map((g) => ({ value: g.value, note: { id: g.notes[0]!.id, title: g.notes[0]!.title, kind: g.notes[0]!.kind }, idleDays: g.notes[0]!.idleDays }))
         : [];
 
-      const agrees = groups.length <= 1;
+      // Judged by NOTE, not by value: a disagreement is only claimed when two
+      // captured values are never asserted together by any one note. A pair
+      // co-asserted within a note is that note's compound fact (the two hashes
+      // in one cell); a pair no note states together is genuine cross-note
+      // divergence — one note still asserting what another has corrected.
+      const valueNotes = [...byValue.values()];
+      let crossNoteConflict = false;
+      for (let i = 0; i < valueNotes.length && !crossNoteConflict; i++) {
+        const ids = new Set(valueNotes[i]!.map((s) => s.id));
+        for (let j = i + 1; j < valueNotes.length; j++) {
+          if (!valueNotes[j]!.some((s) => ids.has(s.id))) {
+            crossNoteConflict = true;
+            break;
+          }
+        }
+      }
+      const agrees = !crossNoteConflict;
       return txt({
         mode: "consistency",
         pattern,
@@ -3315,7 +3995,9 @@ calling twice is safe. Use remove=true to delete an edge.`,
         note: agrees
           ? groups.length === 0
             ? "No note asserted a value for that pattern. That is evidence about the pattern, not about the brain — check it against a note you know contains the fact."
-            : `All ${groups[0]!.count} note(s) agree on "${groups[0]!.value}".`
+            : groups.length === 1
+              ? `All ${groups[0]!.count} note(s) agree on "${groups[0]!.value}".`
+              : `${groups.length} different values were captured, but every pair of them is asserted together inside a single note — one note's compound fact (two true figures in one cell), not a contradiction. Re-measure if any value should be the only one.`
           : `${groups.length} DIFFERENT values are asserted across ${scoped.length} notes. Establish which is true from evidence, correct every note that disagrees, and wire ~corrects from the note that overturns the old claim — revising in place leaves no trace the wrong value was ever believed.`,
       });
       }
@@ -3553,7 +4235,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
     "claim",
     `Does the brain still agree with the world? Register a checkable assertion and record whether it holds. BrainLLM never runs the check — it stores it as inert text; you run it and report.
 
-assertion + check → register (deduped by assertion); claimId + holds + evidence → verify (evidence required); claimId alone → read with history; nothing → list (status= filters). noteId= links the claim to its source note (~derivedFrom). maintain(deep) surfaces lapsed, never-verified, broken and source-changed claims.`,
+assertion + check → register (deduped by assertion); claimId + holds + evidence → verify (evidence required); claimId + holds + evidence + retire → verify and archive in one call; claimId alone → read with history; nothing → list (status= filters). noteId= links the claim to its source note (~derivedFrom). maintain(deep) surfaces lapsed, never-verified, broken and source-changed claims.`,
     {
       assertion: z.string().optional().describe("The claim in plain words, e.g. \"the parse pipeline runs before validation\" — also the dedup key"),
       check: z.string().optional().describe("How to verify it, as INERT text a human or agent runs: a command, a query, a file path, a URL. Never executed by BrainLLM"),
@@ -3563,7 +4245,7 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
       holds: z.boolean().optional().describe("With claimId: did the check pass? false marks the claim broken and surfaces it in maintain()"),
       evidence: z.string().optional().describe("With holds: what you actually observed — the output, the count, the response. A verification without evidence is an assertion about an assertion"),
       status: z.enum(["holding", "broken", "lapsed", "all"]).optional().describe("List filter (default: all)"),
-      retire: z.boolean().optional().describe("With claimId: archive this claim — the thing it described is gone"),
+      retire: z.boolean().optional().describe("With claimId: archive this claim — the thing it described is gone. On the same call as holds= and evidence=: record that final verification (e.g. the failure) and archive it in one call"),
     },
     async ({ assertion, check, noteId, intervalDays, claimId, holds, evidence, status, retire }) => {
       const cfg = b();
@@ -3593,7 +4275,11 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
         if (!note || labelOf(note, "noteType") !== "claim")
           return err("not_found", `${claimId} is not a claim.`, "List them with claim() and no arguments.");
 
-        if (retire) {
+        // retire= alone still just archives. With holds= it composes: the
+        // final verification is recorded first (both halves keep their own
+        // semantics), then the claim is archived — one call for "record the
+        // failure with evidence, then retire it" (2026-10-11).
+        if (retire && holds === undefined) {
           await trilium.addLabel(claimId, "archived", "").catch(() => null);
           return txt({ ok: true, claimId, action: "retired", assertion: note.title });
         }
@@ -3615,9 +4301,13 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
         await trilium.updateLabelValue(claimId, "claimState", holds ? "holding" : "broken").catch(() => null);
         await trilium.updateLabelValue(claimId, "updated", d).catch(() => null);
 
+        if (retire) await trilium.addLabel(claimId, "archived", "").catch(() => null);
         const refreshed = await trilium.getNote(claimId).catch(() => note);
         return txt({
           ok: true, action: holds ? "verified" : "marked-broken", ...row(refreshed),
+          ...(retire
+            ? { retired: true, note: "The verification was recorded and the claim archived in this one call — its history stays in the Verifications section, and the register no longer lists it." }
+            : {}),
           ...(holds
             ? {}
             : { hint: "This claim is now BROKEN. Correct every note that asserts it — consistency() will find the others — then re-verify. A broken claim left in the register is a known-wrong fact with a timestamp on it." }),
@@ -4286,14 +4976,20 @@ and every thread day-child, in time order with its identification line.`,
         });
       }
 
-      // Is today fresh? (No addendum blocks logged yet.)
+      // Is today fresh? The same signal start() reads: a new day is one no
+      // INTERACTIVE close has opened yet — an overnight agent session's
+      // addendum must not read as "the day has started" (2026-10-07). The
+      // addendum test survives only as the fallback for an unreadable note.
       let newDay = true;
       const todaySess = await trilium
         .searchNotes(`#noteType=session #created='${todayStr}'`, { ancestorNoteId: cfg.memory.sessions, fastSearch: true, limit: 1 })
         .catch(() => ({ results: [] as Note[] }));
       if (todaySess.results[0]) {
         const content = await trilium.getNoteContent(todaySess.results[0].noteId).catch(() => "");
-        newDay = !/<h2(?:\s[^>]*)?>\s*Addendum/i.test(content);
+        const note = await trilium.getNote(todaySess.results[0].noteId).catch(() => null);
+        newDay = note
+          ? !hasLabel(note, "interactive")
+          : !/<h2(?:\s[^>]*)?>\s*Addendum/i.test(content);
       }
 
       // Previous session (strictly before today) — in full.
@@ -4314,6 +5010,7 @@ and every thread day-child, in time order with its identification line.`,
 
       // Notes touched since the previous session.
       let changes: Array<{ id: string; title: string; changed: string; deleted?: true }> = [];
+      let changesTruncated: { shown: number; total: number } | undefined;
       if (lastSession) {
         try {
           const history = await trilium.getNoteHistory(cfg.root);
@@ -4322,10 +5019,12 @@ and every thread day-child, in time order with its identification line.`,
             const prevEntry = deduped.get(h.noteId);
             if (!prevEntry || (h.current_isDeleted && !prevEntry.current_isDeleted)) deduped.set(h.noteId, h);
           }
-          changes = [...deduped.values()].slice(0, 25).map((h) => ({
+          const capped = capChanges([...deduped.values()].map((h) => ({
             id: h.noteId, title: h.current_title, changed: h.date.slice(0, 10),
             ...(h.current_isDeleted ? { deleted: true as const } : {}),
-          }));
+          })));
+          changes = capped.changes;
+          changesTruncated = capped.changesTruncated;
         } catch { /* non-fatal */ }
       }
 
@@ -4335,6 +5034,7 @@ and every thread day-child, in time order with its identification line.`,
         lastSession,
         previousLog,
         changes: changes.length ? changes : undefined,
+        ...(changesTruncated ? { changesTruncated } : {}),
         next: [
           "Skim lastSession, previousLog and changes for evidenced outputs — never plausibility.",
           "Present what moved in the first message.",
@@ -4717,6 +5417,10 @@ and every thread day-child, in time order with its identification line.`,
   // session itself (2026-10-04, 2026-10-08). The first successful content
   // write since the gate was last cleared records a "write" step in the same
   // durable gate label; close() asks for the full protocol only when it is there.
+  // A failed mark is retried once and then left pending — session() repairs it
+  // from wroteSinceClose before deciding light vs full, so one hiccup on this
+  // label write cannot downgrade the close (that failure used to be swallowed
+  // silently and then cached in-process).
   const registry = (server as unknown as { _registeredTools?: Record<string, { handler?: (...a: unknown[]) => Promise<unknown> }> })._registeredTools ?? {};
   for (const name of CONTENT_WRITE_TOOLS) {
     const tool = registry[name];
@@ -4725,8 +5429,8 @@ and every thread day-child, in time order with its identification line.`,
     tool.handler = async (...args: unknown[]) => {
       const result = await inner(...args);
       if (!wroteSinceClose && wroteContent(result)) {
-        await markStep("write").catch(() => null);
         wroteSinceClose = true;
+        await markWriteStep();
       }
       return result;
     };
@@ -4744,7 +5448,7 @@ function wroteContent(result: unknown): boolean {
   if (typeof text !== "string") return true;
   try {
     const r = JSON.parse(text) as Record<string, unknown>;
-    if (r.error || r.ok === false || r.unchanged === true || r.action === "already_written" || r.mode === "already_written") return false;
+    if (r.error || r.ok === false || r.unchanged === true || r.action === "already_written" || r.mode === "already_written" || r.dryRun === true) return false;
     if (r.replaced === 0 && !r.closure) return false;
     return true;
   } catch {

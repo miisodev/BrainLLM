@@ -34,9 +34,9 @@ DURING   remember(...)                   the moment something is worth keeping
 END      session() → [update singletons] → addendum() → maintain() → remarks() → diary() → close()
 ```
 
-`start()` returns the date, **preferences and protocols in full**, the other singletons as section headings (pull one with `master(which)`/`llm(which)`, `section=` for one section; `depth="full"` inlines all), today's diary and session ids, active and dormant threads, the previous session and notes changed since. `newDay: true` on the first session of a day → call `day()` (previous session, its log, notes touched since). `day(recap=true)` returns everything written today, in order, across sessions, diary and thread entries.
+`start()` returns the date, **preferences and protocols in full**, the other singletons as section headings (pull one with `master(which)`/`llm(which)`, `section=` for one section; `depth="full"` inlines all), today's diary and session ids, active and dormant threads, the previous session and notes changed since (capped at 25; `changesTruncated: {shown, total}` names the cap when there were more). `newDay: true` means no INTERACTIVE close has happened today — an overnight agent-session addendum does not count, so the morning still calls `day()` (previous session, its log, notes touched since; `day()`'s `newDay` is the same signal). `day(recap=true)` returns everything written today, in order, across sessions, diary and thread entries.
 
-**Close protocol.** `session()` returns singleton stubs, `changedToday` (the maintained notes this day's writes touched: check every figure you changed agrees everywhere it is recorded, with `diff(since="today")` and `consistency()`), `pending=` (what each remaining step has to do), `audit=` (do the singletons agree, and do the LLM ones still serve the master ones) and `next[]`. Update master singletons with what you learned about the user and LLM singletons with what you learned about yourself, fold any addenda (`addendum()`), `maintain()`, `remarks()` for diary cues, `diary()` your closing record, then `close(summary, identity)`. `close()` refuses until those steps ran and `session → remarks → diary` held; the gate is durable across restarts. `force=true` bypasses a step with nothing to do (reported). `continuing=true` is a second close on the same day. Scoped or autonomous runs pass `session(scope="agent")`. **Light close:** a session that wrote no content gets `closeMode: "light"` from `session()` — only `remarks()`, a one-paragraph `diary()` and `close()` follow; any content write since the last close brings the full protocol back. Every `close()` also seals its day's records, which `maintain(deep)` later verifies.
+**Close protocol.** `session()` returns `singletons: "stubs"` (stub mode — not a light close), `changedToday` (the maintained notes this day's writes touched: check every figure you changed agrees everywhere it is recorded, with `diff(since="today")` and `consistency()`), `pending=` (what each remaining step has to do), `audit=` (do the singletons agree, and do the LLM ones still serve the master ones) and `next[]`. Update master singletons with what you learned about the user and LLM singletons with what you learned about yourself, fold any addenda (`addendum()`), `maintain()`, `remarks()` for diary cues, `diary()` your closing record, then `close(summary, identity)`. `close()` refuses until those steps ran and `session → remarks → diary` held; the gate is durable across restarts. `force=true` bypasses a step with nothing to do (reported). `continuing=true` is a second close on the same day, opened by `session(continuing=true)` — the same short continuation receipt (no singleton review), refused on the day's first session. Scoped or autonomous runs pass `session(scope="agent")`. **Light close:** a session that wrote no content gets `closeMode: "light"` from `session()` — only `remarks()`, a one-paragraph `diary()` and `close()` follow; any content write since the last close brings the full protocol back. Every `close()` also seals its day's records, which `maintain(deep)` later verifies.
 
 **Write during the session, not at the end** — a fact written mid-conversation survives a crash.
 
@@ -94,15 +94,15 @@ worth keeping?
 | a day's change log | `insights(date?)` |
 | skim a surface | `<surface>_recall` |
 | everything about an area | `domain(name)` — the reliable path; reach here first. `outline=true` adds every maintained note's headings and size, for planning a multi-note rewrite |
-| search | `recall(query, domain=…)` — scope it; `regex=` for structure, each hit with the matched passage as `evidence` (records included; `kinds=` narrows); fuzzy hits are leads; recent notes rank slightly higher |
-| several bodies at once | `read(ids=[…])` (≤ 10). Bodies stop at ~80k characters; the rest come back in `deferred[]` for a second call. `text=true` returns readable plain text for orienting (not for building a `find=` anchor) |
+| search | `recall(query, domain=…)` — scope it; `since=`/`until=` keep only notes last modified inside the window (date-only bounds cover whole days); every hit names `matchedBy` (`label`/`title`/`text`/`fuzzy`/`ordered`/`regex`) and the top hits carry the `evidence` passage; `regex=` for structure, evidenced on every hit (records included; `kinds=` narrows); fuzzy hits are leads; recent notes rank slightly higher. A receipt that saturated a strategy's 30-candidate cap says so; `searchFailed: true` is a backend failure, never a "nothing matched" verdict — retry |
+| several bodies at once | `read(ids=[…])` (≤ 10). Every entry carries `chars` (the full stored size, even when a section is returned); `section=` (+ `occurrence=`) reads one heading's body from each note — a table section reports `tableRows`, and a miss follows the singleton miss shape (`missing: true` for an unknown id; `available[]` lists the real headings for a section miss). Bodies stop at ~80k characters; the rest come back in `deferred[]` for a second call. `text=true` returns readable plain text for orienting (not for building a `find=` anchor) |
 | storage and growth | `health()` — Trilium version, estimated database size, heaviest notes and their revisions, named backups |
 | what the brain holds | `assembly(area?)` — titles by surface with purposes |
 | inventory / locate by id | `brain()` — read `parent`, not position |
 | a note's heading tree | `outline(id)` — before any `section=` edit you're unsure of |
 | raw labels, relations, body | `inspect(id, content?, section?, find?)` — `find=` also returns the stored element (row, item, paragraph) around each match |
 
-Every read that can be large takes `section=`; a note past the read ceiling cannot be returned whole.
+Every read that can be large takes `section=` — `read(ids)` too, across each note; a note past the read ceiling cannot be returned whole.
 
 ---
 
@@ -120,10 +120,11 @@ Every read that can be large takes `section=`; a note past the read ceiling cann
 | the session log | `close(summary, identity, title?, learned?)` |
 
 - **Dedup is by title.** Generic titles (Current State, Sources) exist in many domains — pass `mustCreate=true` when you mean to create, and read `action` on every receipt.
+- **Sources preview before they land.** `remember(kind="sources", …, revision=)` takes `dryRun=true`, which previews each Revision row addition/update without writing; a new key near an existing one returns `didYouMean` (with `didYouMeanNote`) on the dry run and on the real call, so a qualifier added to a name updates its row instead of creating a second one.
 - **Wire at creation:** `connect=[{relation, toNoteId}]` on the same call. An unconnected note is an orphan until wired.
 - **Identity line** (`"LLM · environment · agent/mode [· Run N]"`) is required on diary, close and dated thread appends. It is checked on write: at least three `·`-separated parts, one line, no draft text — a malformed one is refused with nothing written.
 - **Every note carries an icon except logs.** The server sets the kind default at creation (a thread entry takes its thread's icon) and the sweep backfills any missing; `icon=` picks a better one (boxicons class or bare name). Removing an icon is refused.
-- Bodies may be text, markdown or HTML; the server normalises them to editor-native HTML and reports `sanitized[]` (markdown mixed into an HTML body is converted; a placeholder like `<name>` — even one named like an element, `<template>`, `<select>` — stays as text and never truncates what follows).
+- Bodies may be text, markdown or HTML; the server normalises them to editor-native HTML and reports `sanitized[]` (markdown mixed into an HTML body is converted; a placeholder like `<name>` — even one named like an element, `<template>`, `<select>` — stays as text and never truncates what follows). CKEditor's own attributes (`data-list-item-id` on list items, `spellcheck` on code) are preserved, so re-sanitising a stored note is idempotent and quiet.
 - `diary`, `session`, `log`, `claim` and `domain` have dedicated paths; `remember` refuses them.
 
 **Four writing rules** (each applies to every note you touch):
@@ -150,15 +151,17 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 | `find="<text>"` | replace every occurrence (`nth=` for one) — exact first, then through re-serialized tags, then ignoring inline formatting (`matchMode` says which) |
 | `edits=[{find, body}]` | several surgeries in one read and one write |
 | `find="<short anchor>"` + `within="tr"` | act on the element containing the anchor: replace it (default), `mode="before"/"after"` to insert a row beside it, `mode="remove"` to delete it (`li`, `p`, `td` … too). `within` names what is replaced: `"tr"` takes a whole `<tr>…</tr>` body, `"td"` one `<td>…</td>`; a plain `find=` inside a cell replaces only that text |
-| `within="tr"` + `mode="remove"` + `closure={thread, body}` | close a register row in one call: the row goes, and the closure (quoting it) lands in that thread's entry for today. Needs `identity=`; run `consistency()` after on any fact the row asserted |
-| `domain="<name>"` + `find=`/`edits=` (no noteId) | the same find/replace across every maintained note in a domain; a dry run listing each match unless `dryRun=false`. Records are never touched. `dryRun` anywhere else is refused |
+| `within=` + `dryRun=true` | preview the element first: its full visible extent and byte size, plus the before/after shape (for a `closure=`, what would be appended or moved) — nothing written, no revision. The only other `dryRun` is `domain=` below (its dry run is the default); elsewhere it is refused |
+| `within="tr"` + `mode="remove"` + `closure=` | close a register row in one call: `{thread, body}` sends the row, quoted, into that thread's entry for today (needs `identity=`); `{note, table?}` moves the removed row into another register note's table, shaped to it — a wider row is refused, a narrower one padded. Run `consistency()` after on any fact the row asserted |
+| `append={table, row}` | append one row to the table under that heading with no anchor to locate first — pipes are cell boundaries, a lone placeholder row is replaced; composes with nothing else |
+| `domain="<name>"` + `find=`/`edits=` (no noteId) | the same find/replace across every maintained note in a domain; a dry run listing each match unless `dryRun=false`. Records are never touched |
 
 - **Tables are edited by row.** Anchor on a few words unique to the row and pass `within="tr"`; never copy a whole stored row into `find=`. The row's visible text works too (`"Phase 2 | Claude | Open"`), and quotes match in any form. An anchor in several rows is refused with previews; `nth=` picks one. Write one `<td>` per column — a row whose cells disagree with its header comes back as `tableShape`.
 - **"Last updated" lines are server-owned.** Every content write bumps them (the receipt says `lastUpdated`); never `find=` on one.
 - A replacement equal to its match writes nothing and reports `unchanged`.
 - A revision is taken before every content write; `diff(noteId)` shows what the last write changed, and `diff(since="today")` reviews every note you changed today in one call — run it before closing.
-- **Check the receipt.** `matched: false` means a new section was written — `available[]` lists real headings and `didYouMean` catches typos; `strict=true` refuses instead. `headingCount > 1` means only the first match was touched. `replacedSubsections[]` names nested headings a section replace took with it.
-- **`find=` prefers stored HTML.** Plain text also matches through inline formatting (`<strong>`, `<code>`, `<em>`, entities), so a short anchor rarely needs its markup; a span that opens or closes formatting is widened to keep it balanced. Block tags still match literally; `outline()` gives the `raw` form of headings. On a miss the hint names the cause and shows the stored text nearby.
+- **Check the receipt.** `matched: false` means a new section was written — `available[]` lists real headings and `didYouMean` catches typos; `strict=true` refuses instead. `headingCount > 1` means only the first match was touched. `replacedSubsections[]` names nested headings a section replace took with it. A record append (`remember`/`revise`/`closure`) names where it landed: `entryMarker` (the `Addendum — HH:mm` block heading written) and `runHeading` (the identity heading, when the body opened with one).
+- **`find=` prefers stored HTML.** Plain text also matches through inline formatting (`<strong>`, `<code>`, `<em>`, entities), so a short anchor rarely needs its markup; a span that opens or closes formatting is widened to keep it balanced. Block tags still match literally; `outline()` gives the `raw` form of headings. On a miss the hint names the cause in every shape: drifted text shows the stored text nearby (`storedNearby`), `nth=` past the last occurrence says so, and an all-miss `edits=` returns a hint per edit.
 - A section replace swaps everything under the heading — use `find=` for anything smaller.
 - **Oversized note (past the read ceiling)?** It usually holds two subjects: `split(noteId, sections=[…], into="<title>")` moves whole sections to a new sibling and leaves a pointer.
 - Concurrent writers are serialised server-side; reads stay parallel.
@@ -182,8 +185,8 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 
 ## Verification — `consistency` and `claim`
 
-- **`consistency(pattern | subject)`** — does the brain agree with itself? A regex with one capture group (or a fact in prose) returns every asserting note grouped by value. **Run it after correcting any fact that could be recorded in more than one place.** `staleAfterDays=N` reports values held in only one note untouched N+ days. Records (sessions, diary, logs, dated thread entries) are skipped because they are never rewritten; `includeRecords=true` brings them back. Without a capture group the whole match is the value; matching ignores case unless `caseSensitive=true`; `patterns=[…]` checks several facts over one read of each note.
-- **`claim(...)`** — does the brain still agree with the world? Register `assertion` + `check`; verify with `claimId` + `holds` + `evidence` (evidence required); read with `claimId`; list with no arguments. BrainLLM never runs the check — you do. Register claims that would be expensive to discover had gone stale.
+- **`consistency(pattern | subject)`** — does the brain agree with itself? A regex with one capture group (or a fact in prose) returns every asserting note grouped by value. Values one note asserts together — two true figures in one cell — are that note's **compound fact**, not a contradiction; only values no note co-asserts flag as a disagreement. **Run it after correcting any fact that could be recorded in more than one place.** `staleAfterDays=N` reports values held in only one note untouched N+ days. Records (sessions, diary, logs, dated thread entries) are skipped because they are never rewritten; `includeRecords=true` brings them back. Without a capture group the whole match is the value; matching ignores case unless `caseSensitive=true`; `patterns=[…]` checks several facts over one read of each note.
+- **`claim(...)`** — does the brain still agree with the world? Register `assertion` + `check`; verify with `claimId` + `holds` + `evidence` (evidence required); read with `claimId`; list with no arguments. `retire=true` composes with a verification — `claim(id, holds=false, evidence=…, retire=true)` marks it broken with the evidence and archives it in one call (`retired: true`); alone it just retires. BrainLLM never runs the check — you do. Register claims that would be expensive to discover had gone stale.
 
 ---
 
@@ -205,7 +208,7 @@ Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=tr
 | claim lapsed / unverified / broken / source-changed | re-verify with `claim()` or retire it |
 | duplicate title, deletion, revision bloat | resolve per the hint |
 
-- **`ack=[id]`** silences a finding you actually reviewed, until the note's content changes. Never ack unread — leave other lanes' flags alone.
+- **`ack=[id]`** silences a finding you actually reviewed, until the note's content changes — it also quiets `domain()`'s stale flag on that note. Never ack unread — leave other lanes' flags alone.
 - `domain=` scopes the deep passes to one lane; `dryRun` previews.
 - `coverage[]` names any capped pass, so a short list isn't mistaken for a clean one.
 
@@ -224,6 +227,10 @@ Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=tr
 | dates look off on a hosted deploy | set `BRAINLLM_TZ` (IANA) |
 | deletions older than a week go unreported | Trilium keeps deleted notes longer than its 7-day default: set `BRAINLLM_DELETION_CATCHUP_DAYS` to match |
 | an informational `{error, detail, hint}` | read `hint` and retry with corrected arguments |
+
+## Release status
+
+A shipped-but-unmerged stream announces itself here as one italic line — ``> _Shipped, pending merge: `<branch>` @ `<short-hash>` — <feature>; delete this line when the merge lands on main._`` — and the integration deletes it. No markers are active right now.
 
 ## References
 
