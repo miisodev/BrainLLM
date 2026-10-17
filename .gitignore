@@ -13,6 +13,8 @@ skills/*.zip
 CLAUDE.md
 AGENTS.md
 GEMINI.md
+.agents/
+GOTCHAS.md
 
 # OS/editor noise
 .DS_Store
