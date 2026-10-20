@@ -1,6 +1,6 @@
 {
   "name": "brainllm",
-  "version": "13.0.0",
+  "version": "13.1.0",
   "mcpName": "io.github.miisodev/brainllm",
   "description": "Self-hosted memory for LLMs in TriliumNext, structured by the server and editable by you.",
   "author": "Kevin Miiso Novo <miisodev@gmail.com>",
@@ -63,7 +63,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
-    "zod": "^3.25.76"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/bun": "latest",

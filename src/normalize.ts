@@ -2072,6 +2072,9 @@ export function upsertTableRow(
  *  tbody, the shape every row is held to, and the skeleton placeholder row a
  *  new row replaces rather than follows. */
 export interface TableSpot {
+  /** Absolute tbody content range, used for destination-local retry checks. */
+  bodyStart: number;
+  bodyEnd: number;
   /** Index just before `</tbody>` — where a new last row is inserted. */
   insertAt: number;
   /** Columns of the table's first row, colspan-aware — the same convention
@@ -2126,7 +2129,7 @@ export function findTable(html: string, heading?: string): TableSpot | null {
     }
   }
 
-  return { insertAt, columns, ...(placeholder ? { placeholder } : {}) };
+  return { insertAt, columns, bodyStart: tbodyInnerStart, bodyEnd: insertAt, ...(placeholder ? { placeholder } : {}) };
 }
 
 /** Append one <tr> to the table at `spot`. `cells` are cell inner HTML: a

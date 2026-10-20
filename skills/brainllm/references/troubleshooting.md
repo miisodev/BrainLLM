@@ -29,7 +29,10 @@
 | BrainLLM tools time out or return connection errors | The backend is unreachable, not the tool — every ETAPI call is bounded at 30 s with one retry on idempotent reads, so a hang surfaces as a failed tool call rather than a stuck session. Check the instance `TRILIUM_BASE_URL` names: a hosted deploy should answer at its own URL, a local desktop install needs the Trilium app running. Then retry. |
 | `start` → `uninitialized` | `bootstrap` |
 | A result ends with `[BrainLLM: … cut at 140,000 to fit the client's limit]` | The result passed the server's size cap. Narrow it: `section=`, `block=`, `limit=`, or fewer `ids=` |
-| `revise` refuses `dryRun=` | Without `within=`, `dryRun` exists only for `revise(domain=)`. To preview one note's edit, use `find=` + `within=` + `dryRun=true` — it shows the element and writes nothing; or read the note (or `outline()`) first. `diff(noteId)` shows what a write changed |
+| `revise` refuses `dryRun=` | Preview uses `find=`, `edits=`, `within=` or `moves=`; domain edits preview by default. Other modes refuse before writing. Do not combine title/icon changes with a preview |
+| `consistency` is incomplete | Inspect `coverage.failed`, `truncated` and the candidate limit. Narrow domain/kinds or raise `limit`; retry failed reads. A bounded or lossy scan cannot establish absence or unanimity |
+| A register closure partially failed | Read both source and destination. Destination-first ordering preserves the source until the destination is durable; exact rows and identical thread blocks deduplicate on retry. A lost response can follow an accepted write; never assume no mutation |
+| Register destination shape or table ambiguous | Name `closure.table`, and supply exact plain-text destination cells with `closure.row`. Padding is not inferred |
 | `read(ids=[…])` returns `deferred[]` | The bodies passed ~80k characters together. Every returned entry carries `chars`, so pick by size; read the deferred ids in a second call, `section=` for the huge ones, or pass `text=true` |
 | `health()` flags a note's revisions | Revision history is most of the database's weight. Splitting the note, or tightening Trilium's revision-snapshot interval, bounds it |
 | Deep maintenance flags the same items every session | Act on them, or `maintain(ack=[…])` the ones you reviewed and found correct |

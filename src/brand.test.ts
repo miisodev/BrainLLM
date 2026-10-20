@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { BRAND, MARK_GRID, markSvg } from "./brand.js";
+import { BRAND, MARK_GRID, markSvg, brandIcons } from "./brand.js";
 
 const root = join(import.meta.dir, "..");
 const json = (file: string) => JSON.parse(readFileSync(join(root, file), "utf-8"));
@@ -32,4 +32,29 @@ describe("brand surfaces agree", () => {
     expect(new Set(fromGrid)).toEqual(new Set(lit));
     expect(markSvg().match(/<circle/g)).toHaveLength(9);
   });
+});
+
+
+test("connector icons are same-origin with a distinct brand cache key", () => {
+  const icons = brandIcons("https://memory.example");
+  expect(icons[0]!.mimeType).toBe("image/png");
+  for (const icon of icons) {
+    const u = new URL(icon.src);
+    expect(u.origin).toBe("https://memory.example");
+    expect(u.searchParams.get("brand")).toBe("brainllm");
+  }
+});
+
+test("favicon is an ICO container with valid PNG frame offsets", () => {
+  const ico = readFileSync(join(root, "public/favicon.ico"));
+  expect(ico.readUInt16LE(0)).toBe(0);
+  expect(ico.readUInt16LE(2)).toBe(1);
+  expect(ico.readUInt16LE(4)).toBe(4);
+  for (let i = 0; i < 4; i++) {
+    const at = 6 + 16 * i;
+    const offset = ico.readUInt32LE(at + 12);
+    const length = ico.readUInt32LE(at + 8);
+    expect(offset + length).toBeLessThanOrEqual(ico.length);
+    expect(ico.subarray(offset, offset + 8).toString("hex")).toBe("89504e470d0a1a0a");
+  }
 });

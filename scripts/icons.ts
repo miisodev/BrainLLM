@@ -16,7 +16,7 @@
 
 import sharp from "sharp";
 import { join, dirname } from "path";
-import { readFileSync, statSync } from "fs";
+import { readFileSync, statSync, writeFileSync } from "fs";
 
 const PUBLIC = join(dirname(import.meta.dir), "public");
 const SOURCE = join(PUBLIC, "BrainLLM.svg");
@@ -46,5 +46,26 @@ for (const { size, file, why } of TARGETS) {
     .toFile(out);
   console.log(`  ${file.padEnd(15)} ${String(size).padStart(3)}px  ${kb(out).padStart(8)}   ${why}`);
 }
+
+// A .ico response must be an ICO container, not PNG bytes under an ICO name.
+// Embed PNG frames at the sizes favicon decoders actually request.
+const sizes = [16, 32, 48, 64];
+const frames = await Promise.all(sizes.map((size) => sharp(svg, { density: 384 }).resize(size, size).png().toBuffer()));
+const directory = Buffer.alloc(6 + frames.length * 16);
+directory.writeUInt16LE(1, 2);
+directory.writeUInt16LE(frames.length, 4);
+let offset = directory.length;
+for (let i = 0; i < frames.length; i++) {
+  const at = 6 + i * 16;
+  directory[at] = sizes[i]!;
+  directory[at + 1] = sizes[i]!;
+  directory.writeUInt16LE(1, at + 4);
+  directory.writeUInt16LE(32, at + 6);
+  directory.writeUInt32LE(frames[i]!.length, at + 8);
+  directory.writeUInt32LE(offset, at + 12);
+  offset += frames[i]!.length;
+}
+writeFileSync(join(PUBLIC, "favicon.ico"), Buffer.concat([directory, ...frames]));
+console.log(`  favicon.ico       ${kb(join(PUBLIC, "favicon.ico"))}   ICO with 16/32/48/64px frames`);
 
 console.log("\nDone. Commit public/ — the image is built from it at deploy time.");

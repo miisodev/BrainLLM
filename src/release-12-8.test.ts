@@ -116,7 +116,7 @@ describe("consent screen redirect", () => {
 });
 
 describe("revise refuses a dry run it cannot honour", () => {
-  test("dryRun with noteId is refused before any read or write", async () => {
+  test("unsupported section dryRun is refused before any read or write", async () => {
     const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
     const { registerTools } = await import("./tools.js");
     const touched: string[] = [];
@@ -125,8 +125,8 @@ describe("revise refuses a dry run it cannot honour", () => {
     const s = new McpServer({ name: "t", version: "0" });
     registerTools(s, trilium as never, { config: { root: "r", master: {}, llm: {}, memory: {}, knowledge: {}, insights: {} } as never });
     const tool = (s as unknown as { _registeredTools: Record<string, { handler: (a: unknown, e: unknown) => Promise<{ content: Array<{ text: string }> }> }> })._registeredTools.revise!;
-    const out = await tool.handler({ noteId: "abc", find: "a", body: "x", dryRun: true }, {});
-    expect(out.content[0]!.text).toContain("dryRun= applies only to revise(domain=)");
+    const out = await tool.handler({ noteId: "abc", section: "A", body: "x", dryRun: true }, {});
+    expect(out.content[0]!.text).toContain("dryRun= needs find=");
     expect(touched).toEqual([]);
   });
 });

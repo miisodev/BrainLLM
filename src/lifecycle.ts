@@ -920,7 +920,7 @@ async function hygienePasses(
         continue;
       }
       if (!ctx.dryRun) {
-        await trilium.createRevision(n.noteId).catch(() => null);
+        await trilium.createRevision(n.noteId);
         await trilium.updateNoteContent(n.noteId, after);
       }
       report.fixed.push(`entity-repaired: ${n.title} [${n.noteId}] — unwound one level of double-escaping${ctx.dryRun ? " (dry run, not written)" : ", snapshot taken first"}.`);

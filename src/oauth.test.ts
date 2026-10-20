@@ -562,3 +562,12 @@ describe("consent screen", () => {
     expect(html).toContain('value="approve"');
   });
 });
+
+
+test("hosted discovery and pages identify BrainLLM, not the parent domain", () => {
+  const base = "https://memory.example";
+  expect(protectedResourceMetadata(base).resource_name).toBe("BrainLLM");
+  expect(protectedResourceMetadata(base).resource_documentation).toBe(base);
+  expect(authorizationServerMetadata(base).service_documentation).toBe(base);
+  expect(landingPage(base, true, false)).toContain('/favicon.ico?brand=brainllm');
+});

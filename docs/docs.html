@@ -125,6 +125,9 @@ END     session() → addendum() → maintain() → remarks() → diary() → cl
     <ul>
       <li><code>revise(noteId, section="Heading")</code> replaces one section; <code>mode="before"</code>, <code>"after"</code>, <code>"prepend"</code> and <code>"remove"</code> act around it.</li>
       <li><code>revise(noteId, find="a few words", within="tr")</code> replaces, inserts beside or removes the table row containing them. Inline formatting in the stored text doesn't stop a match, and the row's visible text works as an anchor too. Add <code>mode="remove", closure={thread, body}</code> to close a register row and record the closure in one call.</li>
+      <li><code>revise(noteId, edits=[…], dryRun=true)</code> previews sequential replacements and sanitization without writing. A failed revision snapshot stops an overwrite.</li>
+      <li><code>closure={note, table, row?}</code> writes a register destination before removing the source. Cells must match the table; name ambiguous tables explicitly. <code>moves=[{find, row?}]</code> preflights a batch and reports per-row progress. Partial failures require reading both notes before retrying.</li>
+      <li><code>consistency()</code> reports <code>coverage</code>, including failed reads and truncation. Its default is up to 5,000 eligible notes from 10,000 candidates; incomplete scans cannot establish absence or unanimity.</li>
       <li><code>revise(domain="Name", find=, body=)</code> previews a find and replace across a whole domain; add <code>dryRun=false</code> to write it.</li>
       <li>Reads take <code>section=</code>; records take <code>block="14:05"</code> or <code>block="-1"</code> for one addendum; <code>read(ids=[...], text=true)</code> returns readable text for orientation.</li>
       <li><code>diff(since="today")</code> shows every change made today, with table edits reported cell by cell.</li>

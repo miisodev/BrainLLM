@@ -6,7 +6,7 @@ Security fixes ship on the latest release line. Older versions may remain useful
 
 | Version | Supported |
 |---|---|
-| 13.0.x | ✅ |
+| 13.1.x | ✅ |
 | 12.9.x and earlier | ❌ |
 
 ## Reporting a vulnerability
@@ -37,3 +37,5 @@ For credential rotation, replace `MCP_AUTH_TOKEN` and the ETAPI token in the pro
 ## Scope
 
 BrainLLM is an MCP server over TriliumNext's ETAPI boundary. Vulnerabilities in Trilium itself should be reported to the TriliumNext project unless the issue is caused by BrainLLM's use of that boundary.
+
+Core content overwrites stop if the revision snapshot fails. Register closures write the destination before removing the source (one content write for a same-note move); partial failures name the recovery state. This is recoverable ordering over ETAPI, not a database transaction.

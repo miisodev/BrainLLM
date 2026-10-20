@@ -29,22 +29,24 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-// zod 3.x: every schema carries `_def.typeName`; Optional/Nullable/Default
-// wrap the real schema in `_def.innerType`.
+// Zod 4 uses _def.type; SDK-owned Zod 3 schemas use _def.typeName.
+// Optional/Nullable/Default wrap the declared schema in _def.innerType.
 interface RawField {
-  _def?: { typeName?: string; innerType?: RawField };
+  _def?: { typeName?: string; type?: string; innerType?: RawField };
+  _zod?: { def?: { type?: string; innerType?: RawField } };
 }
 
 function declaredBase(field: unknown): string | null {
   let f = field as RawField | undefined;
   for (let depth = 0; f && depth < 6; depth++) {
-    const def = f._def;
+    const def = f._def ?? f._zod?.def;
     if (!def) return null;
-    if (def.typeName === "ZodOptional" || def.typeName === "ZodNullable" || def.typeName === "ZodDefault") {
+    const type = (def as { typeName?: string }).typeName ?? def.type;
+    if (["ZodOptional", "ZodNullable", "ZodDefault", "optional", "nullable", "default"].includes(type ?? "")) {
       f = def.innerType;
       continue;
     }
-    return def.typeName ?? null;
+    return type ?? null;
   }
   return null;
 }
@@ -94,6 +96,10 @@ const COERCERS: Record<string, (v: unknown) => unknown> = {
   ZodNumber: asNumber,
   ZodArray: asArray,
   ZodObject: asObject,
+  boolean: asBoolean,
+  number: asNumber,
+  array: asArray,
+  object: asObject,
 };
 
 export interface CoerceReport {
@@ -119,10 +125,12 @@ export function coerceToolArgs(server: McpServer): CoerceReport {
     const schema = (tool as { inputSchema?: unknown }).inputSchema as
       | { shape?: Record<string, unknown>; extend?: (u: Record<string, unknown>) => unknown }
       | undefined;
-    if (!schema?.shape || typeof schema.extend !== "function") continue;
+    const miniShape = (schema as { _zod?: { def?: { shape?: Record<string, unknown> } } } | undefined)?._zod?.def?.shape;
+    const shape = schema?.shape ?? miniShape;
+    if (!shape) continue;
 
     const updates: Record<string, unknown> = {};
-    for (const [key, field] of Object.entries(schema.shape)) {
+    for (const [key, field] of Object.entries(shape)) {
       const coerce = COERCERS[declaredBase(field) ?? ""];
       if (!coerce) continue;
       updates[key] = z.preprocess(coerce, field as z.ZodTypeAny);
@@ -130,7 +138,7 @@ export function coerceToolArgs(server: McpServer): CoerceReport {
     }
     if (!Object.keys(updates).length) continue;
 
-    tool.inputSchema = schema.extend(updates);
+    tool.inputSchema = typeof schema?.extend === "function" ? schema.extend(updates) : z.object({ ...shape, ...updates } as z.ZodRawShape);
     touched.push(name);
   }
   return { tools: touched, fields };

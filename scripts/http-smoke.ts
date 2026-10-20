@@ -51,6 +51,15 @@ try {
   });
   await waitForHealth();
 
+  const favicon = await expectStatus("/favicon.ico", {}, 200, "public connector favicon");
+  if (!favicon.headers.get("content-type")?.includes("image/vnd.microsoft.icon")) fail("favicon has the wrong media type");
+  const ico = Buffer.from(await favicon.arrayBuffer());
+  if (ico.readUInt16LE(2) !== 1 || ico.readUInt16LE(4) !== 4) fail("favicon is not a four-frame ICO");
+  const landing = await (await fetch(`${base}/`)).text();
+  if (!landing.includes('rel="icon"') || !landing.includes('/favicon.ico?brand=brainllm')) fail("landing page omits BrainLLM favicon discovery");
+  const resource = await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json() as Record<string, unknown>;
+  if (resource.resource_name !== "BrainLLM" || resource.resource_documentation !== base) fail("OAuth discovery omits instance brand identity");
+
   const unauthenticatedMcp = await expectStatus("/mcp", { headers: { Accept: "text/event-stream" } }, 401, "unauthenticated /mcp");
   if (!unauthenticatedMcp.headers.get("www-authenticate")) fail("unauthenticated /mcp did not return WWW-Authenticate");
   if (unauthenticatedMcp.headers.get("x-frame-options") !== "DENY") fail("security headers missing from /mcp");
@@ -89,6 +98,13 @@ try {
     }),
   }, 200, "authenticated root MCP compatibility alias");
   if (!rootInitialized.headers.get("mcp-session-id")) fail("root MCP compatibility alias returned no session id");
+  const initBody = await rootInitialized.text();
+  const initLine = initBody.startsWith("{") ? initBody : initBody.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+  if (!initLine) fail("initialize returned no server info");
+  const info = JSON.parse(initLine!).result.serverInfo;
+  if (info.name !== "BrainLLM" || info.websiteUrl !== base) fail("hosted handshake does not identify its own BrainLLM instance");
+  if (!info.icons?.every((icon: {src: string}) => new URL(icon.src).origin === base && icon.src.includes("brand=brainllm"))) fail("hosted connector icons are not same-origin with brand cache keys");
+
 
   const largeBody = JSON.stringify({
     jsonrpc: "2.0",

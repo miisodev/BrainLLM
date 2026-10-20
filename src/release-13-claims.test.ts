@@ -231,3 +231,47 @@ describe("claim() one-call retract", () => {
     expect(labels.get("c1")!.claimState).toBe("holding");
   });
 });
+
+
+describe("Safe Changes consistency coverage", () => {
+  const n = (content: string) => ({ title: "N", labels: { noteType: "information" }, content });
+  test("default reaches matches beyond the old 60-note boundary", async () => {
+    const seed: Record<string, SeedNote> = {};
+    for (let i = 0; i < 80; i++) seed[`n${i}`] = n(i === 79 ? "target phrase" : "other");
+    const h = setup(seed);
+    const r = await h.call("consistency", { pattern: "target phrase" });
+    expect(r.notesExamined).toBe(80);
+    expect((r.coverage as any).complete).toBe(true);
+    expect(r.agreement).toBe("unanimous");
+    const limited = await h.call("consistency", { pattern: "target phrase", limit: 60 });
+    expect((limited.coverage as any).truncated).toBe(true);
+    expect(limited.scan).toBe("bounded");
+  });
+  test("case-insensitive comparison groups spellings but explicit case preserves them", async () => {
+    const h = setup({ a: n("ProductHunt"), b: n("producthunt") });
+    const r = await h.call("consistency", { pattern: "[Pp]roduct[Hh]unt" });
+    expect(r.agreement).toBe("unanimous");
+    expect((r.groups as any[])[0].spellings).toEqual(["ProductHunt", "producthunt"]);
+    expect((await h.call("consistency", { pattern: "[Pp]roduct[Hh]unt", caseSensitive: true })).agreement).toBe("DISAGREEMENT");
+  });
+  test("failed body reads report incomplete rather than unanimous", async () => {
+    const h = setup({ a: n("amount 3"), b: n("amount 4") });
+    h.client.getNoteContent = async (id) => { if (id === "b") throw new Error("offline"); return "amount 3"; };
+    const r = await h.call("consistency", { pattern: "amount ([0-9]+)" });
+    expect(r.agreement).toBe("incomplete");
+    expect((r.coverage as any).failed).toEqual(["b"]);
+    const subject = await h.call("consistency", { subject: "amount" });
+    expect((subject.coverage as any).complete).toBe(false);
+  });
+  test("acquisition failure propagates instead of looking empty", async () => {
+    const h = setup(); h.client.searchNotes = async () => { throw new Error("search down"); };
+    await expect(h.call("consistency", { pattern: "x" })).rejects.toThrow("search down");
+    await expect(h.call("consistency", { subject: "target" })).rejects.toThrow("search down");
+  });
+  test("lossy fast mode cannot establish unanimity", async () => {
+    const h = setup({ a: n("value 3") });
+    const r = await h.call("consistency", { pattern: "value ([0-9]+)", fast: true });
+    expect(r.agreement).toBe("incomplete");
+    expect((r.coverage as any).prefilter).toBe("lossy");
+  });
+});

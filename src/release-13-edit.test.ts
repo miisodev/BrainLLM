@@ -163,11 +163,11 @@ describe("revise(within=) dry run", () => {
     expect(String(r.before)).toContain("more characters");
   });
 
-  test("dryRun on a note edit without within= is still refused before any read or write", async () => {
+  test("dryRun previews an ordinary find replacement without mutation", async () => {
     const { revise, log } = setup([{ id: "reg", title: "Register", content: table }]);
     const r = await revise({ noteId: "reg", find: "Restore rehearsal", body: "x", dryRun: true });
-    expect(r.error).toBe("conflicting_params");
-    expect(String(r.detail)).toContain("dryRun=");
+    expect(r.dryRun).toBe(true);
+    expect(String(r.after)).toContain("x (scheduled)");
     expect(log.revisions).toEqual([]);
     expect(log.contentWrites).toEqual([]);
     expect(log.labels).toEqual([]);
@@ -343,4 +343,46 @@ describe("thread append receipts", () => {
     expect(String(r2.entryMarker)).toMatch(/^Addendum — \d{2}:\d{2}$/);
     expect(contents.get(entryId)).toContain("More work.");
   });
+});
+
+
+describe("Safe Changes edit plans", () => {
+  test("batch preview uses sequential matches, sanitization and misses without writes", async () => {
+    const h = setup([{ id: "n", title: "N", content: "<p>alpha beta</p>" }]);
+    const args = { noteId: "n", edits: [{ find: "alpha", body: "gamma" }, { find: "alpha", body: "delta" }, { find: "beta", body: '<script>bad()</script>safe' }] };
+    const r = await h.revise({ ...args, dryRun: true });
+    expect(r.dryRun).toBe(true);
+    expect(r.results).toHaveLength(3);
+    expect(String(r.after)).toContain("gamma safe");
+    expect(String(r.after)).not.toContain("script");
+    expect(h.log.revisions).toEqual([]);
+    expect(h.log.labels).toEqual([]);
+    expect(h.log.created).toEqual([]);
+    await h.revise(args);
+    expect(h.contents.get("n")).toBe(String(r.after));
+  });
+  test("a no-op preview never applies title or icon", async () => {
+    const h = setup([{ id: "n", title: "N", content: "<p>alpha</p>" }]);
+    const r = await h.revise({ noteId: "n", find: "alpha", body: "alpha", title: "Changed", dryRun: true });
+    expect(r.error).toBe("conflicting_params");
+    expect(h.log.labels).toEqual([]);
+  });
+  for (const args of [
+    { find: "alpha", body: "new" },
+    { edits: [{ find: "alpha", body: "new" }] },
+    { section: "Heading", body: "new" },
+    { section: "Heading", mode: "remove" },
+    { mode: "replace", body: "new" },
+    { body: "new" },
+    { find: "alpha", within: "p", body: "<p>new</p>" },
+    { append: { table: "Register", row: "new | owner | state" } },
+  ]) {
+    test(`revision failure blocks ${JSON.stringify(args)}`, async () => {
+      const h = setup([{ id: "n", title: "N", content: `<h2>Heading</h2><p>alpha</p>${table}` }]);
+      h.client.createRevision = async () => { throw new Error("snapshot failure"); };
+      await expect(h.revise({ noteId: "n", ...args })).rejects.toThrow("snapshot failure");
+      expect(h.log.contentWrites).toEqual([]);
+      expect(h.log.labels).toEqual([]);
+    });
+  }
 });

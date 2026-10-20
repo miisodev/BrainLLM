@@ -137,9 +137,9 @@ function createServer(origin: string | null = null): McpServer {
     {
       name: BRAND.name,
       title: BRAND.name,
-      version: "13.0.0",
+      version: "13.1.0",
       description: BRAND.description,
-      websiteUrl: BRAND.website,
+      websiteUrl: origin ?? BRAND.website,
       icons: brandIcons(origin),
     },
     { instructions: SERVER_INSTRUCTIONS }
@@ -320,7 +320,7 @@ if (port) {
       // visible pixels, and the spec lets clients cap icon size outright — so an
       // oversized icon risks not rendering at all.
       const ICON_ROUTES: Record<string, string> = {
-        "/favicon.ico": "icon-64.png",
+        "/favicon.ico": "favicon.ico",
         "/favicon.png": "icon-64.png",
         "/apple-touch-icon.png": "icon-180.png",
         "/icon-64.png": "icon-64.png",
@@ -335,7 +335,7 @@ if (port) {
         if (!(await file.exists())) return withCors(new Response("Not Found", { status: 404 }));
         return withCors(new Response(file, {
           headers: {
-            "Content-Type": asset.endsWith(".svg") ? "image/svg+xml" : "image/png",
+            "Content-Type": asset.endsWith(".svg") ? "image/svg+xml" : asset.endsWith(".ico") ? "image/vnd.microsoft.icon" : "image/png",
             "Cache-Control": "public, max-age=86400",
             // The icon is untrusted-input surface for the client; make sure a
             // renderer can't be talked into treating it as anything else.

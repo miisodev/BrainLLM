@@ -37,6 +37,17 @@ try {
   const info = client.getServerVersion();
   check(info?.version === expectVersion, "deployed version", `${info?.version ?? "none"} (expected ${expectVersion})`);
   check(!!info?.icons?.length, "server icons advertised", `${info?.icons?.length ?? 0} icon(s)`);
+  const origin = new URL(url).origin;
+  check(info?.name === "BrainLLM" && info?.websiteUrl === origin, "hosted instance identity");
+  check(!!info?.icons?.every((icon) => new URL(icon.src).origin === origin && new URL(icon.src).searchParams.get("brand") === "brainllm"), "same-origin branded icon URLs");
+  for (const icon of info?.icons ?? []) {
+    const response = await fetch(icon.src);
+    check(response.ok && response.headers.get("content-type")?.includes(icon.mimeType ?? "") === true, "public icon fetch", new URL(icon.src).pathname);
+  }
+  const favicon = await fetch(`${origin}/favicon.ico?brand=brainllm`);
+  const bytes = Buffer.from(await favicon.arrayBuffer());
+  check(favicon.ok && favicon.headers.get("content-type")?.includes("image/vnd.microsoft.icon") === true && bytes.length > 6 && bytes.readUInt16LE(2) === 1, "BrainLLM ICO favicon");
+
 
   const { tools } = await client.listTools();
   check(tools.length > 0, "tools listed", `${tools.length} tools`);
@@ -50,6 +61,7 @@ try {
     ["health", {}],
     ["template", { kind: "thread" }],
     ["recall", { query: "BrainLLM", limit: 1 }],
+    ["consistency", { pattern: "ProductHunt", domain: "BrainLLM" }],
   ];
   for (const [name, args] of probes) {
     if (!readOnly.has(name)) {

@@ -395,6 +395,9 @@ function ownerPasswordMatches(supplied: string): boolean {
 export function protectedResourceMetadata(base: string) {
   return {
     resource: resourceUri(base),
+    // RFC 9728 resource identity, distinct from the parent-domain publisher.
+    resource_name: BRAND.name,
+    resource_documentation: base,
     authorization_servers: [base],
     bearer_methods_supported: ["header"],
     scopes_supported: [SCOPE],
@@ -404,6 +407,7 @@ export function protectedResourceMetadata(base: string) {
 export function authorizationServerMetadata(base: string) {
   return {
     issuer: base,
+    service_documentation: base,
     authorization_endpoint: `${base}/authorize`,
     token_endpoint: `${base}/token`,
     scopes_supported: [SCOPE],
@@ -761,7 +765,11 @@ const shell = (title: string, body: string, head = ""): string => `<!doctype htm
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#0a0a0f">
-<meta name="robots" content="noindex,nofollow">${head}
+<meta name="robots" content="noindex,nofollow">
+<link rel="icon" href="/favicon.ico?brand=brainllm" sizes="16x16 32x32 48x48 64x64" type="image/vnd.microsoft.icon">
+<link rel="icon" href="/favicon.png?brand=brainllm" sizes="64x64" type="image/png">
+<link rel="icon" href="/icon.svg?brand=brainllm" sizes="any" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?brand=brainllm">${head}
 <title>${esc(title)}</title>
 <style>${PAGE_CSS}</style></head>
 <body>${body}</body></html>`;

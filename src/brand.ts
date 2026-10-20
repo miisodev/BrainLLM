@@ -58,10 +58,10 @@ export const SERVER_INSTRUCTIONS = [
  *  no origin to compare against. */
 export function brandIcons(origin: string | null) {
   const REPO_RAW = "https://raw.githubusercontent.com/miisodev/BrainLLM/main/public";
-  const at = (file: string) => (origin ? `${origin}/${file}` : `${REPO_RAW}/${file}`);
+  const at = (file: string) => (origin ? `${origin}/${file}?brand=brainllm` : `${REPO_RAW}/${file}`);
   return [
     { src: at("icon-128.png"), mimeType: "image/png", sizes: ["128x128"] },
     { src: at("icon-512.png"), mimeType: "image/png", sizes: ["512x512"] },
-    { src: origin ? `${origin}/icon.svg` : `${REPO_RAW}/BrainLLM.svg`, mimeType: "image/svg+xml", sizes: ["any"] },
+    { src: origin ? `${origin}/icon.svg?brand=brainllm` : `${REPO_RAW}/BrainLLM.svg`, mimeType: "image/svg+xml", sizes: ["any"] },
   ];
 }

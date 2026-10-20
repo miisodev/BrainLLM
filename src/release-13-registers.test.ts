@@ -345,7 +345,7 @@ describe("revise closure={note} — the row moves into another register", () => 
     expect(fake.revisions).toEqual([]);
   });
 
-  test("a narrower row is padded to the target's shape, and says so", async () => {
+  test("a narrower row is refused unless explicit destination cells are supplied", async () => {
     const fake = seed();
     fake.notes.set("regFour", {
       id: "regFour",
@@ -365,9 +365,12 @@ describe("revise closure={note} — the row moves into another register", () => 
       closure: { note: "Four-column register" },
       date: "2026-10-15",
     });
-    const closure = out.closure as Record<string, unknown>;
-    expect(closure.padded).toBe("1 empty cell(s) added so the row matches the table's shape");
-    expect(fake.notes.get("regFour")!.content).toContain("<tr><td>Case A</td><td>Miiso</td><td>2026-10-01</td><td></td></tr></tbody>");
+    expect(out.error).toBe("row_shape");
+    expect(fake.notes.get("regOpen2")!.content).toContain("Case A");
+    const shaped = await call("revise", { noteId: "regOpen2", find: "Case A", within: "tr", mode: "remove",
+      closure: { note: "Four-column register", row: ["Case A", "Miiso", "2026-10-01", "Settled"] } });
+    expect(shaped.ok).toBe(true);
+    expect(fake.notes.get("regFour")!.content).toContain("<td>Settled</td>");
   });
 
   test("a wider row refuses before the row moves", async () => {
@@ -558,5 +561,120 @@ describe("sources upsert — dry run and didYouMean", () => {
     const out = await call("remember", { kind: "preferences", body: "Prefer tabs.", dryRun: true });
     expect(out.error).toBe("conflicting_params");
     expect(fake.notes.get("srcTech")!.content).toBe(sourcesContent);
+  });
+});
+
+
+describe("Safe Changes register failure boundaries", () => {
+  const seed = () => fakeTrilium([
+    { id: "source", title: "Source", labels: { noteType: "information" }, content: REGISTER_ROW_NOTE.replace("</tbody>", "<tr><td>Case B</td><td>Sol</td><td>2026-10-02</td></tr></tbody>") },
+    { id: "dest", title: "Destination", labels: { noteType: "information" }, content: '<h2>Closed</h2><table><thead><tr><th>Case</th><th>Owner</th><th>Date</th></tr></thead><tbody></tbody></table>' },
+  ]);
+  const args = { noteId: "source", find: "Case A", within: "tr", mode: "remove", closure: { note: "Destination", table: "Closed" } };
+
+  test("source snapshot failure does not touch destination or source", async () => {
+    const f = seed();
+    f.client.createRevision = async () => { throw new Error("snapshot unavailable"); };
+    await expect(harness(f).call("revise", args)).rejects.toThrow("snapshot unavailable");
+    expect(f.notes.get("source")!.content).toContain("Case A");
+    expect(f.notes.get("dest")!.content).not.toContain("Case A");
+  });
+  for (const failure of ["revision", "content", "label"]) {
+    test(`destination ${failure} failure retains source`, async () => {
+      const f = seed();
+      const originalRevision = f.client.createRevision.bind(f.client);
+      const originalWrite = f.client.updateNoteContent.bind(f.client);
+      const originalLabel = f.client.updateLabelValue.bind(f.client);
+      f.client.createRevision = async (id) => { if (id === "dest" && failure === "revision") throw new Error("injected"); return originalRevision(id); };
+      f.client.updateNoteContent = async (id, body) => { if (id === "dest" && failure === "content") throw new Error("injected"); return originalWrite(id, body); };
+      f.client.updateLabelValue = async (id, key, value) => { if (id === "dest" && failure === "label") throw new Error("injected"); return originalLabel(id, key, value); };
+      const r = await harness(f).call("revise", args);
+      expect(r.error).toBe("closure_destination_failed");
+      expect(r.source).toBe("retained");
+      expect(f.notes.get("source")!.content).toContain("Case A");
+    });
+  }
+  test("lost source response can retry without duplicating destination", async () => {
+    const f = seed();
+    const original = f.client.updateNoteContent.bind(f.client);
+    let fail = true;
+    f.client.updateNoteContent = async (id, body) => { if (id === "source" && fail) { fail = false; throw new Error("source unavailable"); } return original(id, body); };
+    const call = harness(f).call;
+    expect((await call("revise", args)).error).toBe("closure_source_failed");
+    expect(f.notes.get("source")!.content).toContain("Case A");
+    expect(f.notes.get("dest")!.content).toContain("Case A");
+    expect((await call("revise", args)).ok).toBe(true);
+    expect(f.notes.get("dest")!.content.split("Case A")).toHaveLength(2);
+    expect(f.notes.get("source")!.content).not.toContain("Case A");
+  });
+  test("same-note move writes removal and insertion together", async () => {
+    const f = seed();
+    f.notes.get("source")!.content += f.notes.get("dest")!.content;
+    const writes: string[] = [];
+    const original = f.client.updateNoteContent.bind(f.client);
+    f.client.updateNoteContent = async (id, body) => { writes.push(id); return original(id, body); };
+    const r = await harness(f).call("revise", { ...args, closure: { note: "Source", table: "Closed" } });
+    expect(r.ok).toBe(true);
+    expect(writes).toEqual(["source"]);
+    const html = f.notes.get("source")!.content;
+    expect(html.indexOf("Case A")).toBeGreaterThan(html.indexOf("Closed"));
+    expect(html.split("Case A")).toHaveLength(2);
+  });
+  test("ambiguous destination tables refuse before snapshots", async () => {
+    const f = seed();
+    f.notes.get("dest")!.content += f.notes.get("dest")!.content.replace("Closed", "Other");
+    const r = await harness(f).call("revise", { ...args, closure: { note: "Destination" } });
+    expect(r.error).toBe("ambiguous_table");
+    expect(f.revisions).toEqual([]);
+  });
+  test("batch preflights every move and previews without side effects", async () => {
+    const f = seed(); const call = harness(f).call;
+    const batch = { noteId: "source", within: "tr", mode: "remove", closure: args.closure, moves: [{ find: "Case A" }, { find: "Case B" }] };
+    expect((await call("revise", { ...batch, dryRun: true })).written).toBe(0);
+    expect(f.revisions).toEqual([]);
+    expect((await call("revise", { ...batch, moves: [{ find: "Case A" }, { find: "Missing" }] })).error).toBe("batch_preflight");
+    expect(f.revisions).toEqual([]);
+    const result = await call("revise", batch);
+    expect(result.written).toBe(2);
+    expect(f.notes.get("source")!.content).not.toContain("Case A");
+    expect(f.notes.get("source")!.content).not.toContain("Case B");
+    expect(f.notes.get("dest")!.content).toContain("Case A");
+    expect(f.notes.get("dest")!.content).toContain("Case B");
+  });
+  test("a lost destination response can retry without duplication", async () => {
+    const f = seed();
+    const original = f.client.updateNoteContent.bind(f.client);
+    let fail = true;
+    f.client.updateNoteContent = async (id, body) => {
+      await original(id, body);
+      if (id === "dest" && fail) { fail = false; throw new Error("response lost after acceptance"); }
+    };
+    const call = harness(f).call;
+    expect((await call("revise", args)).error).toBe("closure_destination_failed");
+    expect(f.notes.get("source")!.content).toContain("Case A");
+    expect((await call("revise", args)).ok).toBe(true);
+    expect(f.notes.get("dest")!.content.split("Case A")).toHaveLength(2);
+  });
+  test("a failed later batch move reports completed progress and stops", async () => {
+    const f = seed();
+    const original = f.client.updateNoteContent.bind(f.client);
+    f.client.updateNoteContent = async (id, body) => {
+      if (id === "dest" && body.includes("Case B")) throw new Error("second destination write failed");
+      return original(id, body);
+    };
+    const r = await harness(f).call("revise", { noteId: "source", within: "tr", mode: "remove", closure: args.closure, moves: [{ find: "Case A" }, { find: "Case B" }] });
+    expect(r.error).toBe("batch_stopped");
+    expect(r.partial).toBe(true);
+    expect(r.results).toHaveLength(2);
+    expect(f.notes.get("source")!.content).not.toContain("Case A");
+    expect(f.notes.get("source")!.content).toContain("Case B");
+    expect(f.notes.get("dest")!.content).toContain("Case A");
+    expect(f.notes.get("dest")!.content).not.toContain("Case B");
+  });
+  test("overlapping batch anchors are rejected without writes", async () => {
+    const f = seed();
+    const r = await harness(f).call("revise", { noteId: "source", within: "tr", mode: "remove", closure: args.closure, moves: [{ find: "Case A" }, { find: "Case A" }] });
+    expect(r.error).toBe("overlapping_moves");
+    expect(f.revisions).toEqual([]);
   });
 });

@@ -1475,7 +1475,7 @@ The close sequence next[] lays out: singleton updates from the session, then add
           return txt({ action: "already_written", noteId, date: d });
         }
 
-        await trilium.createRevision(noteId).catch(() => null);
+        await trilium.createRevision(noteId);
         await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Addendum — ${time}</h2>`, html));
         await trilium.updateLabelValue(noteId, "updated", d);
         const iconSet = await applyIcon(noteId, icon);
@@ -1594,7 +1594,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       const upsertInto = async (id: string): Promise<boolean> => {
         const current = await trilium.getNoteContent(id);
         if (isDuplicateAppend(current, html)) return false;
-        await trilium.createRevision(id).catch(() => null);
+        await trilium.createRevision(id);
         await trilium.updateNoteContent(id, safeAppend(current, `<h2>Addendum — ${d}</h2>`, html));
         await trilium.updateLabelValue(id, "updated", d);
         return true;
@@ -1726,7 +1726,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         } else if (html && toText(html, 50)) {
           const current = await trilium.getNoteContent(sid);
           if (!current.includes(html)) {
-            await trilium.createRevision(sid).catch(() => null);
+            await trilium.createRevision(sid);
             // Group-by-group, not a wholesale append: appending an incoming
             // block under Sources created a SECOND copy of any h3 the note
             // already had, so re-filing under an existing group split it in two
@@ -1762,7 +1762,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
             }
           }
           if (changed) {
-            await trilium.createRevision(sid).catch(() => null);
+            await trilium.createRevision(sid);
             const stamped = bumpLastUpdated(current, d);
             await trilium.updateNoteContent(sid, stamped.html);
             await trilium.updateLabelValue(sid, "updated", d);
@@ -1844,7 +1844,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
             if (mandate && !ownedLabel(existing, "mandate")) await trilium.addLabel(existing.noteId, "mandate", "");
             return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title, domainId });
           }
-          await trilium.createRevision(existing.noteId).catch(() => null);
+          await trilium.createRevision(existing.noteId);
           const appended = bumpLastUpdated(safeAppend(current, `<h2>Addendum — ${d}</h2>`, html), d);
           await trilium.updateNoteContent(existing.noteId, appended.html);
           await trilium.updateLabelValue(existing.noteId, "updated", d);
@@ -1961,7 +1961,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
 
         const current = await trilium.getNoteContent(existing.noteId);
         if (isDuplicateAppend(current, block)) return txt({ action: "already_written", noteId: existing.noteId, kind, title: existing.title });
-        await trilium.createRevision(existing.noteId).catch(() => null);
+        await trilium.createRevision(existing.noteId);
         const updatedContent = bumpLastUpdated(insertBeforeResolution(closeDangling(current), `<h2>Addendum — ${d}</h2>\n${block}`), d);
         await trilium.updateNoteContent(existing.noteId, updatedContent.html);
         await trilium.updateLabelValue(existing.noteId, "updated", d);
@@ -2659,7 +2659,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
       total += count;
       const row: (typeof changes)[number] = { id: n.noteId, title: n.title, replaced: count, previews };
       if (!dry) {
-        await trilium.createRevision(n.noteId).catch(() => null);
+        await trilium.createRevision(n.noteId);
         const clean = sanitizeHtml(working);
         await trilium.updateNoteContent(n.noteId, bumpLastUpdated(clean.html, d).html);
         await trilium.updateLabelValue(n.noteId, "updated", d);
@@ -2681,13 +2681,13 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     "revise",
     `Edit a note by id. A revision is taken first; "Last updated" lines are bumped on content writes.
 
-Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup. within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. dryRun=true with within= previews the change first — the element's full visible text and byte size, and for remove/replace the before/after shape — with nothing written and no revision taken. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). append={table, row} adds one row to the table under that heading with no anchor to locate first — pipes are cell boundaries, a lone placeholder row is replaced, and append= composes with nothing else. closure= with within="tr" and mode="remove" closes a register row in one call: {thread, body} removes the row and appends the closure (quoting it) to that thread's entry for today (needs identity=); {note} moves the removed row into another register note's table, shaped to it instead of into a thread. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
+Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" REPLACES the matched span; it is not an insertion anchor. Use within= with mode=before/after for element insertion, or section= with mode=prepend/before/after for section insertion. It replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup. within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. dryRun=true with find=, edits=, within= or moves= previews the change first — the element's full visible text and byte size, and for remove/replace the before/after shape — with nothing written and no revision taken. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). append={table, row} adds one row to the table under that heading with no anchor to locate first — pipes are cell boundaries, a lone placeholder row is replaced, and append= composes with nothing else. closure= with within="tr" and mode="remove" closes a register row in one call: {thread, body} removes the row and appends the closure (quoting it) to that thread's entry for today (needs identity=); {note, table?, row?} moves a row into another register. Destination cells must match exactly; row= supplies explicit plain-text cells. Ambiguous tables are refused. Destination content is written before source removal, and same-note moves use one write. Partial failures report recovery instructions; exact destination rows and identical thread blocks are deduplicated on retry. moves=[{find, nth?, row?}] batches closures to one target, preflights every row, and stops with per-row progress on failure. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
 
 Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled. A find= or within= anchor that matches nothing always names the cause in hint=, and a miss shows the stored text nearby when part of the anchor is still there (matchedUpTo= / storedNearby=).`,
     {
       noteId: z.string().optional().describe("Note to update (omit only with domain=)"),
       domain: z.string().optional().describe("Instead of noteId: apply find=/edits= to every maintained note in this domain (#domain or #topic slug). Records (sessions, diary, logs, dated thread entries) are never touched. Dry run unless dryRun=false"),
-      dryRun: z.boolean().optional().describe("domain= or within=: preview what would change, write nothing, take no revision (domain= defaults to true; within= previews only when true). Re-run with dryRun=false to apply"),
+      dryRun: z.boolean().optional().describe("Preview find=, edits=, within= or moves= without content, revision, label or gate writes; domain= defaults to preview. Re-read before applying if another writer may have changed the note."),
       body: z.string().optional().describe("Content to add/replace: plain text, markdown, or HTML. Send real tags: entity-escaped markup (&lt;p&gt;) is decoded and reported in sanitized[]. With find=, the raw replacement string (no conversion)."),
       title: z.string().optional().describe("New title (normalized server-side)"),
       section: z.string().optional().describe("Target a section by heading text (h2/h3/h4, in that order); omit for whole-note append/replace"),
@@ -2701,12 +2701,18 @@ Check the receipt: matched=false means a NEW section was written (available= lis
         thread: z.string().optional().describe('Thread variant: the dated thread to record the closure in: its id or title (e.g. "Escalations") — together with body='),
         body: z.string().optional().describe("Thread variant: the closure prose: what settled it, who ruled, and where its durable substance went"),
         note: z.string().optional().describe('Register variant: the register note (id or exact title) whose table receives the closed row — the row moves there instead of into a thread entry'),
-        table: z.string().optional().describe('Register variant: the heading of the table in that note (default: its first table)'),
+        table: z.string().optional().describe('Register variant: uniquely named table heading; required when the note has several tables'),
+        row: z.array(z.string()).optional().describe("Register variant: explicitly shaped destination cells as plain text, exactly matching the target columns; original row is retained in the source revision"),
       }).optional().describe('With within= and mode="remove": close a register row in one call. {thread, body} appends the closure to that thread\'s entry for today, quoting the removed row — needs identity=. {note} moves the removed row into another register note\'s table instead, shaped to that table. Run consistency() afterwards on any fact the row asserted elsewhere'),
       append: z.object({
         table: z.string().describe("The heading (h2/h3/h4) of the table that receives the row"),
         row: z.string().describe('One row, cells separated by "|" — e.g. "Item | Owner | Open"'),
       }).optional().describe('Append one row to the table under append.table without first locating an anchor row — pipes are cell boundaries, one <td> per cell (plain text, escaped server-side). A lone placeholder row is replaced. e.g. append={table: "Backlog", row: "Ship v13 | Claude | 2026-10-15"}'),
+      moves: z.array(z.object({
+        find: z.string().min(1),
+        nth: z.number().int().positive().optional(),
+        row: z.array(z.string()).optional(),
+      })).min(1).max(50).optional().describe("Batch register closures to one closure target. Requires within=tr and mode=remove; each find is a unique row anchor. Preflights all rows, applies in order, stops and reports partial progress on failure. row overrides closure.row for each move."),
       edits: z.array(z.object({
         find: z.string().describe("Exact raw string to replace"),
         body: z.string().describe("Raw replacement string"),
@@ -2716,9 +2722,42 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
-    async ({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, closure, append, edits, identity, icon, date, strict }) => {
+    async function reviseNote({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, closure, append, edits, moves, identity, icon, date, strict }): Promise<ReturnType<typeof txt>> {
+      if (moves) {
+        if (!noteIdArg || domain || !closure || within !== "tr" || mode !== "remove" || find !== undefined || edits !== undefined || append || section || body !== undefined || title || icon || nth !== undefined)
+          return err("conflicting_params", "moves= needs noteId, within=tr, mode=remove and closure; it cannot combine with other edit operations.", "Supply one unique find anchor and optional destination row per move.");
+        const results: Record<string, unknown>[] = [];
+        const elements = new Set<string>();
+        const one = (move: (typeof moves)[number], preview: boolean) => reviseNote({
+          noteId: noteIdArg, within, mode, closure: { ...closure, ...(move.row ? { row: move.row } : {}) },
+          find: move.find, nth: move.nth, identity, date, dryRun: preview,
+          domain: undefined, body: undefined, title: undefined, section: undefined, occurrence: undefined,
+          append: undefined, edits: undefined, moves: undefined, icon: undefined, strict: undefined,
+        });
+        for (const move of moves) {
+          const r = JSON.parse((await one(move, true)).content[0]!.text) as Record<string, unknown>;
+          if (r.error || r.ok === false) return txt({ ok: false, error: "batch_preflight", dryRun: dryRun === true, results: [...results, r], written: 0 });
+          // Conservatively reject identical bounded row previews as overlap.
+          const key = JSON.stringify(r.before);
+          if (elements.has(key)) return err("overlapping_moves", "Two move anchors select the same row; nothing was written.", "Use unique row anchors and nth where necessary.");
+          elements.add(key);
+          results.push(r);
+        }
+        if (dryRun === true) return txt({ ok: true, dryRun: true, mode: "moves", results, written: 0 });
+        const applied: Record<string, unknown>[] = [];
+        for (const move of moves) {
+          try {
+            const r = JSON.parse((await one(move, false)).content[0]!.text) as Record<string, unknown>;
+            applied.push(r);
+            if (r.error || r.ok === false) return txt({ ok: false, error: "batch_stopped", partial: applied.length > 1 || r.partial === true, results: applied, remaining: moves.length - applied.length });
+          } catch (e) {
+            return txt({ ok: false, error: "batch_stopped", partial: true, results: applied, failed: move.find, remaining: moves.length - applied.length, detail: String(e), hint: "Read the source and destination before retrying. Completed rows remain closed; no later move ran." });
+          }
+        }
+        return txt({ ok: true, mode: "moves", results: applied, written: applied.length });
+      }
       if (closure) {
-        if (!(within && mode === "remove"))
+        if (!(within === "tr" && mode === "remove"))
           return err("conflicting_params", 'closure= closes a register row and needs within= with mode="remove"; nothing was written.', 'e.g. revise(noteId, find="<row anchor>", within="tr", mode="remove", closure={thread: "Escalations", body: "Closed on …"}, identity="…")');
         if ((closure.thread !== undefined) === (closure.note !== undefined))
           return err("conflicting_params", 'closure= targets exactly one of a thread or a register note: pass {thread, body} or {note}.', 'e.g. closure={thread: "Escalations", body: "Closed on …"} or closure={note: "Decisions", table: "Decisions"}');
@@ -2726,7 +2765,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           return err("missing_param", "closure={thread}= records the closure as prose and needs body=.", 'Pass body="<what settled it, who ruled, and where its durable substance went>".');
         if (closure.note !== undefined && closure.body !== undefined)
           return err("conflicting_params", 'closure.body= belongs to the {thread} variant; {note} moves the row itself and appends no prose.', "Drop body=, or target a thread instead.");
-        if (closure.note === undefined && closure.table !== undefined)
+        if (closure.note === undefined && (closure.table !== undefined || closure.row !== undefined))
           return err("conflicting_params", "closure.table= names a table inside closure.note= and takes no effect without it.", 'Pass closure={note: "<register>", table: "<heading>"}, or drop table=.');
       }
       if (domain !== undefined) {
@@ -2738,11 +2777,12 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           return err("conflicting_params", "domain= takes only find=/body=, edits=, nth= and dryRun=.", "Use noteId= for element, section, title or icon edits.");
         return reviseDomain(domain, edits ?? [{ find: find!, body: body ?? "", nth }], dryRun ?? true, checkedDate(date));
       }
-      // dryRun exists for domain= (defaults to true) and within= (opt-in).
-      // Accepting it silently elsewhere would let a caller who asked for a
-      // preview get a write instead.
-      if (dryRun !== undefined && !within)
-        return err("conflicting_params", "dryRun= applies only to revise(domain=) and revise(within=); nothing was written.", "For one note, read it first (or outline()) and then revise without dryRun. diff(noteId) shows what a write changed.");
+      // Only the edit paths with a read-only plan may accept dryRun.
+      // Unsupported modes must refuse rather than silently write.
+      if (dryRun !== undefined && !within && find === undefined && edits === undefined)
+        return err("conflicting_params", "dryRun= needs find=, edits=, within= or domain=; nothing was written.", "For one note, read it first (or outline()) and then revise without dryRun. diff(noteId) shows what a write changed.");
+      if (dryRun === true && (title !== undefined || icon !== undefined))
+        return err("conflicting_params", "A targeted preview cannot also change title or icon; nothing was written.", "Preview the content edit alone, then apply metadata separately.");
       if (!noteIdArg)
         return err("missing_param", "revise needs noteId= (or domain= for a domain-wide find/replace).", "Pass the id of the note to edit.");
       const noteId = noteIdArg;
@@ -2813,7 +2853,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
               : `Available headings: ${available.length ? available.join(" · ") : "(none)"}${suggestion ? ` — did you mean "${suggestion.heading}"?` : "."} outline(noteId) lists them.`
           );
         }
-        await trilium.createRevision(noteId).catch(() => null);
+        await trilium.createRevision(noteId);
         const stamped = bumpLastUpdated(appendRowToTable(current, spot, cells.map((c) => escapeHtml(c))), d);
         await trilium.updateNoteContent(noteId, stamped.html);
         const titledAppend = await applyTitle();
@@ -2925,7 +2965,6 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           // table, shaped to that table — the diarists' ask (2026-10-15).
           let closureTarget: { note: Note; heading?: string; content: string; spot: TableSpot } | null = null;
           let closureCells: string[] = [];
-          let closurePadded = 0;
           if (closure) {
             if (closure.note !== undefined) {
               const ref = closure.note;
@@ -2948,16 +2987,21 @@ Check the receipt: matched=false means a NEW section was written (available= lis
               if (isRecordNote(target))
                 return err("record_note", `closure.note "${target.title}" is a record — records are never rewritten.`, "Use the {thread, body} variant for prose closures, or target the register that should hold the row.");
               const targetContent = await trilium.getNoteContent(target.noteId);
+              const tableScope = closure.table ? getSection(targetContent, closure.table).content : targetContent;
+              if ((tableScope.match(/<table(?:\s|>)/gi) ?? []).length > 1)
+                return err("ambiguous_table", "The destination contains several tables; nothing was written.", "Name closure.table explicitly.");
+              if (closure.table && (getSection(targetContent, closure.table).headingCount ?? 0) > 1)
+                return err("ambiguous_table", "The destination heading is repeated; nothing was written.", "Use a uniquely named destination heading.");
               const spot = findTable(targetContent, closure.table);
               if (!spot)
                 return err("no_table", `closure.note "${target.title}" ${closure.table ? `has no table under "${closure.table}"` : "holds no table with a <tbody> to append to"} — nothing was written.`, closure.table ? "Pass the heading of the table that should receive the row (outline its headings first)." : 'Pass table="<heading>" to name the table, or give the note a table to receive the row.');
               const removedCells = rowCells(res.element);
-              const fitted = fitRowCells(removedCells, spot.columns);
+              const shaped = closure.row ? closure.row.map((cell) => escapeHtml(cell)) : removedCells;
+              const fitted = shaped.length === spot.columns ? shaped : null;
               if (!fitted)
-                return err("row_shape", `The row has ${removedCells.length} cell(s) and "${target.title}"'s table has ${spot.columns} column(s): appending it would drop data, so nothing was written.`, "Reshape the row first (revise its cells), or target a register whose table matches the row.");
+                return err("row_shape", `The destination row has ${shaped.length} cell(s) and "${target.title}"'s table has ${spot.columns} column(s): appending it would drop data, so nothing was written.`, "Pass closure.row as explicitly shaped plain-text cells, or target a register with the same columns.");
               closureTarget = { note: target, ...(closure.table !== undefined ? { heading: closure.table } : {}), content: targetContent, spot };
               closureCells = fitted;
-              closurePadded = fitted.length - removedCells.length;
             } else {
               closureThread = /^[A-Za-z0-9]{12}$/.test(closure.thread!)
                 ? await trilium.getNote(closure.thread!).catch(() => null)
@@ -3005,7 +3049,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
                       ? { closure: { threadId: closureThread.noteId, thread: closureThread.title, wouldAppend: toText(closureBlock, 300) } }
                       : {}),
                     ...(closureTarget
-                      ? { closure: { noteId: closureTarget.note.noteId, note: closureTarget.note.title, table: closureTarget.heading ?? "(first table)", row: closureCells.map((c) => toText(c, 80)).join(" | "), action: "would-append", ...(closurePadded ? { padded: `${closurePadded} empty cell(s) added so the row matches the table's shape` } : {}) } }
+                      ? { closure: { noteId: closureTarget.note.noteId, note: closureTarget.note.title, table: closureTarget.heading ?? "(first table)", row: closureCells.map((c) => toText(c, 80)).join(" | "), action: "would-append" } }
                       : {}),
                   }),
               matchedElements: res.matches,
@@ -3013,62 +3057,64 @@ Check the receipt: matched=false means a NEW section was written (available= lis
             });
           }
 
-          await trilium.createRevision(noteId).catch(() => null);
-          const withinResult = sanitizeHtml(res.html);
+          if (res.html === current) return txt({ ok: true, noteId, unchanged: true, mode: `within:${within}:${action}`, date: d });
+          // Snapshot the source before touching either record. Destination first:
+          // an interrupted move can duplicate a row, but must never lose it.
+          await trilium.createRevision(noteId);
+          let closureReceipt: Record<string, unknown> | null = null;
+          let sourceHtml = res.html;
+          let destinationDurable = false;
+          try {
+            if (closureThread) {
+              const entry = await appendThreadEntry(closureThread.noteId, closureBlock, d);
+              destinationDurable = true;
+              closureReceipt = { threadId: closureThread.noteId, thread: closureThread.title, entryId: entry.noteId,
+                action: entry.action, ...(entry.marker ? { entryMarker: entry.marker } : {}),
+                runHeading: leadingIdentityText(closureBlock) };
+              await trilium.updateLabelValue(closureThread.noteId, "updated", d);
+            }
+            if (closureTarget) {
+              const sameNote = closureTarget.note.noteId === noteId;
+              const base = sameNote ? res.html : closureTarget.content;
+              const spot = sameNote ? findTable(base, closureTarget.heading) : closureTarget.spot;
+              if (!spot) throw new Error("Destination table disappeared after source-row planning; source untouched");
+              const row = `<tr>${closureCells.map((c) => `<td>${c}</td>`).join("")}</tr>`;
+              const alreadyPresent = base.slice(spot.bodyStart, spot.bodyEnd).includes(row);
+              const moved = alreadyPresent ? base : appendRowToTable(base, spot, closureCells);
+              if (sameNote) sourceHtml = moved; // one revision and one content write
+              else {
+                if (!alreadyPresent) {
+                  await trilium.createRevision(closureTarget.note.noteId);
+                  const clean = sanitizeHtml(moved);
+                  await trilium.updateNoteContent(closureTarget.note.noteId, bumpLastUpdated(clean.html, d).html);
+                }
+                destinationDurable = true;
+                await trilium.updateLabelValue(closureTarget.note.noteId, "updated", d);
+              }
+              closureReceipt = { noteId: closureTarget.note.noteId, note: closureTarget.note.title,
+                table: closureTarget.heading ?? "(only table)", row: closureCells.map((c) => toText(c, 80)).join(" | "),
+                action: alreadyPresent ? "already_written" : "appended" };
+            }
+          } catch (e) {
+            return txt({ ok: false, error: "closure_destination_failed", partial: true,
+              source: "retained", destinationDurable, detail: String(e), closure: closureReceipt,
+              hint: "Source content is untouched. Read the destination before retrying; a failed response can follow an accepted write. Exact destination rows and identical thread blocks are deduplicated on retry." });
+          }
+          const withinResult = sanitizeHtml(sourceHtml);
           const stampedWithin = bumpLastUpdated(withinResult.html, d);
-          await trilium.updateNoteContent(noteId, stampedWithin.html);
+          try {
+            await trilium.updateNoteContent(noteId, stampedWithin.html);
+            await trilium.updateLabelValue(noteId, "updated", d);
+          } catch (e) {
+            if (!closure) throw e;
+            return txt({ ok: false, error: "closure_source_failed", partial: true, destinationDurable,
+              source: "verify-by-reading", closure: closureReceipt, detail: String(e),
+              hint: "Destination was prepared before removing source content. Read both notes before retrying; exact destination rows and identical thread blocks are deduplicated." });
+          }
           const titledWithin = await applyTitle();
           const iconWithin = await applyIcon(noteId, icon);
-          await trilium.updateLabelValue(noteId, "updated", d);
           if (labelOf(note, "status") === "dormant") await trilium.updateLabelValue(noteId, "status", "active");
           const relsWithin = relationSnippet(note);
-          let closureReceipt: Record<string, unknown> | null = null;
-          if (closureThread) {
-            const entry = await appendThreadEntry(closureThread.noteId, closureBlock, d);
-            await trilium.updateLabelValue(closureThread.noteId, "updated", d);
-            if (labelOf(closureThread, "status") === "dormant") await trilium.updateLabelValue(closureThread.noteId, "status", "active");
-            const closureHeading = leadingIdentityText(closureBlock);
-            closureReceipt = {
-              threadId: closureThread.noteId,
-              thread: closureThread.title,
-              entryId: entry.noteId,
-              action: entry.action,
-              ...(entry.marker ? { entryMarker: entry.marker } : {}),
-              ...(closureHeading ? { runHeading: closureHeading } : {}),
-              next: "Run consistency() on any fact the closed row asserted elsewhere, so no stale sentence survives it.",
-            };
-          }
-          if (closureTarget) {
-            // A same-note target re-reads: the row removal just rewrote this
-            // body, so the pre-write table position would be stale.
-            const sameNote = closureTarget.note.noteId === noteId;
-            const base = sameNote ? await trilium.getNoteContent(noteId) : closureTarget.content;
-            const targetSpot = sameNote ? findTable(base, closureTarget.heading) : closureTarget.spot;
-            if (targetSpot) {
-              await trilium.createRevision(closureTarget.note.noteId).catch(() => null);
-              const regStamped = bumpLastUpdated(appendRowToTable(base, targetSpot, closureCells), d);
-              await trilium.updateNoteContent(closureTarget.note.noteId, regStamped.html);
-              await trilium.updateLabelValue(closureTarget.note.noteId, "updated", d);
-              if (labelOf(closureTarget.note, "status") === "dormant") await trilium.updateLabelValue(closureTarget.note.noteId, "status", "active");
-              const marked = hasLabel(closureTarget.note, "register") || ownedLabel(closureTarget.note, "noteType") === "thread";
-              closureReceipt = {
-                noteId: closureTarget.note.noteId,
-                note: closureTarget.note.title,
-                table: closureTarget.heading ?? "(first table)",
-                row: closureCells.map((c) => toText(c, 80)).join(" | "),
-                action: "appended",
-                ...(closurePadded ? { padded: `${closurePadded} empty cell(s) added so the row matches the table's shape` } : {}),
-                ...(marked ? {} : { registerHint: 'The target is not marked #register — label(noteId, "register", value="") exempts its table\'s evidence dates from maintain\'s dated-prose lint.' }),
-              };
-            } else {
-              closureReceipt = {
-                noteId: closureTarget.note.noteId,
-                note: closureTarget.note.title,
-                action: "missed",
-                hint: "The row was removed, but the table could no longer be found in the target note — nothing was appended there. The source note has a revision from before the removal.",
-              };
-            }
-          }
           return txt({
             ok: true, noteId, mode: `within:${within}:${action}`, date: d,
             element: toText(res.element, 200),
@@ -3128,6 +3174,20 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           });
         }
 
+        if (dryRun === true) {
+          const clean = sanitizeHtml(working);
+          const preview = working === current ? current : bumpLastUpdated(clean.html, d).html;
+          return txt({
+            ok: true, noteId, mode: edits ? "edits" : "find-replace", dryRun: true,
+            replaced: total, results, unchanged: preview === current, date: d,
+            before: boundPreview(current), after: boundPreview(preview),
+            bytesBefore: Buffer.byteLength(current), bytesAfter: Buffer.byteLength(preview),
+            ...(clean.warnings.length ? { sanitized: clean.warnings } : {}),
+            ...structuralFindings(noteKind, preview),
+            next: "Nothing was written and no revision was taken. Re-read before applying if another writer may have changed the note.",
+          });
+        }
+
         // A replacement equal to what it matched changes nothing. Writing it
         // anyway took a revision and reported a replacement, so a retry looked
         // like a second edit. Say so and leave the note alone.
@@ -3143,7 +3203,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           });
         }
 
-        await trilium.createRevision(noteId).catch(() => null);
+        await trilium.createRevision(noteId);
         const replacedResult = sanitizeHtml(working);
         const stamped = bumpLastUpdated(replacedResult.html, d);
         await trilium.updateNoteContent(noteId, stamped.html);
@@ -3186,7 +3246,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
             hint: `No "${section}" heading at h2/h3/h4 — nothing was removed and the body is untouched. Check available= for the note's real heading texts.`,
           });
         }
-        await trilium.createRevision(noteId).catch(() => null);
+        await trilium.createRevision(noteId);
         const stamped = bumpLastUpdated(result.html, d);
         await trilium.updateNoteContent(noteId, stamped.html);
         const titledOnRemove = await applyTitle();
@@ -3274,7 +3334,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
               `Available headings: ${result.available?.length ? result.available.join(" · ") : "(none)"}${suggestion ? ` — did you mean "${suggestion.heading}"?` : ""} Re-target with the exact text, or drop strict= to allow the new-section append.`
             );
           }
-          await trilium.createRevision(noteId).catch(() => null);
+          await trilium.createRevision(noteId);
           finalContent = bumpLastUpdated(result.html, d).html;
           await trilium.updateNoteContent(noteId, finalContent);
           sectionResult = {
@@ -3288,7 +3348,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
             ...(suggestion ? { didYouMean: suggestion.heading } : {}),
           };
         } else if (mode === "replace") {
-          await trilium.createRevision(noteId).catch(() => null);
+          await trilium.createRevision(noteId);
           finalContent = bumpLastUpdated(html, d).html;
           await trilium.updateNoteContent(noteId, finalContent);
         } else if (noteKind === "thread") {
@@ -3314,7 +3374,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
         } else {
           const block = identity && !leadingIdentification(html) ? `<h3>${escapeHtml(identity)}</h3>\n${html}` : html;
           if (isDuplicateAppend(current, block)) return txt({ ok: true, noteId, mode: "already_written", date: d });
-          await trilium.createRevision(noteId).catch(() => null);
+          await trilium.createRevision(noteId);
           finalContent = bumpLastUpdated(insertBeforeResolution(closeDangling(current), `<h2>Addendum — ${d}</h2>\n${block}`), d).html;
           await trilium.updateNoteContent(noteId, finalContent);
         }
@@ -3391,7 +3451,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       const note = await trilium.getNote(noteId);
 
       const { html: outcomeHtml, warnings } = renderBody(outcome);
-      await trilium.createRevision(noteId).catch(() => null);
+      await trilium.createRevision(noteId);
       const current = await trilium.getNoteContent(noteId);
       await trilium.updateNoteContent(noteId, applyResolution(current, outcomeHtml, d));
       await trilium.updateLabelValue(noteId, "status", terminal);
@@ -3475,7 +3535,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       // Pointer left in the source where the first section used to be — a
       // navigable breadcrumb rather than a silent removal.
       const pointer = `<p><em>Split ${d} — moved ${result.matched.length} section(s) into <strong>${escapeHtml(cleanTitle)}</strong> [${nid}].</em></p>`;
-      await trilium.createRevision(noteId).catch(() => null);
+      await trilium.createRevision(noteId);
       await trilium.updateNoteContent(noteId, `${pointer}\n${result.html}`);
       await trilium.updateLabelValue(noteId, "updated", d);
 
@@ -3516,6 +3576,12 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       if (kind !== "thread")
         return err("wrong_kind", `withdraw() is for threads only — this note has kind "${kind ?? "untyped"}".`, "Use recover() to restore any other archived or resolved note.");
 
+      const current = await trilium.getNoteContent(noteId);
+      const { html: withdrawHtml, warnings } = reason
+        ? renderBody(reason)
+        : { html: "<p><em>Thread re-activated.</em></p>", warnings: [] as string[] };
+      if (!isDuplicateAppend(current, withdrawHtml)) await trilium.createRevision(noteId);
+
       const archivedAttr = note.attributes.find((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === "archived");
       if (archivedAttr) await trilium.deleteAttribute(archivedAttr.attributeId).catch(() => null);
 
@@ -3524,12 +3590,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
 
       await trilium.updateLabelValue(noteId, "status", "active");
 
-      const current = await trilium.getNoteContent(noteId);
-      const { html: withdrawHtml, warnings } = reason
-        ? renderBody(reason)
-        : { html: "<p><em>Thread re-activated.</em></p>", warnings: [] as string[] };
       if (!isDuplicateAppend(current, withdrawHtml)) {
-        await trilium.createRevision(noteId).catch(() => null);
         await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Withdrawn — ${d}</h2>`, withdrawHtml));
         await trilium.updateLabelValue(noteId, "updated", d);
       }
@@ -3720,7 +3781,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
   server.tool(
     "consistency",
-    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. Multiple values co-asserted within one note — two true figures in one cell — are that note's compound fact, not a contradiction; only values no note asserts together flag as a disagreement. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Records (sessions, diary, logs, dated thread entries) are skipped by default because they are never rewritten; includeRecords=true or a kinds= naming them brings them back. Scans every in-scope note (fast=true uses Trilium's lossy pre-filter). Matching ignores case unless caseSensitive=true (a leading (?i) is accepted). Without a capture group the whole match is the value compared. patterns=[…] checks several facts in one call over one read of each note. Run it after correcting any fact recorded in more than one place.`,
+    `Does the brain agree with itself? pattern= is a regex with ONE capture group naming the value that should match across notes, e.g. "(\\\\d+) mailboxes"; the result groups every asserting note by value with agreement unanimous or DISAGREEMENT. Multiple values co-asserted within one note — two true figures in one cell — are that note's compound fact, not a contradiction; only values no note asserts together flag as a disagreement. subject="<fact in prose>" finds notes asserting about a subject however phrased. staleAfterDays=N also reports values held in exactly one note untouched N+ days. Matches stored HTML and tag-stripped text; escape backslashes; scope with domain=/kinds=. Records (sessions, diary, logs, dated thread entries) are skipped by default because they are never rewritten; includeRecords=true or a kinds= naming them brings them back. Default examines up to 5000 eligible notes from at most 10000 candidates. coverage reports complete, truncated and failed reads; bounded or lossy scans cannot establish absence or unanimity. Search failures propagate. fast=true uses Trilium's lossy pre-filter. Matching ignores case unless caseSensitive=true (a leading (?i) is accepted). Without a capture group the whole match is the value compared. patterns=[…] checks several facts in one call over one read of each note. Run it after correcting any fact recorded in more than one place.`,
     {
       pattern: z.string().optional().describe("Regex over note bodies. One capture group = the value that should agree across notes; with none, the whole match is the value. Omit when using subject= (prose mode)."),
       patterns: z.array(z.string()).max(10).optional().describe("Several patterns checked in one call (each reported as its own result, in order); every note is read once"),
@@ -3731,16 +3792,17 @@ calling twice is safe. Use remove=true to delete an edge.`,
       kinds: z.array(z.enum(Kinds)).optional().describe("Restrict to these kinds. Naming a record kind (session, diary, log, threadEntry) includes those records"),
       includeRecords: z.boolean().optional().describe("Also match records: sessions, diary, logs and dated thread entries (default false: they are history, never rewritten)"),
       includeArchived: z.boolean().optional().describe("Include archived notes (default false)"),
-      limit: z.number().optional().describe("Max notes to examine (default 60)"),
+      limit: z.number().int().min(1).max(10000).optional().describe("Max eligible notes to examine (default 5000, acquisition cap 10000); coverage reports limits and failed reads"),
       fast: z.boolean().optional().describe("Use Trilium's faster but lossy %= pre-filter (default: scan every in-scope note)"),
     },
     async (args) => {
       // One read per note across every pattern of a patterns=[…] call.
       const contentCache = new Map<string, Promise<string>>();
+      const failedReads = new Set<string>();
       const contentOf = (id: string) => {
         let p = contentCache.get(id);
         if (!p) {
-          p = trilium.getNoteContent(id).catch(() => "");
+          p = trilium.getNoteContent(id).catch(() => { failedReads.add(id); return ""; });
           contentCache.set(id, p);
         }
         return p;
@@ -3773,6 +3835,14 @@ calling twice is safe. Use remove=true to delete an edge.`,
         }
         return true;
       };
+      const coverageOf = (notes: Note[], eligible: Note[], scoped: Note[]) => {
+        const failed = scoped.filter((n) => failedReads.has(n.noteId)).map((n) => n.noteId);
+        const truncated = notes.length >= 10000 || eligible.length > scoped.length;
+        return { complete: !fast && !truncated && failed.length === 0,
+          candidates: notes.length, eligible: eligible.length, examined: scoped.length,
+          read: scoped.length - failed.length, failed, truncated, candidateLimit: 10000,
+          ...(fast ? { prefilter: "lossy" } : {}) };
+      };
       const recordsNote = () =>
         recordsSkipped
           ? { recordsSkipped, recordsNote: `${recordsSkipped} record(s) (sessions, diary, logs, dated thread entries) were skipped: they are never rewritten. includeRecords=true matches them too.` }
@@ -3787,17 +3857,17 @@ calling twice is safe. Use remove=true to delete an edge.`,
       // tokens extracted from the prose, and a note counts as asserting about the
       // subject when it contains a majority of them.
       if (subject && !pattern) {
-        const max = limit ?? 60;
+        const max = limit ?? 5000;
         const tokens = queryTokens(subject, 8);
         if (!tokens.length)
           return err("no_tokens", "The subject produced no significant content words.", 'A subject of all stop-words ("what was it") cannot find anything — name the thing you re-measured.');
         const clauses = ["#noteType"];
         if (domain) clauses.push(`#domain='${slugify(domain)}'`);
         const notes = await trilium
-          .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: wantsRecords ? max : max * 4, includeArchivedNotes: includeArchived ?? false })
-          .then((r) => r.results)
-          .catch(() => [] as Note[]);
-        const scoped = notes.filter(inScope).slice(0, max); // the limit counts notes in scope, not the records skipped
+          .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: 10000, includeArchivedNotes: includeArchived ?? false })
+          .then((r) => r.results);
+        const eligible = notes.filter(inScope);
+        const scoped = eligible.slice(0, max); // the limit counts notes in scope, not the records skipped
         const threshold = Math.max(1, Math.ceil(tokens.length / 2));
         const hits: Array<{ id: string; title: string; kind: string; matchedTokens: string[]; snippet: string }> = [];
         for (const n of scoped) {
@@ -3810,6 +3880,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
         }
         return txt({
           mode: "subject",
+          coverage: coverageOf(notes, eligible, scoped),
           subject,
           tokens,
           threshold: `${threshold} of ${tokens.length} token(s)`,
@@ -3818,7 +3889,9 @@ calling twice is safe. Use remove=true to delete an edge.`,
           total: hits.length,
           ...(domain ? { domain: slugify(domain) } : {}),
           ...recordsNote(),
-          note: hits.length
+          note: !coverageOf(notes, eligible, scoped).complete
+            ? "Incomplete scan: absence cannot be established. Inspect coverage, narrow scope, increase limit or retry failed reads."
+            : hits.length
             ? `${hits.length} note(s) assert something about "${subject}". Open each to read the claim — or narrow with domain= / kinds=.`
             : `No note in scope matched ${threshold}+ of the subject's tokens. That is evidence about the phrasing, not the brain — this mode is deliberately phrase-agnostic, so if you expected a hit, the fact may not be recorded here at all.`,
         });
@@ -3840,7 +3913,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
       // it with presence only told callers which notes mention a term.
       const groupCount = new RegExp(`${source}|`).exec("")!.length - 1;
 
-      const max = limit ?? 60;
+      const max = limit ?? 5000;
       // Candidate acquisition. The %= pre-filter is opt-in because it is lossy
       // in BOTH directions: Trilium matches a striptags'd copy, so a pattern
       // anchored on tags returns nothing, and its lexer eats a level of
@@ -3850,11 +3923,11 @@ calling twice is safe. Use remove=true to delete an edge.`,
       const clauses = fast ? [`note.content %= '${escapeQueryRegex(pattern)}'`] : ["#noteType"];
       if (domain) clauses.push(`#domain='${slugify(domain)}'`);
       const notes = await trilium
-        .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: wantsRecords ? max : max * 4, includeArchivedNotes: includeArchived ?? false })
-        .then((r) => r.results)
-        .catch(() => [] as Note[]);
+        .searchNotes(clauses.join(" AND "), { ancestorNoteId: b().root, limit: 10000, includeArchivedNotes: includeArchived ?? false })
+        .then((r) => r.results);
 
-      const scoped = notes.filter(inScope).slice(0, max); // the limit counts notes in scope, not the records skipped
+      const eligible = notes.filter(inScope);
+        const scoped = eligible.slice(0, max); // the limit counts notes in scope, not the records skipped
 
       // Captured values are grouped BY NOTE first. A note may legitimately
       // assert more than one captured value — one cell holding two true
@@ -3863,6 +3936,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
       // note as disagreeing with itself. The note is the unit: several
       // distinct values from one note are its compound fact, and only values
       // no note ever asserts together count as a cross-note contradiction.
+      const spellings = new Map<string, Set<string>>();
       const noteValues = new Map<string, { stub: { id: string; title: string; kind: string; idleDays: number }; values: Set<string> }>();
       const byValue = new Map<string, Array<{ id: string; title: string; kind: string; idleDays: number }>>();
       const noCapture: Array<{ id: string; title: string; kind: string; idleDays: number }> = [];
@@ -3911,7 +3985,10 @@ calling twice is safe. Use remove=true to delete an edge.`,
         const seen = new Set<string>();
         for (const value of [...raw.values, ...projected.values]) {
           hasCaptureGroup = true;
-          seen.add(value);
+          const key = caseSensitive && !inlineInsensitive ? value : value.toLowerCase();
+          seen.add(key);
+          if (!spellings.has(key)) spellings.set(key, new Set());
+          spellings.get(key)!.add(value);
         }
         if (seen.size) noteValues.set(n.noteId, { stub, values: seen });
         if ((raw.matched || projected.matched) && !seen.size) noCapture.push(stub);
@@ -3926,24 +4003,27 @@ calling twice is safe. Use remove=true to delete an edge.`,
         }
       }
 
+      const coverage = coverageOf(notes, eligible, scoped);
       if (!hasCaptureGroup) {
         return txt({
           mode: "presence",
+          coverage,
           pattern,
-          scan: fast ? "fast (%= pre-filter)" : "exhaustive",
+          scan: fast ? "fast (%= pre-filter)" : coverage.complete ? "exhaustive" : "bounded",
           notesExamined: scoped.length,
           ...recordsNote(),
           notes: noCapture,
           total: noCapture.length,
           note:
-            noCapture.length === 0
+            !coverage.complete ? "Incomplete scan: absence cannot be established. Inspect coverage, narrow scope, increase limit or retry failed reads."
+              : noCapture.length === 0
               ? `No note body matched that pattern across ${scoped.length} note(s), searched both as stored HTML and tag-stripped.${fast ? " fast=true used Trilium's %= pre-filter, which reads a striptags'd copy and can drop notes — re-run without it before concluding anything." : " That is evidence about the pattern, not the brain."}`
               : "The pattern has no capture group, so this is a presence check only. Add one — consistency(\"(\\\\d+) users\") — to compare the values these notes actually assert.",
         });
       }
 
       const groups = [...byValue.entries()]
-        .map(([value, notes]) => ({ value, count: notes.length, notes }))
+        .map(([key, notes]) => ({ value: [...spellings.get(key)!][0]!, spellings: [...spellings.get(key)!], count: notes.length, notes }))
         .sort((a, b) => b.count - a.count);
 
       // Stale-single-copy report: figures asserted in EXACTLY one note, whose
@@ -3976,23 +4056,25 @@ calling twice is safe. Use remove=true to delete an edge.`,
       const agrees = !crossNoteConflict;
       return txt({
         mode: "consistency",
+        coverage,
         pattern,
         ...(groupCount === 0 ? { valueFrom: "the whole match (the pattern has no capture group)" } : {}),
         ...(caseSensitive && !inlineInsensitive ? { caseSensitive: true } : {}),
-        scan: fast ? "fast (%= pre-filter)" : "exhaustive",
+        scan: fast ? "fast (%= pre-filter)" : coverage.complete ? "exhaustive" : "bounded",
         ...(domain ? { domain: slugify(domain) } : {}),
         notesExamined: scoped.length,
         ...recordsNote(),
         ...(tagSpanning ? { tagSpanning, tagSpanningNote: `${tagSpanning} note(s) matched only once markup was stripped — the phrase is split by an inline tag there. Before v10.3 those were invisible.` } : {}),
         distinctValues: groups.length,
-        agreement: groups.length === 0 ? "no-data" : agrees ? "unanimous" : "DISAGREEMENT",
+        agreement: !agrees ? "DISAGREEMENT" : !coverage.complete ? "incomplete" : groups.length === 0 ? "no-data" : "unanimous",
         groups,
         ...(staleAfterDays ? { staleAfterDays } : {}),
         ...(staleSingles.length
           ? { staleSingles, staleSinglesNote: `${staleSingles.length} figure(s) appear in exactly one note, untouched ${staleAfterDays}d+ — a single copy cannot disagree with itself, so re-measure these against the world rather than against other notes.` }
           : {}),
         ...(noCapture.length ? { matchedWithoutValue: noCapture } : {}),
-        note: agrees
+        note: !coverage.complete ? "This scan is incomplete; matches are evidence, but absence or unanimity cannot be established. Narrow the scope, increase limit, or retry failed reads."
+          : agrees
           ? groups.length === 0
             ? "No note asserted a value for that pattern. That is evidence about the pattern, not about the brain — check it against a note you know contains the fact."
             : groups.length === 1
@@ -4295,7 +4377,7 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
         const content = await trilium.getNoteContent(claimId);
         const entry = `<p><strong>${d} — ${holds ? "HOLDS" : "BROKEN"}</strong>: ${escapeHtml(evidence)}</p>`;
         const updated = setSection(content, "Verifications", entry, "append");
-        await trilium.createRevision(claimId).catch(() => null);
+        await trilium.createRevision(claimId);
         await trilium.updateNoteContent(claimId, updated.html);
         await trilium.updateLabelValue(claimId, "verified", d).catch(() => null);
         await trilium.updateLabelValue(claimId, "claimState", holds ? "holding" : "broken").catch(() => null);
@@ -4331,7 +4413,7 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
 
         if (existing) {
           const current = await trilium.getNoteContent(existing.noteId);
-          await trilium.createRevision(existing.noteId).catch(() => null);
+          await trilium.createRevision(existing.noteId);
           await trilium.updateNoteContent(existing.noteId, setSection(current, "Check", `<p>${escapeHtml(check)}</p>`, "replace").html);
           if (intervalDays) await trilium.updateLabelValue(existing.noteId, "interval", String(intervalDays)).catch(() => null);
           return txt({ ok: true, action: "updated", ...row(existing), note: "A claim with this assertion already existed — its check was updated and its verification history kept." });
@@ -4726,6 +4808,7 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
 
       if (reason) {
         const current = await trilium.getNoteContent(noteId);
+        await trilium.createRevision(noteId);
         await trilium.updateNoteContent(noteId, safeAppend(current, `<p><em>Archived ${today()}: ${escapeHtml(reason)}</em></p>`));
       }
       await trilium.updateLabelValue(noteId, "closed", today());
@@ -4749,6 +4832,12 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
       const d = checkedDate(date);
       const note = await trilium.getNote(noteId);
 
+      const current = await trilium.getNoteContent(noteId);
+      const { html: recoverHtml, warnings } = reason
+        ? renderBody(reason)
+        : { html: "<p><em>Note restored from archive.</em></p>", warnings: [] as string[] };
+      if (!isDuplicateAppend(current, recoverHtml)) await trilium.createRevision(noteId);
+
       const archivedAttr = note.attributes.find((a) => isOwnedAttribute(note, a) && a.type === "label" && a.name === "archived");
       if (archivedAttr) await trilium.deleteAttribute(archivedAttr.attributeId).catch(() => null);
 
@@ -4757,12 +4846,7 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
 
       await trilium.updateLabelValue(noteId, "status", "active");
 
-      const current = await trilium.getNoteContent(noteId);
-      const { html: recoverHtml, warnings } = reason
-        ? renderBody(reason)
-        : { html: "<p><em>Note restored from archive.</em></p>", warnings: [] as string[] };
       if (!isDuplicateAppend(current, recoverHtml)) {
-        await trilium.createRevision(noteId).catch(() => null);
         await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>Recovered — ${d}</h2>`, recoverHtml));
         await trilium.updateLabelValue(noteId, "updated", d);
       }
@@ -5361,7 +5445,8 @@ and every thread day-child, in time order with its identification line.`,
             if (current === null) continue;
             const wanted = purposeContent(purpose);
             if (toText(current, 400).trim() === toText(wanted, 400).trim()) continue;
-            await trilium.updateNoteContent(id, wanted).catch(() => null);
+            await trilium.createRevision(id);
+            await trilium.updateNoteContent(id, wanted);
             const note = await trilium.getNote(id).catch(() => null);
             refreshed.push(note?.title ?? id);
           }
@@ -5448,6 +5533,7 @@ function wroteContent(result: unknown): boolean {
   if (typeof text !== "string") return true;
   try {
     const r = JSON.parse(text) as Record<string, unknown>;
+    if (r.partial === true) return true;
     if (r.error || r.ok === false || r.unchanged === true || r.action === "already_written" || r.mode === "already_written" || r.dryRun === true) return false;
     if (r.replaced === 0 && !r.closure) return false;
     return true;
