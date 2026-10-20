@@ -53,7 +53,9 @@ jobs:
           URL="${{ steps.deployment.outputs.page_url }}"
           test -n "$URL"
           for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error "$URL" | grep -Fq "v${VERSION} · open source"; then
+            # Consume the complete response before matching. Under pipefail,
+            # grep -q can close early and turn a matching page into curl 23.
+            if HTML=$(curl --fail --silent --show-error "$URL") && grep -Fq "v${VERSION} · open source" <<<"$HTML"; then
               for page in index.html how-it-works.html use-cases.html pricing.html docs.html; do
                 curl --fail --silent --show-error "$URL/$page" >/dev/null
               done
