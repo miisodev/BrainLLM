@@ -17,6 +17,8 @@ Self-hosted memory for LLMs in [TriliumNext Notes](https://github.com/TriliumNex
 [![MCP](https://img.shields.io/badge/protocol-MCP-0a0a0f?style=flat-square)](https://modelcontextprotocol.io)
 [![Sponsor](https://img.shields.io/badge/❤-Sponsor-f59e0b?style=flat-square&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/miisodev)
 
+[![Brainllm MCP server](https://mcprush.com/badge/brainllm-mcp/card.svg)](https://mcprush.com/to/brainllm-mcp?ref=badge)
+
 </div>
 
 ---
