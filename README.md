@@ -10,7 +10,7 @@ Self-hosted memory for LLMs in [TriliumNext Notes](https://github.com/TriliumNex
 
 [**Site**](https://miisodev.github.io/BrainLLM/) · [Connect to Claude](https://miisodev.github.io/BrainLLM/connect.html) · [How it works](https://miisodev.github.io/BrainLLM/how-it-works.html) · [Docs](https://miisodev.github.io/BrainLLM/docs.html) · [Privacy](https://miisodev.github.io/BrainLLM/privacy.html)
 
-[![Version](https://img.shields.io/badge/version-13.2.0-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-13.2.1-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.0-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -169,6 +169,8 @@ cp -r skills/brainllm ~/.claude/skills/brainllm
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.agents\skills" | Out-Null
 Copy-Item skills\brainllm "$env:USERPROFILE\.agents\skills\brainllm" -Recurse -Force
 ```
+
+For clients that take a skill upload (claude.ai), use `brainllm.zip` from the [latest release](https://github.com/miisodev/BrainLLM/releases/latest): it is the same `skills/brainllm/` folder, zipped.
 
 Then start a session. The model calls `start()`, orients, and operates the brain natively from there.
 
@@ -342,20 +344,20 @@ A handful of values in this repo reflect the author's own machine. None are secr
 ## Architecture
 
 ```
-index.ts ─→ tools.ts ─┬→ trilium.ts     ETAPI client: bounded/retrying I/O, graph traversal
-                      ├→ router.ts      placement policy: kind → parent, label plans, domains
-                      ├→ templates.ts   canonical structures per kind + the template-tool rules
-                      ├→ normalize.ts   titles, slugs, markdown→HTML, sanitization, surgery
-                      ├→ lifecycle.ts   protection, sweep, aging, the start digest
-                      ├→ journal.ts     daily Insights log generation (regenerate-in-place)
-                      ├→ time.ts        timezone-correct now/today (BRAINLLM_TZ)
-                       ├→ rate-limit.ts  bounded public HTTP budgets
-                       ├→ brand.ts       name, description, mark, icons, server instructions
-                       ├→ cap.ts         the 140k-character result cap
-                       ├→ diffing.ts     block and table-cell diffs
-                       ├→ network-security.ts CIMD public-network and redirect checks
-                      ├→ bootstrap.ts   five-area tree builder
-                      └→ tools-*.ts     per-area surface reads · full-mode raw ETAPI
+index.ts ─┬→ tools.ts ─┬→ trilium.ts     ETAPI client: bounded/retrying I/O, graph traversal
+          │            ├→ router.ts      placement policy: kind → parent, label plans, domains
+          │            ├→ templates.ts   canonical structures per kind + the template-tool rules
+          │            ├→ normalize.ts   titles, slugs, markdown→HTML, sanitization, surgery
+          │            ├→ elements.ts    the element (row, item, paragraph) an anchor sits in
+          │            ├→ diffing.ts     block and table-cell diffs, revision selection
+          │            ├→ lifecycle.ts   protection, sweep, aging, the start digest
+          │            ├→ journal.ts     daily Insights log generation (regenerate-in-place)
+          │            ├→ seal.ts        per-day record seals that maintain(deep) verifies
+          │            ├→ bootstrap.ts   five-area tree builder
+          │            └→ tools-*.ts     per-area surface reads · full-mode raw ETAPI
+          ├→ serialize.ts · coerce.ts · annotations.ts   wrap every tool: write lock, param coercion, hints and titles
+          ├→ cap.ts · brand.ts · config.ts               the 140k result cap · name, mark, instructions · brainllm.json
+          └→ HTTP: sse.ts · rate-limit.ts · oauth.ts      legacy SSE transport · public budgets · OAuth 2.1 (CIMD checks in network-security.ts)
 ```
 
 Key properties: no tool result exceeds 140,000 characters (a larger one is cut with a note naming the narrower read); every write is sanitized for Trilium/CKEditor 5 compatibility (mutations reported back as `sanitized[]`); a revision snapshot precedes routine content mutation; every request carries the user's local time so Trilium stamps dates in the right day; core writes are idempotent or duplicate-guarded, while raw full-mode overwrites are explicit.
@@ -365,11 +367,13 @@ Key properties: no tool result exceeds 140,000 characters (a larger one is cut w
 ```bash
 bun run dev    # hot-reload dev server
 bun run build  # bundle to dist/index.js
+bunx --bun tsc --noEmit   # typecheck (the bundler does not)
 bun run test:unit   # all unit tests (Bun discovery; works on Windows and CI)
 bun run test:http   # local auth/header smoke (no Trilium required)
 BRAINLLM_LIVE_TOKEN=... bun run test:live   # read-only smoke against a deployed server, over real MCP
 bun run test        # integration tests (requires a live Trilium instance)
 bun run validate:manifest # MCPB schema/icon validation
+bun run validate:release  # every version site, server.json schema, SECURITY.md line
 bun run init   # CLI bootstrap
 ```
 

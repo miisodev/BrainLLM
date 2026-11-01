@@ -9,7 +9,7 @@
 | A stored fact was wrong from the start | `revise(mode="replace")` — a revision snapshot is taken automatically, nothing is lost |
 | User asks you to forget something | `forget(noteId, reason)` archives it. If they want it *gone* (privacy), `forget(noteId, hard=true)` |
 | `forget(hard=true)` returns `blocked` | Other notes still link there. Remove the listed backlinks (`connect(..., remove=true)`) or archive instead |
-| A relationship between notes changes | `connect(from, rel, oldTarget, remove=true)`, then `connect` the new target; note the change in the body via `revise()` |
+| A relationship between notes changes | `connect(fromNoteId, relation, oldTargetId, remove=true)`, then `connect` the new target; note the change in the body via `revise()` |
 | A thread's line of work concludes | `resolve(threadId, outcome)` — writes the outcome, sets the terminal status, archives in place |
 | A dormant item becomes relevant again | Any `revise()` touch reactivates it to `active` automatically |
 | Two notes turn out to be the same subject | `revise()` the better one with the other's content (append), then `forget(worseId, reason="merged into <id>")` |
@@ -33,10 +33,12 @@
 | `consistency` is incomplete | Inspect `coverage.failed`, `truncated` and the candidate limit. Narrow domain/kinds or raise `limit`; retry failed reads. A bounded or lossy scan cannot establish absence or unanimity |
 | A register closure partially failed | Read both source and destination. Destination-first ordering preserves the source until the destination is durable; exact rows and identical thread blocks deduplicate on retry. A lost response can follow an accepted write; never assume no mutation |
 | Register destination shape or table ambiguous | Name `closure.table`, and supply exact plain-text destination cells with `closure.row`. Padding is not inferred |
-| `read(ids=[…])` returns `deferred[]` | The bodies passed ~80k characters together. Every returned entry carries `chars`, so pick by size; read the deferred ids in a second call, `section=` for the huge ones, or pass `text=true` |
+| `read(ids=[…])` returns `deferred[]` | The bodies passed ~80k characters together. Every returned entry carries `chars`, so pick by size; read the deferred ids in a second call, `section=` for the huge ones, or pass `text=true`. Next time plan with `read(ids, sizes=true)` first: sizes and section sizes, no bodies |
 | `health()` flags a note's revisions | Revision history is most of the database's weight. Splitting the note, or tightening Trilium's revision-snapshot interval, bounds it |
 | Deep maintenance flags the same items every session | Act on them, or `maintain(ack=[…])` the ones you reviewed and found correct |
 | `revise(find=)` returns `replaced: 0` | Read the hint — it names the cause in every shape now. Escaped search string (`&lt;h3&gt;` against stored real tags): pass the tag literally. Spans a block boundary (`</h3>` then `<ol>`): anchor inside one element, or use `section=` with `mode="before"/"after"`. Ends in a closing tag (`…</strong></li>`): use `within="li"` with a short plain anchor. Drifted text shows the stored text nearby (`storedNearby`); a `nth=` past the last occurrence says so; an all-miss `edits=` hints on the call and on each edit. Otherwise it was already replaced — check with `inspect(noteId, find="<shorter substring>")` |
+| `within=` refuses an anchor found in several elements | `elements[]` previews them: lengthen the anchor, pass `nth=`, or `all=true` to act on every one (`dryRun=true` first) |
+| `within="tr"` says the anchor sits in a `\|`-separated paragraph | The note holds a text roster, not a table: use `within="p"` for that line, or convert the roster to a real table |
 | `revise(section=)` returns `matched: false` | No heading matched, so a NEW section was written — at the note's own level, with the note's real headings in `available[]`. Re-target from that list; `outline(noteId)` gives the same tree plus levels and occurrence indices before you write |
 | Two sections legitimately share a heading | `revise(section=…, occurrence=2)`. Repeating a closing heading under every category is the consistency rule working, not drift — `occurrence=` is how you reach the second one without rewriting the whole section |
 | Note body shows literal `&lt;p&gt;` text in Trilium | Entity-corrupted: `maintain(repair=[noteId])` unwinds one level in place |

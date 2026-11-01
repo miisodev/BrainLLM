@@ -99,8 +99,8 @@ worth keeping?
 | storage and growth | `health()` — Trilium version, estimated database size, heaviest notes and their revisions, named backups |
 | what the brain holds | `assembly(area?)` — titles by surface with purposes |
 | inventory / locate by id | `brain()` — read `parent`, not position |
-| a note's heading tree | `outline(id)` — before any `section=` edit you're unsure of |
-| raw labels, relations, body | `inspect(id, content?, section?, find?)` — `find=` also returns the stored element (row, item, paragraph) around each match |
+| a note's heading tree | `outline(noteId)` — before any `section=` edit you're unsure of |
+| raw labels, relations, body | `inspect(noteId, content?, section?, find?)` — `find=` also returns the stored element (row, item, paragraph) around each match |
 
 Every read that can be large takes `section=` — `read(ids)` too, across each note; a note past the read ceiling cannot be returned whole.
 
@@ -181,7 +181,7 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 
 ## Interconnection — `connect`, `explore`, `graph`
 
-`connect(from, relation, to)` from a closed vocabulary: `relatesTo · extends · contradicts · supports · causes · references · partOf · worksWith · mentors · instanceOf · supersedes · implements · inspiredBy · sourceOf · derivedFrom`. Pick the most specific true verb; `worksWith` is symmetric; idempotent. `explore(noteId, mode)` walks links, backlinks, a neighborhood or a path. `graph()` renders Mermaid into Insights/Graph. For a full connection audit follow `references/connections.md`.
+`connect(fromNoteId, relation, toNoteId)` from a closed vocabulary: `relatesTo · extends · contradicts · supports · causes · references · partOf · worksWith · mentors · instanceOf · supersedes · implements · inspiredBy · sourceOf · derivedFrom · corrects`. Pick the most specific true verb; `worksWith` is symmetric; idempotent; `remove=true` unwires an edge. `supersedes` replaces a whole note; `corrects` marks the note that overturns one claim in a note that stays live — wire it after fixing a value `consistency()` caught, so the old belief stays traceable. `explore(noteId, mode)` walks links, backlinks, a neighborhood or a path. `graph()` renders Mermaid into Insights/Graph. For a full connection audit follow `references/connections.md`.
 
 ---
 
@@ -200,7 +200,7 @@ Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=tr
 |---|---|
 | stale | revise, resolve, or `ack=[id]` if correct as it stands |
 | orphan / sink | `connect()` |
-| dated prose | a timeless note carrying dates — move state to Current State, history to a thread entry. A register (a backlog, a defects list) whose rows carry evidence dates takes `label(id, "register", value="")`, which exempts its tables but not its prose |
+| dated prose | a timeless note carrying dates — move state to Current State, history to a thread entry. A register (a backlog, a defects list) whose rows carry evidence dates takes `label(noteId, "register", value="")`, which exempts its tables but not its prose |
 | duplicate heading / unbalanced tags / incomplete / table shape | fix with `revise` (a row: `within="tr"`) |
 | record seal | a record of a sealed day was rewritten after `close()` sealed it — read its revisions and `diff(noteId)`; records are append-only, so restore it unless the change was intended |
 | oversized / section-edit-risk / size trajectory | `section=` reads, `split()` |
