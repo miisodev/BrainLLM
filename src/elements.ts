@@ -40,21 +40,23 @@ export function containingElement(html: string, tag: string, from: number, to: n
 }
 
 export type WithinResult =
-  | { ok: true; html: string; element: string; matches: number }
+  | { ok: true; html: string; element: string; matches: number; elements?: string[] }
   | { ok: false; reason: "no_match" | "no_element" | "ambiguous"; matches: number; elements?: string[] };
 
 /** Find `anchor` (exact, or through markup via the tag-stripped text the
  *  caller's matcher supplies as spans), take the `tag` element containing it,
  *  and replace it with `body`, insert `body` before or after it, or remove it.
  *  Distinct elements containing the anchor must be exactly one unless `nth`
- *  picks one, so a short anchor can never hit the wrong row silently. */
+ *  picks one, so a short anchor can never hit the wrong row silently — or
+ *  `all`, which acts on every one of them deliberately. */
 export function editWithin(
   html: string,
   hits: Array<{ start: number; length: number }>,
   tag: string,
   action: "replace" | "before" | "after" | "remove",
   body: string,
-  nth?: number
+  nth?: number,
+  all = false
 ): WithinResult {
   if (!hits.length) return { ok: false, reason: "no_match", matches: 0 };
   const seen = new Map<number, ElementSpan>();
@@ -65,6 +67,21 @@ export function editWithin(
   const elements = [...seen.values()].sort((a, b) => a.start - b.start);
   if (!elements.length) return { ok: false, reason: "no_element", matches: hits.length };
   const preview = (s: ElementSpan) => html.slice(s.start, Math.min(s.end, s.start + 160));
+  if (all) {
+    // Every distinct element, outermost only: an element nested inside another
+    // match is already covered by the outer one. Applied last to first so the
+    // earlier spans keep their offsets.
+    const outer = elements.filter((e) => !elements.some((o) => o !== e && o.start <= e.start && o.end >= e.end));
+    let out = html;
+    for (const t of [...outer].reverse()) {
+      out =
+        action === "replace" ? out.slice(0, t.start) + body + out.slice(t.end)
+        : action === "remove" ? out.slice(0, t.start) + out.slice(t.end)
+        : action === "before" ? out.slice(0, t.start) + body + out.slice(t.start)
+        : out.slice(0, t.end) + body + out.slice(t.end);
+    }
+    return { ok: true, html: out, element: html.slice(outer[0]!.start, outer[0]!.end), matches: outer.length, elements: outer.map((e) => html.slice(e.start, e.end)) };
+  }
   let target: ElementSpan | undefined;
   if (nth !== undefined) target = elements[nth - 1];
   else if (elements.length === 1) target = elements[0];
@@ -76,4 +93,20 @@ export function editWithin(
     : action === "before" ? html.slice(0, target.start) + body + html.slice(target.start)
     : html.slice(0, target.end) + body + html.slice(target.end);
   return { ok: true, html: out, element: el, matches: elements.length };
+}
+
+/** When a within="tr"/"td" anchor lands only inside paragraphs written as
+ *  "a | b | c", the note holds a pipe-delimited roster, not a table: say so,
+ *  instead of the generic "check the tag" (a roster insert cost a retry,
+ *  2026-10-30). Null when the anchor's paragraphs are not pipe rows. */
+export function pipeParagraphHint(html: string, hits: Array<{ start: number; length: number }>, tag: string): string | null {
+  if (tag !== "tr" && tag !== "td" && tag !== "th") return null;
+  for (const h of hits) {
+    const p = containingElement(html, "p", h.start, h.start + h.length);
+    if (!p) continue;
+    const text = html.slice(p.start, p.end).replace(/<[^>]+>/g, "");
+    if ((text.match(/\|/g) ?? []).length >= 2)
+      return `The anchor sits in a paragraph written with "|" separators, which is text, not a table row. Use within="p" to act on that line (mode="after" adds a sibling line), or convert the roster to a real table.`;
+  }
+  return null;
 }

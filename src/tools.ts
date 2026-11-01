@@ -70,6 +70,9 @@ import {
   triliumSearchForm,
   leadingIdentification,
   leadingIdentityText,
+  identityAuthor,
+  identityRun,
+  identityHeadings,
   identityProblem,
   hasAddendumMarker,
   nearestHeading,
@@ -99,7 +102,7 @@ import { generateDailyLog, catchUpDeletions } from "./journal.js";
 import { sealDay, verifySeals } from "./seal.js";
 import { checkedDate, localToday, localNowTime, sinceCutoff, rollingBackupName } from "./time.js";
 import { blockDiff, firstRevisionSince, revisionsSince } from "./diffing.js";
-import { WITHIN_TAGS, editWithin, containingElement } from "./elements.js";
+import { WITHIN_TAGS, editWithin, containingElement, pipeParagraphHint } from "./elements.js";
 import { registerMasterTools } from "./tools-master.js";
 import { registerLlmTools } from "./tools-llm.js";
 import { registerMemoryTools } from "./tools-memory.js";
@@ -161,6 +164,17 @@ export function applyFindEdit(
  *  capping. The cap itself was always there; what was missing was any sign it
  *  had fired — a silently sliced list reads exactly like a complete one. */
 export const CHANGES_CAP = 25;
+
+/** A Sources receipt echoes every Revision key on an add only up to this many;
+ *  past it the near-duplicate hint carries the check instead. */
+export const SOURCE_KEYS_ECHO = 30;
+
+/** How many earlier day-entries a "Run N" append searches for its author's
+ *  previous block. */
+export const PREVIOUS_RUN_DAYS = 7;
+
+/** The previous block by the same author in a dated thread. */
+export interface PreviousRun { heading: string; date: string; run?: number }
 
 /** Bound a dry-run preview, naming how much was cut, so a preview can show an
  *  element's full extent without pasting a whole multi-paragraph removal. */
@@ -596,11 +610,12 @@ export function registerTools(
     threadId: string,
     block: string,
     d: string
-  ): Promise<{ noteId: string; action: "created" | "appended" | "already_written"; marker?: string }> {
+  ): Promise<{ noteId: string; action: "created" | "appended" | "already_written"; marker?: string; previousRun?: PreviousRun }> {
     const found = await trilium.searchNotes(
       `#noteType=threadEntry #created='${d}'`,
       { ancestorNoteId: threadId, fastSearch: true, limit: 1 },
     );
+    const incomingIdentity = leadingIdentityText(block);
     const time = localNowTime();
     // The block marker this call writes (or wrote). Returned so the receipt can
     // name the exact block — citing one's own "Build" block used to take another
@@ -617,7 +632,8 @@ export function registerTools(
       await trilium.createRevision(noteId);
       await trilium.updateNoteContent(noteId, safeAppend(current, `<h2>${marker}</h2>`, block));
       await trilium.updateLabelValue(noteId, "updated", d);
-      return { noteId, action: "appended", marker };
+      const previousRun = incomingIdentity ? await previousSameAuthor(threadId, incomingIdentity, current, d) : undefined;
+      return { noteId, action: "appended", marker, ...(previousRun ? { previousRun } : {}) };
     }
 
     const created = await trilium.createNote(
@@ -629,7 +645,42 @@ export function registerTools(
     await trilium.addLabel(noteId, "noteType", "threadEntry");
     await trilium.addLabel(noteId, "created", d);
     await ensureIcon(trilium, noteId);
-    return { noteId, action: "created", marker };
+    const previousRun = incomingIdentity ? await previousSameAuthor(threadId, incomingIdentity, "", d) : undefined;
+    return { noteId, action: "created", marker, ...(previousRun ? { previousRun } : {}) };
+  }
+
+  /** The last block this author wrote in the thread before this one, so a
+   *  numbered run can take its next number from the receipt instead of a
+   *  walk-back read (Thalia, 2026-10-29). Today's entry is free (already read);
+   *  earlier entries are read only when the identity carries "Run N", the one
+   *  convention that needs them, and at most PREVIOUS_RUN_DAYS of them. Best
+   *  effort: a failed lookup omits the field, never fails the append. */
+  async function previousSameAuthor(threadId: string, identity: string, todayBefore: string, d: string): Promise<PreviousRun | undefined> {
+    const author = identityAuthor(identity);
+    const pick = (html: string, date: string): PreviousRun | undefined => {
+      const heading = identityHeadings(html).reverse().find((h) => identityAuthor(h) === author);
+      if (!heading) return undefined;
+      const run = identityRun(heading);
+      return { heading, date, ...(run !== null ? { run } : {}) };
+    };
+    const today = pick(todayBefore, d);
+    if (today || identityRun(identity) === null) return today;
+    try {
+      const entries = await trilium.searchNotes("#noteType=threadEntry", { ancestorNoteId: threadId, fastSearch: true, limit: 500 });
+      const earlier = entries.results
+        .filter((n) => n.parentNoteIds.includes(threadId))
+        .map((n) => ({ n, date: ownedLabel(n, "created") ?? "" }))
+        .filter((e) => e.date && e.date < d)
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, PREVIOUS_RUN_DAYS);
+      for (const e of earlier) {
+        const found = pick(await trilium.getNoteContent(e.n.noteId), e.date);
+        if (found) return found;
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
   }
 
   /** A collection thread has no dated children to append to: its entries are
@@ -1504,7 +1555,7 @@ The close sequence next[] lays out: singleton updates from the session, then add
     "remember",
     `Store something the moment it matters; the server owns placement, labels and dedup.
 
-Kinds: biography | goals | preferences | responsibilities | protocols (singletons, upsert) · thread (goal= required to create; shape="collection" for a titled-entry thread; appends need identity=) · threadEntry (a titled entry in a collection thread: thread= + title) · user (knowledge about the user) · information (domain= + title) · sources (domain=; revision=[…] upserts rows; dryRun=true previews rows and near-duplicate keys without writing).
+Kinds: biography | goals | preferences | responsibilities | protocols (singletons, upsert) · thread (goal= required to create; shape="collection" for a titled-entry thread; appends need identity=) · threadEntry (a titled entry in a collection thread: thread= + title) · user (knowledge about the user) · information (domain= + title) · sources (domain=; revision=[…] upserts rows, revision[].from= renames one when a source moves; dryRun=true previews rows, body placement and near-duplicate keys without writing).
 
 Collection kinds dedup by title — mustCreate=true refuses instead of adopting an existing note, and check action= on the receipt. connect=[{relation, toNoteId}] wires relations in the same call. diary/session/log/claim/domain have dedicated paths.`,
     {
@@ -1520,7 +1571,8 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         source: z.string().describe("Must exactly match how the source is introduced in the Sources list — this is the upsert key"),
         marker: z.string().describe('"❇️" (discovered/credible) or "✅" (used)'),
         date: z.string().optional().describe("ISO date (default: today)"),
-      })).optional().describe("kind=sources: upsert Revision rows by source name"),
+        from: z.string().optional().describe("Rename: the row's current key. The row keyed from= is rekeyed to source= (marker and date updated) instead of a new row being added; refused when source= already has a row"),
+      })).optional().describe("kind=sources: upsert Revision rows by source name; from= renames a row when a source moves"),
       topics: z.array(z.string()).optional().describe("Topic tags — slugged server-side"),
       supersedes: z.string().optional().describe("noteId this replaces — old note is archived and wired supersedes"),
       mandate: z.boolean().optional().describe("kind=information: flag the note as a standing brief a session must follow (#mandate)"),
@@ -1644,6 +1696,42 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         };
       };
 
+      /** Apply revision rows to a Sources body: upsert by key, or rekey with
+       *  from=. Shared by the dry run and the write so both say the same thing.
+       *  A rename onto a key that already has its own row would leave two rows
+       *  for one source, so it is refused rather than guessed. */
+      const planRevision = (content: string) => {
+        let html = content;
+        const changes: string[] = [];
+        const added: string[] = [];
+        const refused: string[] = [];
+        const norm = (k: string) => k.replace(/\s+/g, " ").trim().toLowerCase();
+        for (const row of revision ?? []) {
+          const keys = tableRows(html, "Revision").map((cells) => cells[0] ?? "");
+          if (row.from !== undefined && norm(row.from) !== norm(row.source)) {
+            if (keys.some((k) => norm(k) === norm(row.source))) {
+              refused.push(`rename "${row.from}" → "${row.source}": "${row.source}" already has a row — update that one, or remove one of the two rows first`);
+              continue;
+            }
+            const result = upsertTableRow(html, "Revision", row.source, [row.marker, row.date ?? d], row.from);
+            if (!result.matched) { refused.push(`rename "${row.from}" → "${row.source}": no Revision row is keyed "${row.from}"`); continue; }
+            html = result.html;
+            changes.push(`renamed: ${row.from} → ${row.source}`);
+            continue;
+          }
+          const result = upsertTableRow(html, "Revision", row.source, [row.marker, row.date ?? d]);
+          if (result.matched || result.created) {
+            html = result.html;
+            changes.push(`${result.matched ? "updated" : "added"}: ${row.source}`);
+            if (!result.matched) added.push(row.source);
+          }
+        }
+        return { html, changes, added, refused };
+      };
+
+      /** A Sources body with no list or group markup lands as a loose block. */
+      const isLooseProse = (h: string) => !/<(?:ul|ol|li|h[34]|table)\b/i.test(h);
+
       // 1 ── Global singletons: one fixed maintained note (biography, goals, …).
       if (isSingleton(kind)) {
         const id = kindHome(b(), kind);
@@ -1684,23 +1772,17 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           else {
             const content = await trilium.getNoteContent(sidPreview);
             const existingKeys = tableRows(content, "Revision").map((cells) => cells[0]!).filter(Boolean);
-            const previewChanges: string[] = [];
-            const previewAdded: string[] = [];
-            let sim = content;
-            for (const row of revision ?? []) {
-              const result = upsertTableRow(sim, "Revision", row.source, [row.marker, row.date ?? d]);
-              if (result.matched || result.created) {
-                sim = result.html;
-                previewChanges.push(`${result.matched ? "would update" : "would add"}: ${row.source}`);
-                if (!result.matched) previewAdded.push(row.source);
-              }
-            }
-            if (previewChanges.length) preview.revision = previewChanges;
+            const plan = planRevision(content);
+            if (plan.changes.length) preview.revision = plan.changes.map((c) => `would ${c.replace(/^(\w+):/, (_, v: string) => `${{ updated: "update", added: "add", renamed: "rename" }[v] ?? v}:`)}`);
+            if (plan.refused.length) preview.refused = plan.refused;
             if (html && toText(html, 50) && !content.includes(html)) {
               const merged = mergeUnderSection(content, html, "Sources");
               preview.body = `would merge into the Sources section${merged.mergedInto.length ? `: ${merged.mergedInto.join(", ")}` : ""}${merged.appended.length ? `; new group(s): ${merged.appended.join(", ")}` : ""}`;
+              // The placement warning used to arrive only after the write
+              // (2026-11-01); the preview is where it can still change the call.
+              if (isLooseProse(html)) preview.placementHint = "This body has no list or group markup, so it would land as a loose block under Sources. Pass it as list items (or under an existing h3 group) to join the list structurally.";
             }
-            const hints = sourceKeyHints(previewAdded, existingKeys);
+            const hints = sourceKeyHints(plan.added, existingKeys);
             if (hints) { preview.didYouMean = hints.didYouMean; preview.didYouMeanNote = hints.didYouMeanNote; }
           }
           preview.next = "Nothing was written. Re-run without dryRun (or with dryRun=false) to apply exactly this.";
@@ -1743,27 +1825,22 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         // Revision rows are upserted by source name, never appended — this is
         // what keeps the table current-state instead of growing a new row
         // every time the same source gets re-verified.
-        const revisionChanges: string[] = [];
-        const addedKeys: string[] = [];
+        let revisionChanges: string[] = [];
+        let addedKeys: string[] = [];
+        let refusedRows: string[] = [];
         let existingKeys: string[] = [];
         if (sid && revision?.length) {
-          let current = await trilium.getNoteContent(sid);
+          const before = await trilium.getNoteContent(sid);
           // The keys as they stand BEFORE this call: what a newly-added key is
           // compared against for the near-duplicate hint below.
-          existingKeys = tableRows(current, "Revision").map((cells) => cells[0]!).filter(Boolean);
-          let changed = false;
-          for (const row of revision) {
-            const result = upsertTableRow(current, "Revision", row.source, [row.marker, row.date ?? d]);
-            if (result.matched || result.created) {
-              current = result.html;
-              changed = true;
-              revisionChanges.push(`${result.matched ? "updated" : "added"}: ${row.source}`);
-              if (!result.matched) addedKeys.push(row.source);
-            }
-          }
-          if (changed) {
+          existingKeys = tableRows(before, "Revision").map((cells) => cells[0]!).filter(Boolean);
+          const plan = planRevision(before);
+          revisionChanges = plan.changes;
+          addedKeys = plan.added;
+          refusedRows = plan.refused;
+          if (plan.changes.length) {
             await trilium.createRevision(sid);
-            const stamped = bumpLastUpdated(current, d);
+            const stamped = bumpLastUpdated(plan.html, d);
             await trilium.updateNoteContent(sid, stamped.html);
             await trilium.updateLabelValue(sid, "updated", d);
             wrote = true;
@@ -1792,7 +1869,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
         // branch above already does (html && toText(html, 50)), and require
         // that the body write actually happened rather than any write.
         const bodyWritten = !!html && !!toText(html, 50);
-        const looseProse = bodyWritten && !createdDomain && !/<(?:ul|ol|li|h[34]|table)\b/i.test(html);
+        const looseProse = bodyWritten && !createdDomain && isLooseProse(html);
         const keyHints = sourceKeyHints(addedKeys, existingKeys);
 
         return txt({
@@ -1800,13 +1877,18 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           noteId: sid, kind, domainId, location: locationLabel(kind, domainTitle),
           ...(createdDomain ? { createdDomain: domainTitle } : {}),
           ...(revisionChanges.length ? { revision: revisionChanges } : {}),
+          ...(refusedRows.length ? { refused: refusedRows } : {}),
           ...sourceMerge,
           // A count, not an echo of every row (a heavy receipt on every upsert,
           // 2026-10-08). The keys come back only when a row was ADDED, the one
           // case where a misspelt source key needs to be seen beside the rest.
           ...(revisionKeys.length ? { revisionRows: revisionKeys.length } : {}),
-          ...(revisionChanges.some((c) => c.startsWith("added:")) && revisionKeys.length
+          // On an add, the keys only when the list is short enough to scan; a
+          // long table (127 keys, 2026-10-30) relies on didYouMean below.
+          ...(addedKeys.length && revisionKeys.length && revisionKeys.length <= SOURCE_KEYS_ECHO
             ? { revisionKeys, revisionKeysNote: "A new Revision row was added. If it was meant to update an existing source, its key must match one of these exactly." }
+            : addedKeys.length && revisionKeys.length
+            ? { revisionKeysNote: `A new Revision row was added beside ${revisionKeys.length - addedKeys.length} existing keys (too many to echo). ${keyHints ? "didYouMean names the nearest existing key." : "No existing key is close to it."} Preview a new key with dryRun=true, and rename a moved source with revision=[{source, from}].` }
             : {}),
           // The sharpened form of revisionKeysNote: not just "here are the
           // keys", but "this new key is one word away from that one".
@@ -1956,7 +2038,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
           const connected = await wireRequested(existing.noteId);
           const iconSet = await applyIcon(existing.noteId, icon);
           const relations = relationSnippet(existing);
-          return txt({ action: "updated", noteId: existing.noteId, entryId: entry.noteId, entryAction: entry.action, ...(entry.marker ? { entryMarker: entry.marker } : {}), ...(runHeading ? { runHeading } : {}), entry: `today's [${d}] entry in this thread; revise(entryId) edits it`, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
+          return txt({ action: "updated", noteId: existing.noteId, entryId: entry.noteId, entryAction: entry.action, ...(entry.marker ? { entryMarker: entry.marker } : {}), ...(runHeading ? { runHeading } : {}), ...(entry.previousRun ? { previousRun: entry.previousRun } : {}), entry: `today's [${d}] entry in this thread; revise(entryId) edits it`, kind, title: existing.title, ...(connected.length ? { connected } : {}), ...(iconSet ? { icon: iconSet } : {}), ...(relations ? { relations } : {}), ...(sanitizeWarnings.length ? { sanitized: sanitizeWarnings } : {}) });
         }
 
         const current = await trilium.getNoteContent(existing.noteId);
@@ -2531,14 +2613,17 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
 
   server.tool(
     "read",
-    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, chars, content, relations}]}. Every entry carries chars, the size of that note's body in characters, so follow-up reads can be planned from this response alone. Bodies are returned in order until about 80k characters; the rest come back under deferred[] with their sizes, to read in a second call. section="<heading>" reads one section of each note instead of its whole body (h2→h3→h4 by heading text, occurrence= among repeats) — the cheap read of a huge note; a section holding a table also reports tableRows, its row count. text=true returns readable plain text with the markup removed (headings, list items and table rows kept), smaller and easier to read — right for orienting, not for building a find= anchor. For one note prefer the kinded read.`,
+    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, chars, content, relations}]}. Every entry carries chars, the size of that note's body in characters, so follow-up reads can be planned from this response alone. Bodies are returned in order until about 80k characters; the rest come back under deferred[] with their sizes, to read in a second call. section="<heading>" reads one section of each note instead of its whole body (h2→h3→h4 by heading text, occurrence= among repeats) — the cheap read of a huge note; a section holding a table also reports tableRows, its row count. text=true returns readable plain text with the markup removed (headings, list items and table rows kept), smaller and easier to read — right for orienting, not for building a find= anchor. sizes=true returns no bodies at all: each note's chars and its h2–h4 headings with their section sizes, so a bulk read can be planned before it is made. For one note prefer the kinded read.`,
     {
       ids: z.array(z.string()).min(1).max(10).describe("Note ids to read — one body per id, one round trip (cap 10)"),
       section: z.string().optional().describe('Read only this heading\'s section of each note (h2/h3/h4, same matching as the singletons\' section=) instead of each whole body — the cheap read of a huge note; a miss returns the note\'s real headings under available[]'),
       occurrence: z.number().int().positive().optional().describe("section=: which same-text heading, 1-based (default: the first)"),
       text: z.boolean().optional().describe("Return readable plain text instead of stored HTML (default false; with section=, the section only)"),
+      sizes: z.boolean().optional().describe("Return sizes only — chars and each h2–h4 heading with its section's size — and no bodies: plan a read that would otherwise overflow"),
     },
-    async ({ ids, text, section, occurrence }) => {
+    async ({ ids, text, section, occurrence, sizes }) => {
+      if (sizes && (section !== undefined || text !== undefined))
+        return err("conflicting_params", "sizes=true returns no bodies, so section= and text= do not apply.", "Read the sizes first, then read(ids, section=…) or read(ids, text=true) for the bodies you need.");
       const fetched = await Promise.all(
         ids.map(async (id) => {
           try {
@@ -2550,6 +2635,14 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
             // even when section= returns only a slice of it, so the caller can
             // tell a 2k read of a 40k note from a 2k note.
             const identity = { id, title: note.title, kind: ownedLabel(note, "noteType") ?? undefined, chars: raw.length };
+            if (sizes) {
+              const flat = typeof contentResult === "string"
+                ? headingOutline(raw)
+                    .filter((h) => !/^Last updated\b/i.test(h.text))
+                    .map((h) => ({ heading: h.text, level: h.level, chars: getSection(raw, h.text, h.occurrence).content.length }))
+                : [];
+              return { ...identity, sizesOnly: true as const, ...(flat.length ? { headings: flat.slice(0, 60) } : {}), ...(flat.length > 60 ? { headingsShown: 60 } : {}) };
+            }
             if (section && typeof contentResult !== "string") {
               return { ...identity, content: "", section, matched: false as const, hint: "Binary content cannot be sectioned as text; read it without section=." };
             }
@@ -2681,7 +2774,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     "revise",
     `Edit a note by id. A revision is taken first; "Last updated" lines are bumped on content writes.
 
-Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" REPLACES the matched span; it is not an insertion anchor. Use within= with mode=before/after for element insertion, or section= with mode=prepend/before/after for section insertion. It replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup. within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. dryRun=true with find=, edits=, within= or moves= previews the change first — the element's full visible text and byte size, and for remove/replace the before/after shape — with nothing written and no revision taken. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). append={table, row} adds one row to the table under that heading with no anchor to locate first — pipes are cell boundaries, a lone placeholder row is replaced, and append= composes with nothing else. closure= with within="tr" and mode="remove" closes a register row in one call: {thread, body} removes the row and appends the closure (quoting it) to that thread's entry for today (needs identity=); {note, table?, row?} moves a row into another register. Destination cells must match exactly; row= supplies explicit plain-text cells. Ambiguous tables are refused. Destination content is written before source removal, and same-note moves use one write. Partial failures report recovery instructions; exact destination rows and identical thread blocks are deduplicated on retry. moves=[{find, nth?, row?}] batches closures to one target, preflights every row, and stops with per-row progress on failure. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
+Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" REPLACES the matched span; it is not an insertion anchor. Use within= with mode=before/after for element insertion, or section= with mode=prepend/before/after for section insertion. It replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup; all=true acts on every element the anchor sits in (preview with dryRun=true). within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. dryRun=true with find=, edits=, within= or moves= previews the change first — the element's full visible text and byte size, and for remove/replace the before/after shape — with nothing written and no revision taken. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). append={table, row} adds one row to the table under that heading with no anchor to locate first — pipes are cell boundaries, a lone placeholder row is replaced, and append= composes with nothing else. closure= with within="tr" and mode="remove" closes a register row in one call: {thread, body} removes the row and appends the closure (quoting it) to that thread's entry for today (needs identity=); {note, table?, row?} moves a row into another register. Destination cells must match exactly; row= supplies explicit plain-text cells. Ambiguous tables are refused. Destination content is written before source removal, and same-note moves use one write. Partial failures report recovery instructions; exact destination rows and identical thread blocks are deduplicated on retry. moves=[{find, nth?, row?}] batches closures to one target, preflights every row, and stops with per-row progress on failure. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
 
 Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled. A find= or within= anchor that matches nothing always names the cause in hint=, and a miss shows the stored text nearby when part of the anchor is still there (matchedUpTo= / storedNearby=).`,
     {
@@ -2697,6 +2790,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       find: z.string().optional().describe("Exact raw string to replace throughout the body with body= — targeted surgery without a read+full-replace. Takes precedence over section/mode."),
       nth: z.number().int().positive().optional().describe("find=: replace only the Nth occurrence, 1-based (default: all of them). With within=: the Nth containing element"),
       within: z.enum(WITHIN_TAGS).optional().describe('With find=: act on the <tag> element that contains the find text (a short unique anchor) — mode="replace" (default) swaps it for body=, "before"/"after" insert body= as a sibling (add a table row), "remove" deletes it. dryRun=true previews it first'),
+      all: z.boolean().optional().describe('With within=: act on EVERY element containing the anchor instead of refusing an anchor found in several (e.g. remove every Revision row naming a retired source). Preview with dryRun=true first; does not combine with nth= or closure='),
       closure: z.object({
         thread: z.string().optional().describe('Thread variant: the dated thread to record the closure in: its id or title (e.g. "Escalations") — together with body='),
         body: z.string().optional().describe("Thread variant: the closure prose: what settled it, who ruled, and where its durable substance went"),
@@ -2722,9 +2816,9 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       icon: z.string().optional().describe('Display icon — a boxicons class ("bx bx-brain") or a bare name; normalized server-side'),
       date: z.string().optional().describe("ISO date (default: today)"),
     },
-    async function reviseNote({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, closure, append, edits, moves, identity, icon, date, strict }): Promise<ReturnType<typeof txt>> {
+    async function reviseNote({ noteId: noteIdArg, domain, dryRun, body, title, section, occurrence, mode, find, nth, within, all, closure, append, edits, moves, identity, icon, date, strict }): Promise<ReturnType<typeof txt>> {
       if (moves) {
-        if (!noteIdArg || domain || !closure || within !== "tr" || mode !== "remove" || find !== undefined || edits !== undefined || append || section || body !== undefined || title || icon || nth !== undefined)
+        if (!noteIdArg || domain || !closure || within !== "tr" || mode !== "remove" || find !== undefined || edits !== undefined || append || section || body !== undefined || title || icon || nth !== undefined || all !== undefined)
           return err("conflicting_params", "moves= needs noteId, within=tr, mode=remove and closure; it cannot combine with other edit operations.", "Supply one unique find anchor and optional destination row per move.");
         const results: Record<string, unknown>[] = [];
         const elements = new Set<string>();
@@ -2732,7 +2826,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           noteId: noteIdArg, within, mode, closure: { ...closure, ...(move.row ? { row: move.row } : {}) },
           find: move.find, nth: move.nth, identity, date, dryRun: preview,
           domain: undefined, body: undefined, title: undefined, section: undefined, occurrence: undefined,
-          append: undefined, edits: undefined, moves: undefined, icon: undefined, strict: undefined,
+          append: undefined, edits: undefined, moves: undefined, icon: undefined, strict: undefined, all: undefined,
         });
         for (const move of moves) {
           const r = JSON.parse((await one(move, true)).content[0]!.text) as Record<string, unknown>;
@@ -2788,6 +2882,10 @@ Check the receipt: matched=false means a NEW section was written (available= lis
       const noteId = noteIdArg;
       if (isContainer(b(), noteId))
         return err("protected_note", `Note ${noteId} is a container — its content cannot be edited directly.`, "Use remember() to write to singletons, or specify a content note id.");
+      if (all !== undefined && !within)
+        return err("conflicting_params", "all= applies to within=; nothing was written.", 'e.g. revise(noteId, find="<anchor>", within="tr", mode="remove", all=true, dryRun=true). A plain find= already replaces every occurrence.');
+      if (all && (nth !== undefined || closure || moves))
+        return err("conflicting_params", "all=true acts on every matching element, so it does not combine with nth=, closure= or moves=; nothing was written.", "Drop all= to target one element, or drop nth=/closure= to act on all of them.");
       if (within && find === undefined)
         return err("missing_param", "within= needs find= as its anchor.", 'Pass a short text unique to the element, e.g. revise(noteId, find="Phase 2", within="tr", body="<tr>…</tr>").');
       // append= is a whole operation of its own: it locates its table by
@@ -2940,12 +3038,12 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           // row's cells joined, "|" read as a cell boundary.
           const visibleHits = exact.length || tolerantHits.length || inlineHits.length ? [] : visibleTextSpans(current, find!, within);
           const hits = exact.length ? exact : tolerantHits.length ? tolerantHits : inlineHits.length ? inlineHits : visibleHits;
-          const res = editWithin(current, hits, within, action, body ?? "", nth);
+          const res = editWithin(current, hits, within, action, body ?? "", nth, all === true);
           if (!res.ok) {
             const hint =
               res.reason === "no_match" ? missHint(find!, current, false)
-              : res.reason === "no_element" ? `The anchor matched ${res.matches} time(s), but never inside a <${within}>. Check the tag, or drop within= to edit the text itself.`
-              : `The anchor sits in ${res.matches} different <${within}> elements. Lengthen it until it is unique, or pass nth= (1-based, in document order) — elements[] previews them.`;
+              : res.reason === "no_element" ? `The anchor matched ${res.matches} time(s), but never inside a <${within}>. ${pipeParagraphHint(current, hits, within) ?? "Check the tag, or drop within= to edit the text itself."}`
+              : `The anchor sits in ${res.matches} different <${within}> elements. Lengthen it until it is unique, pass nth= (1-based, in document order), or all=true to act on every one — elements[] previews them.`;
             return txt({
               ok: false, noteId, mode: `within:${within}:${action}`, replaced: 0, date: d, reason: res.reason, hint,
               ...(dryRun === true ? { dryRun: true } : {}),
@@ -3053,6 +3151,9 @@ Check the receipt: matched=false means a NEW section was written (available= lis
                       : {}),
                   }),
               matchedElements: res.matches,
+              ...(all && res.elements
+                ? { elements: res.elements.slice(0, 20).map((e) => toText(e, 160)), ...(res.elements.length > 20 ? { elementsShown: 20 } : {}) }
+                : {}),
               next: "Nothing was written and no revision was taken. Re-run with dryRun=false to apply exactly this change.",
             });
           }
@@ -3070,7 +3171,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
               destinationDurable = true;
               closureReceipt = { threadId: closureThread.noteId, thread: closureThread.title, entryId: entry.noteId,
                 action: entry.action, ...(entry.marker ? { entryMarker: entry.marker } : {}),
-                runHeading: leadingIdentityText(closureBlock) };
+                runHeading: leadingIdentityText(closureBlock), ...(entry.previousRun ? { previousRun: entry.previousRun } : {}) };
               await trilium.updateLabelValue(closureThread.noteId, "updated", d);
             }
             if (closureTarget) {
@@ -3117,7 +3218,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           const relsWithin = relationSnippet(note);
           return txt({
             ok: true, noteId, mode: `within:${within}:${action}`, date: d,
-            element: toText(res.element, 200),
+            ...(all ? { elements: res.matches } : { element: toText(res.element, 200) }),
             ...(closureReceipt ? { closure: closureReceipt } : {}),
             ...(titledWithin.retitled ? { retitled: titledWithin.retitled } : {}),
             ...(iconWithin ? { icon: iconWithin } : {}),
@@ -3269,7 +3370,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
 
       let finalContent: string | null = null;
       let sectionMiss: { appendedAtLevel?: number; available?: string[]; didYouMean?: string } = {};
-      let threadEntryResult: { noteId: string; action: "created" | "appended" | "already_written"; marker?: string } | null = null;
+      let threadEntryResult: { noteId: string; action: "created" | "appended" | "already_written"; marker?: string; previousRun?: PreviousRun } | null = null;
       // The run heading (identity h3) the block actually opened with, echoed in
       // the receipt so a malformed line is caught at write time (2026-10-10).
       let threadRunHeading: string | null = null;
@@ -3422,7 +3523,7 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           : {}),
         ...sectionMiss,
         ...(sectionHint ? { hint: sectionHint } : {}),
-        ...(threadEntryResult ? { entryId: threadEntryResult.noteId, entryAction: threadEntryResult.action, ...(threadEntryResult.marker ? { entryMarker: threadEntryResult.marker } : {}), ...(threadRunHeading ? { runHeading: threadRunHeading } : {}), entry: `today's [${d}] entry in this thread; revise(entryId) edits it` } : {}),
+        ...(threadEntryResult ? { entryId: threadEntryResult.noteId, entryAction: threadEntryResult.action, ...(threadEntryResult.marker ? { entryMarker: threadEntryResult.marker } : {}), ...(threadRunHeading ? { runHeading: threadRunHeading } : {}), ...(threadEntryResult.previousRun ? { previousRun: threadEntryResult.previousRun } : {}), entry: `today's [${d}] entry in this thread; revise(entryId) edits it` } : {}),
         ...(titled.retitled ? { retitled: titled.retitled } : {}),
         ...(titled.cascaded ? { domainCascade: `#domain updated on ${titled.cascaded} descendant note(s)` } : {}),
         ...structuralFindings(noteKind, finalContent),
@@ -4458,7 +4559,7 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
 
   server.tool(
     "diff",
-    `What a write actually changed: a revision snapshot (default the latest) against the note as it stands, as changed lines with context and added/removed counts. The revision list comes back on every call; pass revisionId to compare against an earlier one. since="today" (or a date, or "YYYY-MM-DD HH:mm") reviews everything changed since then in one call: with noteId, that note's net change across all its writes since; without, every maintained note changed since, each diffed against its state before the first of those writes. Run it before close to check today's corrections agree with each other.`,
+    `What a write actually changed: a revision snapshot (default the latest) against the note as it stands, as changed lines with context and added/removed counts. The revision list comes back on every call; pass revisionId to compare against an earlier one. since="today" (or a date, or "YYYY-MM-DD HH:mm") reviews everything changed since then in one call: with noteId, that note's net change across all its writes since; without, every maintained note changed since, each diffed against its state before the first of those writes; summaryOnly=true lists those notes with their write counts and sizes and no changed lines, the cheap sweep for a recap. Run it before close to check today's corrections agree with each other.`,
     {
       noteId: z.string().optional().describe("Note to diff (omit with since= to review every note changed since then)"),
       revisionId: z.string().optional().describe("Compare against this revision (default: the most recent one)"),
@@ -4466,9 +4567,12 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
       includeRecords: z.boolean().optional().describe("since= without noteId: also list records (sessions, diary, logs, dated thread entries), which only ever gain addenda (default false)"),
       limit: z.number().int().min(1).max(50).optional().describe("since= without noteId: max notes to diff (default 25)"),
       context: z.number().int().min(0).max(10).optional().describe("Unchanged lines to show around each change (default: 1)"),
+      summaryOnly: z.boolean().optional().describe("since= without noteId: list each changed note with writes, chars and sizeChange (characters gained or lost), without the changed lines"),
     },
-    async ({ noteId, revisionId, since, includeRecords, limit, context }) => {
+    async ({ noteId, revisionId, since, includeRecords, limit, context, summaryOnly }) => {
       const pad = context ?? 1;
+      if (summaryOnly !== undefined && (since === undefined || noteId !== undefined))
+        return err("conflicting_params", "summaryOnly= applies to since= without noteId.", 'e.g. diff(since="today", summaryOnly=true, includeRecords=true); diff one note with noteId= for its lines.');
       if (since !== undefined) {
         const cutoff = sinceCutoff(since);
         if (!cutoff)
@@ -4499,6 +4603,10 @@ assertion + check → register (deduped by assertion); claimId + holds + evidenc
             continue;
           }
           const [before, after] = await Promise.all([trilium.getRevisionContent(first.revisionId), trilium.getNoteContent(n.noteId)]);
+          if (summaryOnly) {
+            notes.push({ ...stub, writes: revisionsSince(revisions, cutoff).length, chars: after.length, sizeChange: after.length - before.length, ...(before === after ? { identical: true } : {}) });
+            continue;
+          }
           const d = blockDiff(before, after, pad, 12);
           notes.push({ ...stub, writes: revisionsSince(revisions, cutoff).length, ...(d.identical ? { identical: true } : { summary: d.summary, removed: d.removed, added: d.added }) });
         }

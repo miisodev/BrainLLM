@@ -1279,6 +1279,31 @@ export function leadingIdentityText(html: string): string | null {
   return m ? decodeEntities(m[1].replace(/<[^>]+>/g, "")).trim() : null;
 }
 
+/** The author part of an identification line: its "·"-separated parts minus a
+ *  trailing "Run N", normalised — so "… · Theron · Run 18" and
+ *  "… · Theron · Run 17" are the same author. */
+export function identityAuthor(text: string): string {
+  const parts = text.split("·").map((p) => p.replace(/\s+/g, " ").trim().toLowerCase()).filter(Boolean);
+  if (parts.length && /^run\s+\d+\b/.test(parts[parts.length - 1]!)) parts.pop();
+  return parts.join(" · ");
+}
+
+/** The "Run N" number an identification line carries, or null. */
+export function identityRun(text: string): number | null {
+  const m = /·\s*run\s+(\d+)\b[^·]*$/i.exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+/** The identification lines (an addendum block's leading h3) in a record, in
+ *  document order. */
+export function identityHeadings(html: string): string[] {
+  const out: string[] = [];
+  const rx = /<h2>Addendum — \d{2}:\d{2}<\/h2>\s*<h3(?:\s[^>]*)?>([\s\S]*?)<\/h3>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(html)) !== null) out.push(decodeEntities(m[1]!.replace(/<[^>]+>/g, "")).trim());
+  return out;
+}
+
 /** Why an identification line is malformed, or null when it is well formed:
  *  at least three non-empty "·"-separated parts (LLM · environment ·
  *  agent/mode [· Run N]), one line of at most 160 characters, and not a
@@ -2001,7 +2026,10 @@ export function upsertTableRow(
   html: string,
   heading: string,
   key: string,
-  cells: string[]
+  cells: string[],
+  /** Match the row by this key instead and rewrite its key cell to `key` — a
+   *  rename. A rename whose old key is absent changes nothing (never creates). */
+  renameFrom?: string
 ): UpsertRowResult {
   const noop = { html, matched: false, created: false };
   const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2031,7 +2059,7 @@ export function upsertTableRow(
     const m = /<td[^>]*>([\s\S]*?)<\/td>/i.exec(row);
     return m ? decodeEntities(m[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim().toLowerCase() : "";
   };
-  const keyNorm = decodeEntities(key).replace(/\s+/g, " ").trim().toLowerCase();
+  const keyNorm = decodeEntities(renameFrom ?? key).replace(/\s+/g, " ").trim().toLowerCase();
 
   const rowRe = /<tr[^>]*>[\s\S]*?<\/tr>/gi;
   let matchedRow: { start: number; end: number } | null = null;
@@ -2044,6 +2072,7 @@ export function upsertTableRow(
     if (!placeholderRow && (text === "" || text === "— none yet —")) placeholderRow = span;
   }
 
+  if (renameFrom !== undefined && !matchedRow) return noop;
   const newRow = `<tr>${[key, ...cells].map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`;
   const target = matchedRow ?? placeholderRow;
   const newTbody = target
