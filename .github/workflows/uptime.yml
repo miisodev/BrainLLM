@@ -1,0 +1,36 @@
+name: BrainLLM uptime
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: 'Deliberately fail after probes to verify the owner notification route'
+        type: boolean
+        default: false
+  push:
+    branches: ['readiness/monitor-alert-test']
+permissions:
+  contents: read
+concurrency:
+  group: brainllm-uptime
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check public process and storage dependencies
+        env:
+          ALERT_TEST: ${{ inputs.test_alert || github.ref_name == 'readiness/monitor-alert-test' }}
+        run: |
+          set -euo pipefail
+          for url in https://brainllm.miiso.dev/health https://trilium.miiso.dev/api/health-check; do
+            code=$(curl --silent --show-error --location --output /dev/null --write-out '%{http_code}' --connect-timeout 10 --max-time 20 --retry 2 "$url")
+            test "$code" = 200 || { echo "::error::Production probe failed: $url (HTTP $code)"; exit 1; }
+            echo "PASS $url"
+          done
+          if [ "$ALERT_TEST" = true ]; then
+            echo '::error::Intentional owner notification test; production probes passed.'
+            exit 1
+          fi
