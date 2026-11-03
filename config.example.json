@@ -3,7 +3,7 @@
 
   "mcpServers": {
     "BrainLLM (npm)": {
-      "_comment": "Simplest. Needs bun >= 1.0 on PATH — the server uses Bun APIs and does not run on node.",
+      "_comment": "Simplest. Needs bun >= 1.4.2 on PATH — the server uses Bun APIs and does not run on node.",
       "command": "npx",
       "args": ["-y", "brainllm"],
       "env": {

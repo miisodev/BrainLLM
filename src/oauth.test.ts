@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { dirname, join } from "path";
 import {
+  __resetOAuthStoreCacheForTests,
+  oauthStorePath,
   verifyJwt,
   signingSecret,
   resolveClient,
@@ -18,6 +23,7 @@ import {
   validateRegistration,
   SCOPE,
 } from "./oauth.js";
+import { encodeBase32Secret, generateTotp } from "./totp.js";
 
 const BASE = "https://brain.example.com";
 
@@ -570,4 +576,616 @@ test("hosted discovery and pages identify BrainLLM, not the parent domain", () =
   expect(protectedResourceMetadata(base).resource_documentation).toBe(base);
   expect(authorizationServerMetadata(base).service_documentation).toBe(base);
   expect(landingPage(base, true, false)).toContain('/favicon.ico?brand=brainllm');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Owner TOTP second factor. Optional by default; when configured, a consent
+// approval needs the owner password AND a current code. The store's consumed
+// step is what stops a code being replayed, including across a restart.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("owner second factor (TOTP)", () => {
+  const OWNER_PASSWORD = "mfa-owner-password-1234";
+  const REGISTERED = {
+    redirect_uris: ["http://127.0.0.1:19876/mcp/oauth/callback"],
+    client_name: "TOTP Test Client",
+  };
+  let registeredId: string | undefined;
+
+  async function registerClient(): Promise<string> {
+    const res = await handleRegister(new Request(`${BASE}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(REGISTERED),
+    }));
+    const doc = await res.json() as { client_id?: string };
+    if (!doc.client_id) throw new Error("TOTP test client registration failed");
+    return doc.client_id;
+  }
+
+  async function testClientId(): Promise<string> {
+    if (registeredId) return registeredId;
+    registeredId = await registerClient();
+    return registeredId;
+  }
+
+  function authorizeUrl(clientId: string, verifier: string): string {
+    const url = new URL(`${BASE}/authorize`);
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", String(REGISTERED.redirect_uris[0]));
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
+    url.searchParams.set("code_challenge_method", "S256");
+    url.searchParams.set("resource", `${BASE}/mcp`);
+    url.searchParams.set("scope", SCOPE);
+    url.searchParams.set("state", "totp-state");
+    return url.href;
+  }
+
+  async function consentPageFor(verifier: string, clientId?: string): Promise<{ transaction: string; html: string }> {
+    const id = clientId ?? await testClientId();
+    const page = await handleAuthorize(new Request(authorizeUrl(id, verifier)), BASE);
+    if (page.status !== 200) throw new Error(`consent page returned ${page.status}`);
+    const html = await page.text();
+    const match = html.match(/name="transaction" value="([^"]+)"/);
+    if (!match) throw new Error("consent transaction missing");
+    return { transaction: match[1]!, html };
+  }
+
+  function consentPost(fields: Record<string, string>): Request {
+    return new Request(`${BASE}/authorize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(fields),
+    });
+  }
+
+  function callback(html: string): URL | null {
+    const match = html.match(/<meta http-equiv="refresh" content="0;url=([^"]+)">/);
+    return match ? new URL(match[1]!.replaceAll("&amp;", "&")) : null;
+  }
+
+  function failureText(html: string): string | null {
+    const match = html.match(/<div class="err"[^>]*>([\s\S]*?)<\/div>/);
+    return match ? match[1]!.trim() : null;
+  }
+
+  /** Deliberately different from every code in the acceptance window, so a
+   *  rare adjacent-step collision cannot turn a rejection test green. */
+  function wrongCode(key: Buffer): string {
+    const now = Date.now();
+    const forbidden = new Set<string>();
+    for (let offset = -2; offset <= 2; offset += 1) {
+      forbidden.add(generateTotp(key, now + offset * 30_000));
+    }
+    let value = (Number(generateTotp(key, now)) + 1) % 1_000_000;
+    while (forbidden.has(String(value).padStart(6, "0"))) value = (value + 1) % 1_000_000;
+    return String(value).padStart(6, "0");
+  }
+
+  function freshSecret(): { key: Buffer; secret: string } {
+    const key = randomBytes(20);
+    return { key, secret: encodeBase32Secret(key) };
+  }
+
+  async function withOwnerEnv<T>(
+    env: { password?: string; totp?: string },
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const previous = {
+      password: process.env.BRAINLLM_OWNER_PASSWORD,
+      totp: process.env.BRAINLLM_OWNER_TOTP_SECRET,
+      oauthSecret: process.env.BRAINLLM_OAUTH_SECRET,
+    };
+    if (env.password === undefined) delete process.env.BRAINLLM_OWNER_PASSWORD;
+    else process.env.BRAINLLM_OWNER_PASSWORD = env.password;
+    if (env.totp === undefined) delete process.env.BRAINLLM_OWNER_TOTP_SECRET;
+    else process.env.BRAINLLM_OWNER_TOTP_SECRET = env.totp;
+    process.env.BRAINLLM_OAUTH_SECRET = "totp-test-oauth-secret-at-least-32-characters";
+    try {
+      return await fn();
+    } finally {
+      if (previous.password === undefined) delete process.env.BRAINLLM_OWNER_PASSWORD;
+      else process.env.BRAINLLM_OWNER_PASSWORD = previous.password;
+      if (previous.totp === undefined) delete process.env.BRAINLLM_OWNER_TOTP_SECRET;
+      else process.env.BRAINLLM_OWNER_TOTP_SECRET = previous.totp;
+      if (previous.oauthSecret === undefined) delete process.env.BRAINLLM_OAUTH_SECRET;
+      else process.env.BRAINLLM_OAUTH_SECRET = previous.oauthSecret;
+    }
+  }
+
+  async function withConfigPath<T>(path: string, fn: () => Promise<T>): Promise<T> {
+    const previous = process.env.BRAINLLM_CONFIG;
+    process.env.BRAINLLM_CONFIG = path;
+    __resetOAuthStoreCacheForTests();
+    try {
+      return await fn();
+    } finally {
+      if (previous === undefined) delete process.env.BRAINLLM_CONFIG;
+      else process.env.BRAINLLM_CONFIG = previous;
+      __resetOAuthStoreCacheForTests();
+    }
+  }
+
+  function tmpDir(): string {
+    return mkdtempSync(join(tmpdir(), "brainllm-oauth-mfa-"));
+  }
+
+  test("is optional: an unset or blank secret leaves the password-only flow intact", async () => {
+    for (const blank of ["", "   "]) {
+      await withOwnerEnv({ password: OWNER_PASSWORD, totp: blank }, async () => {
+        const verifier = randomBytes(32).toString("base64url");
+        const { transaction, html } = await consentPageFor(verifier);
+        expect(html).not.toContain('name="totp"');
+        expect(html).not.toContain('autocomplete="one-time-code"');
+
+        const approved = await handleAuthorize(consentPost({
+          transaction, password: OWNER_PASSWORD, decision: "approve",
+        }), BASE);
+        expect(approved.status).toBe(200);
+        const issued = callback(await approved.text());
+        expect(issued?.searchParams.get("code")).toBeTruthy();
+        expect(issued?.searchParams.get("state")).toBe("totp-state");
+      });
+    }
+  });
+
+  test("renders an accessible code field only when enabled, and never the secret", async () => {
+    const { secret } = freshSecret();
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+      const { html } = await consentPageFor(randomBytes(32).toString("base64url"));
+      expect(html).toContain('<label for="otp">Verification code</label>');
+      expect(html).toContain('id="otp"');
+      expect(html).toContain('name="totp"');
+      expect(html).toContain('autocomplete="one-time-code"');
+      expect(html).toContain('inputmode="numeric"');
+      expect(html).toContain('pattern="[0-9]{6}"');
+      expect(html).toContain('maxlength="6"');
+      expect(html).toContain('required');
+      expect(html).toContain('aria-describedby="otp-hint"');
+      expect(html).toContain('id="otp-hint"');
+      expect(html).not.toContain(secret);
+    });
+  });
+
+  test("requires both the owner password and a current six-digit code before issuing a grant", async () => {
+    const { key, secret } = freshSecret();
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction } = await consentPageFor(verifier);
+
+      const noCode = await handleAuthorize(consentPost({
+        transaction, password: OWNER_PASSWORD, decision: "approve",
+      }), BASE);
+      expect(noCode.status).toBe(401);
+      expect(callback(await noCode.text())).toBeNull();
+
+      const expired = await handleAuthorize(consentPost({
+        transaction, password: OWNER_PASSWORD,
+        totp: generateTotp(key, Date.now() - 120_000), decision: "approve",
+      }), BASE);
+      expect(expired.status).toBe(401);
+      expect(callback(await expired.text())).toBeNull();
+
+      const rejected = await handleAuthorize(consentPost({
+        transaction, password: OWNER_PASSWORD, totp: wrongCode(key), decision: "approve",
+      }), BASE);
+      expect(rejected.status).toBe(401);
+      expect(callback(await rejected.text())).toBeNull();
+
+      const approved = await handleAuthorize(consentPost({
+        transaction, password: OWNER_PASSWORD,
+        totp: generateTotp(key, Date.now()), decision: "approve",
+      }), BASE);
+      expect(approved.status).toBe(200);
+      const issued = callback(await approved.text());
+      const code = issued?.searchParams.get("code");
+      expect(code).toBeTruthy();
+
+      const token = await handleToken(new Request(`${BASE}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code!,
+          code_verifier: verifier,
+          redirect_uri: String(REGISTERED.redirect_uris[0]),
+        }),
+      }), BASE);
+      expect(token.status).toBe(200);
+      const body = await token.json() as { access_token?: string };
+      expect(validateAccessToken(body.access_token ?? "", BASE)).toBe(true);
+    });
+  });
+
+  test("a failed attempt does not consume the code and the failure text does not identify the field", async () => {
+    const { key, secret } = freshSecret();
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction } = await consentPageFor(verifier);
+      const code = generateTotp(key, Date.now());
+
+      const wrongPassword = await handleAuthorize(consentPost({
+        transaction, password: "not-the-owner-password", totp: code, decision: "approve",
+      }), BASE);
+      const wrongOtp = await handleAuthorize(consentPost({
+        transaction, password: OWNER_PASSWORD, totp: wrongCode(key), decision: "approve",
+      }), BASE);
+      const missingOtp = await handleAuthorize(consentPost({
+        transaction, password: OWNER_PASSWORD, decision: "approve",
+      }), BASE);
+
+      for (const response of [wrongPassword, wrongOtp, missingOtp]) {
+        expect(response.status).toBe(401);
+        const html = await response.text();
+        expect(callback(html)).toBeNull();
+        expect(failureText(html)).toBe("Incorrect owner password or verification code.");
+        expect(html).toContain('name="totp"');
+      }
+
+      // The same code still works: neither the wrong password nor the failed
+      // code attempt reserved its step.
+      const approved = await handleAuthorize(consentPost({
+        transaction, password: OWNER_PASSWORD, totp: code, decision: "approve",
+      }), BASE);
+      expect(approved.status).toBe(200);
+      expect(callback(await approved.text())?.searchParams.get("code")).toBeTruthy();
+    });
+  });
+
+  test("a code cannot be replayed across consent requests or a server restart", async () => {
+    const { key, secret } = freshSecret();
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const code = generateTotp(key, Date.now());
+
+      const first = await consentPageFor(verifier);
+      const approved = await handleAuthorize(consentPost({
+        transaction: first.transaction, password: OWNER_PASSWORD, totp: code, decision: "approve",
+      }), BASE);
+      expect(approved.status).toBe(200);
+      expect(callback(await approved.text())?.searchParams.get("code")).toBeTruthy();
+
+      const second = await consentPageFor(verifier);
+      const replay = await handleAuthorize(consentPost({
+        transaction: second.transaction, password: OWNER_PASSWORD, totp: code, decision: "approve",
+      }), BASE);
+      expect(replay.status).toBe(401);
+      expect(callback(await replay.text())).toBeNull();
+
+      // The consumed step is on disk, not only in memory, and the seed is not.
+      const persisted = readFileSync(oauthStorePath(), "utf8");
+      expect(persisted).not.toContain(secret);
+      const store = JSON.parse(persisted) as { totp?: { secretId?: unknown; lastStep?: unknown } };
+      expect(typeof store.totp?.secretId).toBe("string");
+      expect(typeof store.totp?.lastStep).toBe("number");
+
+      // A restart is a cache miss followed by a read of that file.
+      __resetOAuthStoreCacheForTests();
+      const third = await consentPageFor(verifier);
+      const replayAfterRestart = await handleAuthorize(consentPost({
+        transaction: third.transaction, password: OWNER_PASSWORD, totp: code, decision: "approve",
+      }), BASE);
+      expect(replayAfterRestart.status).toBe(401);
+      expect(callback(await replayAfterRestart.text())).toBeNull();
+    });
+  });
+
+  test("loads a store written before the second factor existed and adds the consumed step to it", async () => {
+    const { key, secret } = freshSecret();
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction } = await consentPageFor(verifier);
+      const path = oauthStorePath();
+      const original = readFileSync(path, "utf8");
+      try {
+        const legacy = JSON.parse(original) as Record<string, unknown>;
+        delete legacy.totp;
+        writeFileSync(path, JSON.stringify(legacy));
+        __resetOAuthStoreCacheForTests();
+
+        const approved = await handleAuthorize(consentPost({
+          transaction, password: OWNER_PASSWORD,
+          totp: generateTotp(key, Date.now()), decision: "approve",
+        }), BASE);
+        expect(approved.status).toBe(200);
+        expect(callback(await approved.text())?.searchParams.get("code")).toBeTruthy();
+
+        const rewritten = JSON.parse(readFileSync(path, "utf8")) as { totp?: { lastStep?: unknown } };
+        expect(typeof rewritten.totp?.lastStep).toBe("number");
+      } finally {
+        writeFileSync(path, original);
+        __resetOAuthStoreCacheForTests();
+      }
+    });
+  });
+
+  test("an invalid configured secret fails closed without leaking it, and denial still works", async () => {
+    const { secret: validSecret } = freshSecret();
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: validSecret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction } = await consentPageFor(verifier);
+
+      for (const invalid of ["not-base32-!!!", encodeBase32Secret(Buffer.alloc(15))]) {
+        await withOwnerEnv({ password: OWNER_PASSWORD, totp: invalid }, async () => {
+          const page = await handleAuthorize(
+            new Request(authorizeUrl(await testClientId(), verifier)),
+            BASE
+          );
+          expect(page.status).toBe(503);
+          const pageHtml = await page.text();
+          expect(pageHtml).toContain("misconfigured");
+          expect(pageHtml).not.toContain(invalid);
+          expect(pageHtml).not.toContain('name="totp"');
+
+          const approve = await handleAuthorize(consentPost({
+            transaction, password: OWNER_PASSWORD, decision: "approve",
+          }), BASE);
+          expect(approve.status).toBe(503);
+          expect(callback(await approve.text())).toBeNull();
+
+          // Denying access never needs the second factor, so a broken
+          // configuration cannot strand a client in a consent loop.
+          const deny = await handleAuthorize(consentPost({
+            transaction, password: OWNER_PASSWORD, decision: "deny",
+          }), BASE);
+          expect(deny.status).toBe(200);
+          expect(callback(await deny.text())?.searchParams.get("error")).toBe("access_denied");
+        });
+      }
+    });
+  });
+
+  test("the MFA password boundary is exactly 16 characters", async () => {
+    const { key, secret } = freshSecret();
+    const fifteen = "p".repeat(15);
+    await withOwnerEnv({ password: fifteen, totp: secret }, async () => {
+      const page = await handleAuthorize(
+        new Request(authorizeUrl(await testClientId(), randomBytes(32).toString("base64url"))),
+        BASE
+      );
+      expect(page.status).toBe(503);
+    });
+
+    await withOwnerEnv({ password: "p".repeat(16), totp: secret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction, html } = await consentPageFor(verifier);
+      expect(html).toContain('name="totp"');
+      const approved = await handleAuthorize(consentPost({
+        transaction, password: "p".repeat(16),
+        totp: generateTotp(key, Date.now()), decision: "approve",
+      }), BASE);
+      expect(approved.status).toBe(200);
+      expect(callback(await approved.text())?.searchParams.get("code")).toBeTruthy();
+    });
+  });
+
+  test("MFA requires a 16-character owner password, but non-MFA configurations keep their existing minimum", async () => {
+    const { secret } = freshSecret();
+    const shortPassword = "short";
+
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction } = await consentPageFor(verifier);
+
+      await withOwnerEnv({ password: shortPassword, totp: secret }, async () => {
+        const page = await handleAuthorize(
+          new Request(authorizeUrl(await testClientId(), verifier)),
+          BASE
+        );
+        expect(page.status).toBe(503);
+
+        const approve = await handleAuthorize(consentPost({
+          transaction, password: shortPassword, decision: "approve",
+        }), BASE);
+        expect(approve.status).toBe(503);
+        expect(callback(await approve.text())).toBeNull();
+      });
+    });
+
+    await withOwnerEnv({ password: shortPassword }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction, html } = await consentPageFor(verifier);
+      expect(html).not.toContain('name="totp"');
+      const approved = await handleAuthorize(consentPost({
+        transaction, password: shortPassword, decision: "approve",
+      }), BASE);
+      expect(approved.status).toBe(200);
+      expect(callback(await approved.text())?.searchParams.get("code")).toBeTruthy();
+    });
+  });
+
+  test("malformed replay state fails closed across reloads without leaking the seed", async () => {
+    const { key, secret } = freshSecret();
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction } = await consentPageFor(verifier);
+      const path = oauthStorePath();
+      const original = readFileSync(path, "utf8");
+      const originalSecret = (JSON.parse(original) as { secret?: unknown }).secret;
+      try {
+        const malformed = JSON.parse(original) as Record<string, unknown>;
+        malformed.totp = { secretId: "malformed-totp-sentinel", lastStep: "not-a-number" };
+        writeFileSync(path, JSON.stringify(malformed));
+        __resetOAuthStoreCacheForTests();
+
+        const refused = await handleAuthorize(consentPost({
+          transaction, password: OWNER_PASSWORD,
+          totp: generateTotp(key, Date.now()), decision: "approve",
+        }), BASE);
+        expect(refused.status).toBe(503);
+        const html = await refused.text();
+        expect(callback(html)).toBeNull();
+        expect(html).toContain("replay state");
+        expect(html).not.toContain(secret);
+        expect(html).not.toContain("malformed-totp-sentinel");
+
+        // A second cache miss models a restart: the recovery marker must keep
+        // MFA refused rather than silently accepting a reset replay history.
+        __resetOAuthStoreCacheForTests();
+        const afterRestart = await handleAuthorize(consentPost({
+          transaction, password: OWNER_PASSWORD,
+          totp: generateTotp(key, Date.now()), decision: "approve",
+        }), BASE);
+        expect(afterRestart.status).toBe(503);
+        expect(callback(await afterRestart.text())).toBeNull();
+
+        const persisted = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+        expect(persisted.replayStateLost).toBe(true);
+        expect(persisted.secret).toBe(originalSecret);
+        expect(JSON.stringify(persisted)).not.toContain(secret);
+
+        // The existing password-only flow is unaffected by the MFA marker.
+        await withOwnerEnv({ password: OWNER_PASSWORD }, async () => {
+          const approved = await handleAuthorize(consentPost({
+            transaction, password: OWNER_PASSWORD, decision: "approve",
+          }), BASE);
+          expect(approved.status).toBe(200);
+          expect(callback(await approved.text())?.searchParams.get("code")).toBeTruthy();
+        });
+        const afterPasswordOnly = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+        expect(afterPasswordOnly.replayStateLost).toBe(true);
+      } finally {
+        writeFileSync(path, original);
+        __resetOAuthStoreCacheForTests();
+      }
+    });
+  });
+
+  test("malformed existing JSON fails closed across reloads and keeps the password-only flow", async () => {
+    const { key, secret } = freshSecret();
+    await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+      const verifier = randomBytes(32).toString("base64url");
+      const { transaction } = await consentPageFor(verifier);
+      const path = oauthStorePath();
+      const original = readFileSync(path, "utf8");
+      try {
+        writeFileSync(path, '{"secret":"malformed-json-sentinel",');
+        __resetOAuthStoreCacheForTests();
+
+        const refused = await handleAuthorize(consentPost({
+          transaction, password: OWNER_PASSWORD,
+          totp: generateTotp(key, Date.now()), decision: "approve",
+        }), BASE);
+        expect(refused.status).toBe(503);
+        const html = await refused.text();
+        expect(callback(html)).toBeNull();
+        expect(html).toContain("replay state");
+        expect(html).not.toContain(secret);
+        expect(html).not.toContain("malformed-json-sentinel");
+
+        __resetOAuthStoreCacheForTests();
+        const afterRestart = await handleAuthorize(consentPost({
+          transaction, password: OWNER_PASSWORD,
+          totp: generateTotp(key, Date.now()), decision: "approve",
+        }), BASE);
+        expect(afterRestart.status).toBe(503);
+        expect(callback(await afterRestart.text())).toBeNull();
+
+        await withOwnerEnv({ password: OWNER_PASSWORD }, async () => {
+          const approved = await handleAuthorize(consentPost({
+            transaction, password: OWNER_PASSWORD, decision: "approve",
+          }), BASE);
+          expect(approved.status).toBe(200);
+          expect(callback(await approved.text())?.searchParams.get("code")).toBeTruthy();
+        });
+      } finally {
+        writeFileSync(path, original);
+        __resetOAuthStoreCacheForTests();
+      }
+    });
+  });
+
+  test("a failed store write refuses the MFA grant with 503 and no secret leak", async () => {
+    const { key, secret } = freshSecret();
+    const dir = tmpDir();
+    try {
+      await withConfigPath(join(dir, "missing", "brainllm.json"), async () => {
+        await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+          const clientId = await registerClient();
+          const verifier = randomBytes(32).toString("base64url");
+          const { transaction } = await consentPageFor(verifier, clientId);
+
+          const approved = await handleAuthorize(consentPost({
+            transaction, password: OWNER_PASSWORD,
+            totp: generateTotp(key, Date.now()), decision: "approve",
+          }), BASE);
+          expect(approved.status).toBe(503);
+          const html = await approved.text();
+          expect(callback(html)).toBeNull();
+          expect(html).not.toContain(secret);
+          expect(existsSync(oauthStorePath())).toBe(false);
+        });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("persists atomically with mode 0600 and leaves no temp file", async () => {
+    const { key, secret } = freshSecret();
+    const dir = tmpDir();
+    try {
+      await withConfigPath(join(dir, "brainllm.json"), async () => {
+        await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+          const clientId = await registerClient();
+          const verifier = randomBytes(32).toString("base64url");
+          const { transaction } = await consentPageFor(verifier, clientId);
+
+          const approved = await handleAuthorize(consentPost({
+            transaction, password: OWNER_PASSWORD,
+            totp: generateTotp(key, Date.now()), decision: "approve",
+          }), BASE);
+          expect(approved.status).toBe(200);
+          expect(callback(await approved.text())?.searchParams.get("code")).toBeTruthy();
+
+          const path = oauthStorePath();
+          expect(existsSync(path)).toBe(true);
+          expect(statSync(path).mode & 0o777).toBe(0o600);
+          expect(readdirSync(dirname(path)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+          const persisted = readFileSync(path, "utf8");
+          expect(persisted).not.toContain(secret);
+          expect(JSON.parse(persisted).totp).toBeTruthy();
+        });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cleans up the temporary file when the atomic rename fails", async () => {
+    const { key, secret } = freshSecret();
+    const dir = tmpDir();
+    try {
+      await withConfigPath(join(dir, "brainllm.json"), async () => {
+        await withOwnerEnv({ password: OWNER_PASSWORD, totp: secret }, async () => {
+          const clientId = await registerClient();
+          const verifier = randomBytes(32).toString("base64url");
+          const { transaction } = await consentPageFor(verifier, clientId);
+
+          // Replace the target with a directory after the store is cached:
+          // the temp write succeeds but the rename must fail and clean up.
+          const path = oauthStorePath();
+          rmSync(path, { force: true });
+          mkdirSync(path);
+
+          const approved = await handleAuthorize(consentPost({
+            transaction, password: OWNER_PASSWORD,
+            totp: generateTotp(key, Date.now()), decision: "approve",
+          }), BASE);
+          expect(approved.status).toBe(503);
+          expect(callback(await approved.text())).toBeNull();
+          expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+        });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Denial must remain usable without entering owner credentials.
+test("denial bypasses browser validation of password and OTP", () => {
+  const html = consentPage({}, "example.com", undefined, true, undefined, true);
+  expect(html).toMatch(/<button[^>]*name="decision"[^>]*value="deny"[^>]*formnovalidate/);
 });

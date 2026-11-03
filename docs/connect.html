@@ -62,7 +62,7 @@
   <article>
     <span class="eyebrow">Connect to Claude</span>
     <h2 id="need">What you need</h2>
-    <p>BrainLLM is self-hosted: each person runs their own server against their own Trilium, so your memory never passes through anyone else's service. Before connecting you need:</p>
+    <p>BrainLLM is self-hosted: each person runs their own server against their own Trilium. Connected MCP clients receive tool results under their own data policies. Before connecting you need:</p>
     <ul>
       <li>A running <a href="https://github.com/TriliumNext/Trilium">TriliumNext</a> instance and an ETAPI token (Options → ETAPI → Create token).</li>
       <li>For claude.ai and the Claude apps: BrainLLM running somewhere reachable over HTTPS, with <code>BRAINLLM_OWNER_PASSWORD</code> set.</li>
@@ -73,7 +73,8 @@
     <p>The repository includes a Dockerfile. On any container host, set these variables and mount a volume:</p>
 <pre>TRILIUM_BASE_URL=https://your-trilium.example.com
 TRILIUM_ETAPI_TOKEN=your-token
-BRAINLLM_OWNER_PASSWORD=a-long-password      # the consent-screen password
+BRAINLLM_OWNER_PASSWORD=a-long-password      # 16+ characters when TOTP is set
+BRAINLLM_OWNER_TOTP_SECRET=YOUR_BASE32_SEED  # optional; enroll it first
 BRAINLLM_CONFIG=/vol/brainllm.json            # a file on the volume
 PORT=8080</pre>
     <p>Your server's MCP address is then <code>https://your-host/mcp</code>. Opening <code>https://your-host/</code> in a browser shows a page confirming it is running. Full reference: <a href="docs.html#env">environment variables</a>.</p>
@@ -82,9 +83,10 @@ PORT=8080</pre>
     <ol>
       <li>In Claude, open Settings → Connectors → Add custom connector.</li>
       <li>Name it BrainLLM and enter your server's address, <code>https://your-host/mcp</code>.</li>
-      <li>Claude opens BrainLLM's consent screen. Check it names <strong>claude.ai</strong> and returns to claude.ai, enter your owner password and choose Authorize.</li>
+      <li>Claude opens BrainLLM's consent screen. Check it names <strong>claude.ai</strong> and returns to claude.ai, enter your owner password and choose Authorize. If the owner second factor is enabled, enter the current six-digit code from your authenticator app too.</li>
       <li>The connector appears in Claude on the web, desktop and mobile apps, and in Cowork.</li>
     </ol>
+    <p>With <code>BRAINLLM_OWNER_TOTP_SECRET</code> set, enroll the base32 seed in your authenticator and keep an offline backup before enabling it. A lost authenticator is recovered from that backup, or by a deployment admin removing the variable and redeploying; existing tokens keep working.</p>
     <div class="callout">To stop access, remove the connector in Claude, or change <code>BRAINLLM_OAUTH_SECRET</code> on your server to invalidate every token at once.</div>
 
     <h2 id="claude-code">Claude Code</h2>

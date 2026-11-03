@@ -8,8 +8,6 @@ on:
         description: 'Deliberately fail after probes to verify the owner notification route'
         type: boolean
         default: false
-  push:
-    branches: ['readiness/monitor-alert-test']
 permissions:
   contents: read
 concurrency:
@@ -22,10 +20,10 @@ jobs:
     steps:
       - name: Check public process and storage dependencies
         env:
-          ALERT_TEST: ${{ inputs.test_alert || github.ref_name == 'readiness/monitor-alert-test' }}
+          ALERT_TEST: ${{ inputs.test_alert }}
         run: |
           set -euo pipefail
-          for url in https://brainllm.miiso.dev/health https://trilium.miiso.dev/api/health-check; do
+          for url in https://brainllm.miiso.dev/health https://brainllm.miiso.dev/ready https://trilium.miiso.dev/api/health-check; do
             code=$(curl --silent --show-error --location --output /dev/null --write-out '%{http_code}' --connect-timeout 10 --max-time 20 --retry 2 "$url")
             test "$code" = 200 || { echo "::error::Production probe failed: $url (HTTP $code)"; exit 1; }
             echo "PASS $url"

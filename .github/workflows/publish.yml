@@ -70,13 +70,24 @@ jobs:
       - name: HTTP authentication smoke
         run: bun run test:http
 
+      - name: HTTP owner MFA smoke
+        run: bun run test:http
+        env:
+          BRAINLLM_SMOKE_MFA: "1"
+
       - name: Verify npm package contents
         run: |
           set -euo pipefail
           npm pack --dry-run --json > /tmp/brainllm-pack.json
           node <<'NODE'
           const fs = require('node:fs');
-          const pack = JSON.parse(fs.readFileSync('/tmp/brainllm-pack.json', 'utf8'))[0];
+          const metadata = JSON.parse(fs.readFileSync('/tmp/brainllm-pack.json', 'utf8'));
+          const records = Array.isArray(metadata) ? metadata : Object.values(metadata);
+          if (records.length !== 1) throw new Error('npm pack returned an unexpected package count');
+          const pack = records[0];
+          const expected = require('./package.json');
+          if (pack?.name !== expected.name || pack?.version !== expected.version) throw new Error('npm pack package identity mismatch');
+          if (!Array.isArray(pack?.files)) throw new Error('npm pack returned no file inventory');
           const files = new Set(pack.files.map((entry) => entry.path));
           for (const required of ['dist/index.js', 'SECURITY.md', 'skills/brainllm/SKILL.md', 'manifest.json', 'server.json']) {
             if (!files.has(required)) throw new Error(`npm package is missing ${required}`);

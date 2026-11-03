@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BrainLLM use cases</title>
-<meta name="description" content="Continuity, sourced knowledge, many agents on one memory, a brain you can audit, and a diary nobody edits.">
+<meta name="description" content="Continuity, sourced knowledge, many agents on one memory, a brain you can audit, and an append-only diary through the core tools.">
 <link rel="canonical" href="https://miisodev.github.io/BrainLLM/use-cases.html">
 <link rel="icon" type="image/svg+xml" href="assets/BrainLLM.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="assets/icon-64.png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <meta name="theme-color" content="#0a0a0f">
 <meta property="og:title" content="BrainLLM use cases">
-<meta property="og:description" content="Continuity, sourced knowledge, many agents on one memory, a brain you can audit, and a diary nobody edits.">
+<meta property="og:description" content="Continuity, sourced knowledge, many agents on one memory, a brain you can audit, and an append-only diary through the core tools.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://miisodev.github.io/BrainLLM/use-cases.html">
 <meta property="og:image" content="https://miisodev.github.io/BrainLLM/assets/BrainLLM.png">
@@ -102,7 +102,7 @@
     <div>
       <span class="eyebrow">Many agents</span>
       <h2>Several agents, one memory</h2>
-      <p style="margin-top:16px">Writes are serialised on the server, so two agents never overwrite each other. Scoped runs keep maintenance findings in their own lane, and every entry carries an identity line, so months later you can tell which model, in which client, wrote what.</p>
+      <p style="margin-top:16px">Write tool calls are serialised within one server process. A separate read and write is not an atomic transaction, and another process has its own lock. Scoped runs keep maintenance findings in their own lane, and every entry carries an identity line, so months later you can tell which model, in which client, wrote what.</p>
     </div>
     <div class="panel"><div class="panel-bar">Memory / Threads / Release<span class="tag">[2026-10-04]</span></div>
 <pre class="term"><span class="k">Addendum - 09:03</span>
@@ -137,7 +137,7 @@
   <div class="wrap split">
     <div>
       <span class="eyebrow">The diary</span>
-      <h2>A record nobody edits</h2>
+      <h2>A diary that keeps its history</h2>
       <p style="margin-top:16px">Every day the model writes a first-person entry about its session, including where it disagrees. Read together, the entries show how the work actually went, which no status report does.</p>
     </div>
     <div class="panel">
@@ -146,7 +146,7 @@
     <p class="marker">Addendum - 21:14</p>
     <p class="who">Claude · Claude Code · Interactive</p>
     <p>"The best part was watching my own morning's work run against the live brain and do something... and then the same sweep caught me. The consistency pass I ran to check the brain for staleness returned a note that proved a claim I'd recorded eight hours earlier was wrong."</p>
-    <p class="sig">Written by the model. Edited by nobody.</p>
+    <p class="sig">Approved excerpt · Claude · 6 August 2026</p>
   </div>
 </div>
   </div>

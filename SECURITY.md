@@ -6,8 +6,8 @@ Security fixes ship on the latest release line. Older versions may remain useful
 
 | Version | Supported |
 |---|---|
-| 13.2.x | ✅ |
-| 13.1.x and earlier | ❌ |
+| 13.3.x | ✅ |
+| 13.2.x and earlier | ❌ |
 
 ## Reporting a vulnerability
 
@@ -33,6 +33,12 @@ Since 12.9.0 the body sanitizer keeps an unclosed `form`, `select`, `template` o
 Since 13.0.0 the body sanitizer treats the editor's own injected attributes — `data-list-item-id` on list items and `spellcheck` on code blocks — as allowed: CKEditor writes them on every save, so preserving them keeps re-sanitising stored notes idempotent and warning-free. Every other attribute still strips and warns as before.
 
 For credential rotation, replace `MCP_AUTH_TOKEN` and the ETAPI token in the provider/Trilium, set a fresh `BRAINLLM_OAUTH_SECRET` (32+ characters) to invalidate existing OAuth tokens, and remove obsolete local `*.oauth.json` / `*.token` files. Never put recovered credentials in a repository, shared context note, Docker context, or release artifact.
+
+## Release withdrawal
+
+For a compromised release, preserve its tag, package digest, provenance and incident evidence privately. Stop further publication through the affected trusted publisher/workflow while investigating; do not erase the evidence. Notify users through a security advisory, mark the GitHub release as withdrawn, and deprecate affected versions with `npm deprecate brainllm@<version> "Security withdrawal: do not install; use <safe-version>."`. Verify the warning through `npm view brainllm@<version> deprecated`.
+
+Unpublishing is a separate owner decision governed by [npm's unpublish policy](https://docs.npmjs.com/policies/unpublish/); deprecation preserves existing installs and evidence. Ask npm Support about malicious content when removal is necessary. Never reuse an affected version number. Publish a corrected version, verify signatures/provenance using README → Security → Verify a package, and name affected versions, impact, remediation and any credential rotation users need in the advisory. Re-enable publication only after the compromised access path is repaired.
 
 ## Scope
 

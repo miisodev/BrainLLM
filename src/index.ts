@@ -23,6 +23,16 @@ import {
   oauthEnabled, baseUrl as publicBaseUrl, protectedResourceMetadata, authorizationServerMetadata,
   handleAuthorize, handleToken, handleRegister, validateAccessToken, wwwAuthenticate, landingPage,
 } from "./oauth.js";
+import {
+  InternalErrorSignal, ReadinessProbe, RequestTracker, classifyHttpRoute, createGracefulShutdown, createOperabilityLogger,
+  instrumentTransport, readinessResponse, readinessStateWithInternalError, shouldLogHttpRoute,
+} from "./operability.js";
+import packageJson from "../package.json" with { type: "json" };
+
+/** The handshake keeps its release-site literal because validate-release reads
+ *  it; the logger takes the same value from package.json, which that check also
+ *  compares against the handshake. */
+const RELEASE = typeof packageJson.version === "string" ? packageJson.version : "unknown";
 
 const baseUrl = process.env.TRILIUM_BASE_URL;
 
@@ -137,7 +147,7 @@ function createServer(origin: string | null = null): McpServer {
     {
       name: BRAND.name,
       title: BRAND.name,
-      version: "13.2.1",
+      version: "13.3.0",
       description: BRAND.description,
       websiteUrl: origin ?? BRAND.website,
       icons: brandIcons(origin),
@@ -195,6 +205,15 @@ if (port) {
   // Legacy SSE sessions — same lifecycle as streamable-HTTP sessions, keyed by
   // the transport's own session id (the one the client echoes on /messages).
   const sseSessions = new Map<string, { transport: BunSseServerTransport; lastUsed: number }>();
+
+  const operationLog = createOperabilityLogger({ release: RELEASE });
+  const requestTracker = new RequestTracker();
+  // App-info is the cheapest authenticated read that proves both reachability
+  // and the token. It is cached and single-flighted because /ready is public.
+  const readiness = new ReadinessProbe({ check: () => trilium.getAppInfo() });
+  // A recent unexpected handler/tool failure keeps readiness unavailable for
+  // its TTL even when Trilium itself is healthy. No error text is retained.
+  const internalErrors = new InternalErrorSignal();
 
   // CORS for browser-based MCP clients (Inspector web, web-standard fetch
   // transports). Exposing mcp-session-id is load-bearing: without it a browser
@@ -268,7 +287,7 @@ if (port) {
   // would otherwise accumulate forever in the map. An evicted SSE transport is
   // closed rather than dropped, so its stream ends and its onclose runs.
   const SESSION_TTL_MS = 60 * 60 * 1000;
-  setInterval(() => {
+  const sessionSweep = setInterval(() => {
     const cutoff = Date.now() - SESSION_TTL_MS;
     for (const [id, entry] of sessions) {
       if (entry.lastUsed < cutoff) {
@@ -282,9 +301,48 @@ if (port) {
         entry.transport.close().catch(() => {});
       }
     }
-  }, 15 * 60 * 1000).unref();
+  }, 15 * 60 * 1000);
+  sessionSweep.unref();
 
-  Bun.serve({
+  type RequestServer = { requestIP(request: Request): { address: string } | null };
+
+  // Central HTTP boundary: count accepted work, classify the route without
+  // logging the path, and turn an uncaught handler error into a safe 500. The
+  // details stay out of the response and the log; the route and status are
+  // enough to correlate with a client report.
+  const observeHttp = (handler: (req: Request, server: RequestServer) => Promise<Response>) =>
+    async (req: Request, server: RequestServer): Promise<Response> => {
+      const route = classifyHttpRoute(new URL(req.url).pathname);
+      const started = performance.now();
+      let status = 500;
+      let failed = false;
+      requestTracker.begin();
+      try {
+        const response = await handler(req, server);
+        status = response.status;
+        return response;
+      } catch {
+        failed = true;
+        internalErrors.mark();
+        return withCors(new Response(JSON.stringify({ error: "internal_error" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        }));
+      } finally {
+        requestTracker.end();
+        if (shouldLogHttpRoute(route)) {
+          operationLog({
+            event: failed ? "http_error" : "http_request",
+            method: req.method,
+            route,
+            status,
+            durationMs: performance.now() - started,
+          });
+        }
+      }
+    };
+
+  const httpServer = Bun.serve({
     port,
     // 50 MB cap — prevents runaway memory on large note writes in HTTP mode.
     maxRequestBodySize: 50 * 1024 * 1024,
@@ -293,7 +351,7 @@ if (port) {
     // revise over a large brain was cut off mid-run. 240 seconds is the
     // longest a hosted Claude client waits for one call (Bun's ceiling is 255).
     idleTimeout: 240,
-    async fetch(req: Request, server): Promise<Response> {
+    fetch: observeHttp(async (req: Request, server): Promise<Response> => {
       const url = new URL(req.url);
       const requestKey = clientKey(req, server);
 
@@ -303,6 +361,23 @@ if (port) {
 
       if (url.pathname === "/health") {
         return withCors(new Response("OK"));
+      }
+
+      if (url.pathname === "/ready") {
+        if (req.method !== "GET") {
+          return withCors(new Response("Method Not Allowed", { status: 405, headers: { "Allow": "GET" } }));
+        }
+        return withCors(readinessResponse(readinessStateWithInternalError(await readiness.status(), internalErrors)));
+      }
+
+      // A draining instance keeps the listener open long enough for readiness
+      // to be observed, but accepts no new MCP, OAuth or asset work. In-flight
+      // requests continue; shutdown waits for them below.
+      if (readiness.isDraining) {
+        return withCors(new Response(JSON.stringify({ error: "draining" }), {
+          status: 503,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Retry-After": "5" },
+        }));
       }
 
       // ── Brand assets ────────────────────────────────────────────────────────
@@ -474,6 +549,7 @@ if (port) {
         sseSessions.set(transport.sessionId, { transport, lastUsed: Date.now() });
         transport.onclose = () => sseSessions.delete(transport.sessionId);
         await createServer(base).connect(transport);
+        instrumentTransport(transport, { tracker: requestTracker, log: operationLog, onInternalError: () => internalErrors.mark() });
         return withCors(transport.streamResponse());
       }
 
@@ -531,6 +607,7 @@ if (port) {
         });
 
         await createServer(base).connect(transport);
+        instrumentTransport(transport, { tracker: requestTracker, log: operationLog, onInternalError: () => internalErrors.mark() });
         return withCors(await transport.handleRequest(req));
       }
 
@@ -538,8 +615,36 @@ if (port) {
         status: 404,
         headers: { "Content-Type": "application/json" },
       }));
-    },
+    }),
   });
+
+  const SHUTDOWN_GRACE_MS = 20_000;
+  const shutdown = createGracefulShutdown({
+    tracker: requestTracker,
+    graceMs: SHUTDOWN_GRACE_MS,
+    markDraining: () => readiness.beginDrain(),
+    closeTransports: async () => {
+      clearInterval(sessionSweep);
+      const closing: Promise<void>[] = [];
+      for (const [id, entry] of sessions) {
+        sessions.delete(id);
+        closing.push(entry.transport.close().catch(() => {}));
+      }
+      for (const [id, entry] of sseSessions) {
+        sseSessions.delete(id);
+        closing.push(entry.transport.close().catch(() => {}));
+      }
+      await Promise.all(closing);
+    },
+    closeServer: () => httpServer.stop(true),
+    log: operationLog,
+    exit: (code) => process.exit(code),
+  });
+  // Only HTTP installs signal handlers. stdio keeps its EOF behavior: no
+  // handler is attached, so a closed stdin still ends the process.
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => { void shutdown(signal); });
+  }
 
   console.error(`[brainllm] HTTP connector listening on :${port}`);
 } else {

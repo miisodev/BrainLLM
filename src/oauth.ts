@@ -38,9 +38,22 @@
 
 import { BRAND, markSvg } from "./brand.js";
 import { createHmac, randomBytes, createHash, timingSafeEqual } from "crypto";
-import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
+import {
+  closeSync,
+  existsSync,
+  fchmodSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "fs";
+import { basename, dirname, join } from "path";
 import { configFilePath } from "./config.js";
 import { fetchPublicJson } from "./network-security.js";
+import { isTotpStepFresh, parseTotpSecret, verifyTotpCode, type TotpSecret } from "./totp.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -68,6 +81,19 @@ const MAX_REDIRECT_URIS = 5;
 const MAX_REDIRECT_URI_LENGTH = 2048;
 const MAX_CLIENT_NAME_LENGTH = 200;
 const MAX_OAUTH_STORE_BYTES = 4 * 1024 * 1024;
+/** An owner password paired with a second factor must clear the length this
+ *  release documents. Existing password-only deployments keep their old
+ *  minimum: enabling TOTP is the change that raises the bar, not an upgrade. */
+const MIN_MFA_OWNER_PASSWORD_LENGTH = 16;
+/** Identical for a wrong password, a wrong code and a reused code. Naming which
+ *  one failed would tell an attacker that the other half was correct. */
+const OWNER_CREDENTIALS_FAILED = "Incorrect owner password or verification code.";
+const OWNER_MFA_MISCONFIGURED =
+  "Owner second-factor setup is misconfigured on this server. Nothing was authorized.";
+const OWNER_MFA_WRITE_FAILED =
+  "The authorization could not be saved. Nothing was authorized.";
+const OWNER_MFA_REPLAY_UNAVAILABLE =
+  "Owner second-factor replay state is unavailable or was reset after corruption. Nothing was authorized.";
 
 class BodyTooLargeError extends Error {
   constructor() { super("request body exceeds the OAuth size limit"); }
@@ -276,38 +302,207 @@ export interface RegisteredClient {
  *  client one round-trip, never its authorization. */
 const MAX_REGISTERED_CLIENTS = 200;
 
+/** The last TOTP step this owner secret has spent. Persisted so a code cannot
+ *  be replayed after a redeploy; secretId is a fingerprint, never the seed, so
+ *  rotating the configured key starts a fresh baseline on its own. */
+interface OwnerTotpState {
+  secretId: string;
+  lastStep: number;
+}
+
 interface OAuthStore {
   secret: string;
   codes: Record<string, AuthCode>;
   refresh: Record<string, RefreshRecord>;
   clients?: Record<string, RegisteredClient>;
+  totp?: OwnerTotpState;
+  /** Set when an existing store's replay history could not be trusted. MFA
+   *  stays refused across restarts until an operator removes or replaces the
+   *  store; silently treating the loss as a fresh baseline would re-open OTP
+   *  replay. Password-only installations keep working. */
+  replayStateLost?: true;
 }
+
+type StoreHealth = "ok" | "corrupt";
 
 function storePath(): string {
   return configFilePath().replace(/\.json$/, "") + ".oauth.json";
 }
 
-let cache: OAuthStore | null = null;
+/** The persisted store's path, for operational checks and tests. */
+export function oauthStorePath(): string {
+  return storePath();
+}
 
-function loadStore(): OAuthStore {
-  if (cache) return cache;
-  const path = storePath();
-  try {
-    if (existsSync(path) && statSync(path).size <= MAX_OAUTH_STORE_BYTES) {
-      const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<OAuthStore>;
-      if (typeof parsed.secret === "string" && parsed.secret) {
-        cache = { secret: parsed.secret, codes: parsed.codes ?? {}, refresh: parsed.refresh ?? {}, clients: parsed.clients ?? {} };
-        return cache;
-      }
-    }
-  } catch { /* fall through to a fresh store */ }
-  cache = { secret: randomBytes(32).toString("hex"), codes: {}, refresh: {}, clients: {} };
+let cache: OAuthStore | null = null;
+/** Whether the in-process store may be trusted for TOTP replay decisions.
+ *  This is deliberately separate from `cache`: the password-only flow may
+ *  continue from a usable in-memory store, while the replay verdict stays
+ *  failed shut for the rest of the process. */
+let cacheHealth: StoreHealth = "ok";
+
+/** Test-only: forget the in-process store so the next read comes from disk —
+ *  the observable half of a restart. Not reachable over HTTP. */
+export function __resetOAuthStoreCacheForTests(): void {
+  cache = null;
+  cacheHealth = "ok";
+}
+
+function validOwnerTotpState(value: unknown): OwnerTotpState | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.secretId !== "string" || !candidate.secretId || candidate.secretId.length > 200) {
+    return undefined;
+  }
+  if (typeof candidate.lastStep !== "number" ||
+      !Number.isSafeInteger(candidate.lastStep) ||
+      candidate.lastStep < 0) return undefined;
+  return { secretId: candidate.secretId, lastStep: candidate.lastStep };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Strictly parse a persisted store. `null` means the file itself cannot be
+ *  trusted. A valid store with unreadable replay metadata returns
+ *  `replay-lost`: its ordinary token/client state is preserved, but MFA must
+ *  refuse until an operator replaces the replay history. */
+function parseStore(value: unknown):
+  | { status: "ok"; store: OAuthStore }
+  | { status: "replay-lost"; store: OAuthStore }
+  | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.secret !== "string" || !value.secret) return null;
+  if (!isRecord(value.codes) || !isRecord(value.refresh)) return null;
+  if (value.clients !== undefined && !isRecord(value.clients)) return null;
+
+  const base: OAuthStore = {
+    secret: value.secret,
+    codes: value.codes as Record<string, AuthCode>,
+    refresh: value.refresh as Record<string, RefreshRecord>,
+    clients: (value.clients as Record<string, RegisteredClient> | undefined) ?? {},
+  };
+
+  const hasTotp = Object.prototype.hasOwnProperty.call(value, "totp");
+  const totp = hasTotp ? validOwnerTotpState(value.totp) : undefined;
+  const replayStateLost = value.replayStateLost;
+
+  if (replayStateLost === true) {
+    return {
+      status: "replay-lost",
+      store: { ...base, ...(totp ? { totp } : {}), replayStateLost: true },
+    };
+  }
+  if (replayStateLost !== undefined || (hasTotp && !totp)) {
+    // A store written before the second factor existed has no `totp` key at
+    // all and stays valid. A present-but-unreadable key, or any value other
+    // than the exact loss marker, means replay history cannot be trusted.
+    return {
+      status: "replay-lost",
+      store: { ...base, ...(totp ? { totp } : {}), replayStateLost: true },
+    };
+  }
+  return { status: "ok", store: { ...base, ...(totp ? { totp } : {}) } };
+}
+
+function freshStore(): OAuthStore {
+  return { secret: randomBytes(32).toString("hex"), codes: {}, refresh: {}, clients: {} };
+}
+
+/** Replace an unreadable/corrupt store with a fresh one, but persist a marker
+ *  that says its replay history was lost. The password-only flow can continue;
+ *  MFA refuses until an operator replaces the store deliberately. */
+function resetAfterCorruption(): OAuthStore {
+  cache = { ...freshStore(), replayStateLost: true };
+  cacheHealth = "corrupt";
   saveStore();
   return cache;
 }
 
-function saveStore(): void {
-  if (!cache) return;
+function loadStore(): OAuthStore {
+  if (cache) return cache;
+  const path = storePath();
+  if (!existsSync(path)) {
+    cache = freshStore();
+    cacheHealth = "ok";
+    saveStore();
+    return cache;
+  }
+
+  let parsed: unknown;
+  try {
+    if (statSync(path).size > MAX_OAUTH_STORE_BYTES) throw new Error("store exceeds limit");
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return resetAfterCorruption();
+  }
+
+  const loaded = parseStore(parsed);
+  if (!loaded) return resetAfterCorruption();
+  cache = loaded.store;
+  cacheHealth = loaded.status === "replay-lost" ? "corrupt" : "ok";
+  // Persist the loss marker immediately when replay metadata was unreadable,
+  // so a restart cannot mistake the store for a clean legacy baseline.
+  if (loaded.status === "replay-lost") saveStore();
+  return cache;
+}
+
+/** Write the store through a same-directory temporary file and rename, so a
+ *  crash never leaves a half-written JSON document. The temporary file is
+ *  created 0600 and removed on every failure path. */
+function writeStoreAtomically(path: string, serialized: string): boolean {
+  const directory = dirname(path);
+  const temporary = join(
+    directory,
+    `.${basename(path)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`
+  );
+  let fd: number | undefined;
+  try {
+    fd = openSync(temporary, "wx", 0o600);
+    // openSync's mode is filtered by umask; the store must be owner-only even
+    // under a permissive umask.
+    fchmodSync(fd, 0o600);
+    const bytes = Buffer.from(serialized, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = writeSync(fd, bytes, offset, bytes.length - offset);
+      if (written <= 0) throw new Error("short store write");
+      offset += written;
+    }
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporary, path);
+
+    // The rename is atomic; syncing the directory makes the replacement durable
+    // across a power loss where the filesystem supports it.
+    let directoryFd: number | undefined;
+    try {
+      directoryFd = openSync(directory, "r");
+      fsyncSync(directoryFd);
+    } catch {
+      /* Directory fsync is not portable; the rename still prevents torn JSON. */
+    } finally {
+      if (directoryFd !== undefined) {
+        try { closeSync(directoryFd); } catch { /* already closed */ }
+      }
+    }
+    return true;
+  } catch {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* already closed */ }
+    }
+    try { unlinkSync(temporary); } catch { /* never created or already removed */ }
+    return false;
+  }
+}
+
+/** Returns false when the store could not be written. Callers that must not
+ *  issue a credential without durable replay state use that answer to fail
+ *  closed; the older call sites keep their previous best-effort behaviour. */
+function saveStore(): boolean {
+  if (!cache) return false;
   // Prune on every write — expired codes and refresh tokens are the only thing
   // that grows here, and this keeps the file from accumulating forever.
   const now = Date.now();
@@ -339,10 +534,8 @@ function saveStore(): void {
       if (Buffer.byteLength(serialized) <= MAX_OAUTH_STORE_BYTES) break;
     }
   }
-  if (Buffer.byteLength(serialized) > MAX_OAUTH_STORE_BYTES) return;
-  try {
-    writeFileSync(storePath(), serialized, { mode: 0o600 });
-  } catch { /* non-fatal: tokens still work until restart */ }
+  if (Buffer.byteLength(serialized) > MAX_OAUTH_STORE_BYTES) return false;
+  return writeStoreAtomically(storePath(), serialized);
 }
 
 /** The HMAC secret used to sign access tokens. Persisted so a redeploy doesn't
@@ -388,6 +581,51 @@ function ownerPasswordMatches(supplied: string): boolean {
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+type OwnerAuthPolicy =
+  | { mode: "password" }
+  | { mode: "password+totp"; totp: TotpSecret }
+  | { mode: "misconfigured" };
+
+/** Resolve the owner sign-in policy from the environment.
+ *
+ *  Unset or blank BRAINLLM_OWNER_TOTP_SECRET is the old, password-only flow.
+ *  A configured but unusable secret is deliberately not treated as "off": an
+ *  operator who believes the second factor is on must not silently lose it.
+ *  The same applies to a new MFA setup whose password is under the documented
+ *  minimum; password-only configurations keep their existing minimum. */
+function ownerAuthPolicy(): OwnerAuthPolicy {
+  const configured = process.env.BRAINLLM_OWNER_TOTP_SECRET;
+  if (!configured?.trim()) return { mode: "password" };
+  const parsed = parseTotpSecret(configured);
+  if ("error" in parsed) return { mode: "misconfigured" };
+  const password = process.env.BRAINLLM_OWNER_PASSWORD ?? "";
+  if (password.length < MIN_MFA_OWNER_PASSWORD_LENGTH) return { mode: "misconfigured" };
+  return { mode: "password+totp", totp: parsed };
+}
+
+/** Whether persisted replay history can be trusted for a TOTP grant.
+ *
+ *  An unreadable or corrupt store is rebuilt for the password-only flow and
+ *  marked `replayStateLost`, so it must not be used to accept a code until an
+ *  operator replaces it. A missing store is a clean first run and is fine; a
+ *  legacy store with no `totp` key is a valid baseline. */
+function ownerReplayStateTrusted(): boolean {
+  loadStore();
+  return cacheHealth === "ok";
+}
+
+/** Reserve a verified step, refusing one that was already spent.
+ *
+ *  Mutates the in-memory store only; the caller persists it in the same write
+ *  that records the authorization code. A reused step is indistinguishable
+ *  from a wrong code to the browser, so it gets the same failure. */
+function reserveOwnerTotpStep(store: OAuthStore, totp: TotpSecret, step: number): boolean {
+  const lastStep = store.totp?.secretId === totp.secretId ? store.totp.lastStep : undefined;
+  if (!isTotpStepFresh(lastStep, step)) return false;
+  store.totp = { secretId: totp.secretId, lastStep: step };
+  return true;
 }
 
 // ── Discovery documents ───────────────────────────────────────────────────────
@@ -726,12 +964,16 @@ const PAGE_CSS = `
   }
   .scope .dot { width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px rgba(245,158,11,.8); flex:none; margin-top:7px; }
   label { display:block; font-size:13px; font-weight:600; margin-bottom:7px; color:var(--text-soft); }
-  input[type=password] {
+  input[type=password], input[name=totp] {
     width:100%; padding:12px 14px; font-size:15px; font-family:inherit;
     background:var(--bg); color:var(--text);
     border:1px solid var(--border-strong); border-radius:9px; margin-bottom:20px;
   }
-  input[type=password]:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(245,158,11,.15); }
+  input[type=password]:focus, input[name=totp]:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(245,158,11,.15); }
+  input[name=totp] {
+    font-family:var(--font-mono); font-size:18px; letter-spacing:.28em;
+  }
+  .hint { margin:-12px 0 18px; font-size:12.5px; color:var(--text-dim,#52525b); }
   .row { display:flex; gap:10px; }
   button {
     flex:1; padding:13px; font-size:15px; font-weight:600; font-family:inherit;
@@ -809,9 +1051,10 @@ function consentResponse(
   clientHost: string,
   verifiedHost: boolean,
   error?: string,
-  status = 200
+  status = 200,
+  totpRequired = false
 ): Response {
-  return new Response(consentPage({ transaction }, clientHost, error, verifiedHost, redirectUri), {
+  return new Response(consentPage({ transaction }, clientHost, error, verifiedHost, redirectUri, totpRequired), {
     status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
@@ -837,7 +1080,7 @@ export function redirectTarget(redirectUri: string | undefined): { host: string;
   }
 }
 
-export function consentPage(params: Record<string, string>, clientHost: string, error?: string, verifiedHost = true, redirectUri?: string): string {
+export function consentPage(params: Record<string, string>, clientHost: string, error?: string, verifiedHost = true, redirectUri?: string, totpRequired = false): string {
   const target = redirectTarget(redirectUri);
   const hidden = Object.entries(params)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
@@ -850,6 +1093,12 @@ export function consentPage(params: Record<string, string>, clientHost: string, 
   const foot = verifiedHost
     ? "Only the host above is shown, and it is the one DNS and TLS vouch for."
     : "The name above is self-reported by the application — your password is what authorizes access.";
+  const codeField = totpRequired ? `
+  <label for="otp">Verification code</label>
+  <input id="otp" name="totp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+    autocomplete="one-time-code" autocapitalize="off" spellcheck="false" required
+    aria-describedby="otp-hint${error ? " auth-error" : ""}">
+  <p class="hint" id="otp-hint">The six-digit code from your authenticator app.</p>` : "";
   return shell(
     "Authorize access to your brain",
     `<form class="card" method="POST" action="/authorize">
@@ -858,13 +1107,13 @@ export function consentPage(params: Record<string, string>, clientHost: string, 
   <p><span class="host">${esc(clientHost)}</span> is requesting access to your brain.</p>
   ${target ? `<p class="redirect">Approving sends you back to <span class="host">${esc(target.host)}</span>.</p>` : ""}
   ${target?.loopback ? `<div class="warn">That address is this computer. Approve only if you just started this sign-in from an app on this machine, such as Claude Code.</div>` : ""}
-  ${error ? `<div class="err">${esc(error)}</div>` : ""}
+  ${error ? `<div class="err" id="auth-error" role="alert">${esc(error)}</div>` : ""}
   <div class="scope"><span class="dot"></span><span>Read and write everything in your brain — memories, threads, knowledge and your diary.</span></div>
   <label for="pw">Owner password</label>
-  <input id="pw" type="password" name="password" autocomplete="current-password" autofocus required>
+  <input id="pw" type="password" name="password" autocomplete="current-password" autofocus required>${codeField}
   ${hidden}
   <div class="row">
-    <button class="deny" type="submit" name="decision" value="deny">Deny</button>
+    <button class="deny" type="submit" name="decision" value="deny" formnovalidate>Deny</button>
     <button class="approve" type="submit" name="decision" value="approve">Authorize</button>
   </div>
   <p class="foot">${foot}</p>
@@ -935,6 +1184,7 @@ const htmlError = (message: string, status = 400): Response =>
       status,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
         "Content-Security-Policy": pageContentSecurityPolicy(),
       },
     }
@@ -1032,7 +1282,20 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
 
   // GET → issue the consent transaction and show the form. POST → consume it.
   if (!form) {
-    return consentResponse(transaction, redirectUri, clientHost, verifiedHost);
+    const policy = ownerAuthPolicy();
+    if (policy.mode === "misconfigured") return htmlError(OWNER_MFA_MISCONFIGURED, 503);
+    if (policy.mode === "password+totp" && !ownerReplayStateTrusted()) {
+      return htmlError(OWNER_MFA_REPLAY_UNAVAILABLE, 503);
+    }
+    return consentResponse(
+      transaction,
+      redirectUri,
+      clientHost,
+      verifiedHost,
+      undefined,
+      200,
+      policy.mode === "password+totp"
+    );
   }
 
   if (form.get("decision") !== "approve") {
@@ -1043,18 +1306,56 @@ export async function handleAuthorize(req: Request, base: string): Promise<Respo
       `Nothing was authorized. Returning you to ${clientHost}.`
     );
   }
-  if (!ownerPasswordMatches(form.get("password") ?? "")) {
-    return consentResponse(transaction, redirectUri, clientHost, verifiedHost, "Incorrect password.", 401);
+
+  const policy = ownerAuthPolicy();
+  if (policy.mode === "misconfigured") return htmlError(OWNER_MFA_MISCONFIGURED, 503);
+  if (policy.mode === "password+totp" && !ownerReplayStateTrusted()) {
+    return htmlError(OWNER_MFA_REPLAY_UNAVAILABLE, 503);
+  }
+
+  const nowMs = Date.now();
+  const mfa = policy.mode === "password+totp";
+  const passwordOk = ownerPasswordMatches(form.get("password") ?? "");
+  let totpStep: number | null = null;
+  if (policy.mode === "password+totp") {
+    totpStep = verifyTotpCode(policy.totp.key, form.get("totp") ?? "", nowMs)?.step ?? null;
+  }
+  // Both halves are checked before either is accepted, and the failure text is
+  // the same for a wrong password, a wrong code and a missing code. A failed
+  // attempt has not consumed the step, so the owner can correct a typo without
+  // waiting for the next code.
+  if (!passwordOk || (mfa && totpStep === null)) {
+    return consentResponse(
+      transaction,
+      redirectUri,
+      clientHost,
+      verifiedHost,
+      mfa ? OWNER_CREDENTIALS_FAILED : "Incorrect password.",
+      401,
+      mfa
+    );
   }
 
   const store = loadStore();
+  if (policy.mode === "password+totp") {
+    if (totpStep === null || !reserveOwnerTotpStep(store, policy.totp, totpStep)) {
+      return consentResponse(transaction, redirectUri, clientHost, verifiedHost, OWNER_CREDENTIALS_FAILED, 401, true);
+    }
+  }
+
   const code = randomBytes(32).toString("base64url");
   store.codes[code] = {
     clientId, redirectUri, codeChallenge, scope,
     resource,
-    expiresAt: Date.now() + AUTH_CODE_TTL_MS,
+    expiresAt: nowMs + AUTH_CODE_TTL_MS,
   };
-  saveStore();
+  const persisted = saveStore();
+  if (mfa && !persisted) {
+    // The code and the consumed step are one store write. Without that write
+    // there is no durable replay protection, so there is no grant either.
+    delete store.codes[code];
+    return htmlError(OWNER_MFA_WRITE_FAILED, 503);
+  }
 
   // RFC 9207: the iss parameter lets the client detect a mix-up attack.
   return handoff(

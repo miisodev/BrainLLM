@@ -62,9 +62,9 @@ BrainLLM
 | **dated** (default) | one `[yyyy-mm-dd]` entry per active day, `Addendum — HH:mm` blocks with an identification line | a line of work: the history lives here |
 | **collection** | one **titled** entry per item, each a maintained document edited in place | a list of things: ideas, candidates, specs |
 
-Create with `remember(kind="thread", title, goal, shape?)`. Dated: append with `remember(kind="thread", title, body, identity)` or `revise(threadId, body, identity)`; `memory(id)` indexes the children newest first, `memory(id, date=)` resolves a day. Collection: add with `remember(kind="threadEntry", thread=<id>, title, body)`, change with `revise(<entry id>)`; `memory(id)` lists entries alphabetically. Appending to a collection book is refused with those two paths.
+Create with `remember(kind="thread", title, goal, shape?)`. Dated: append with `remember(kind="thread", title, body, identity)` or `revise(noteId, body, identity)`; `memory(id)` indexes the children newest first, `memory(id, date=)` resolves a day. Collection: add with `remember(kind="threadEntry", thread=<id>, title, body)`, change with `revise(<entry id>)`; `memory(id)` lists entries alphabetically. Appending to a collection book is refused with those two paths.
 
-**Records** — sessions, diary, logs and dated thread entries — are one note per day, every write a timestamped `Addendum — HH:mm` block. They are never trimmed or rewritten.
+**Authored records** — sessions, diary and dated thread entries — are one note per day, every write a timestamped `Addendum — HH:mm` block. They are never trimmed or rewritten. Daily Insights logs are generated from changes and regenerated in place; do not author them.
 
 ---
 
@@ -161,7 +161,7 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 - **Tables are edited by row.** Anchor on a few words unique to the row and pass `within="tr"`; never copy a whole stored row into `find=`. The row's visible text works too (`"Phase 2 | Claude | Open"`), and quotes match in any form. An anchor in several rows is refused with previews; `nth=` picks one, `all=true` takes them all. A `within="tr"` miss on a line written as `a | b | c` says it is a paragraph, not a row — use `within="p"`. Write one `<td>` per column — a row whose cells disagree with its header comes back as `tableShape`.
 - **"Last updated" lines are server-owned.** Every content write bumps them (the receipt says `lastUpdated`); never `find=` on one.
 - A replacement equal to its match writes nothing and reports `unchanged`.
-- A failed revision snapshot stops the content overwrite. System errors are not success receipts. A revision is taken before every content write; `diff(noteId)` shows what the last write changed, and `diff(since="today")` reviews every note you changed today in one call — run it before closing. `summaryOnly=true` lists the changed notes with write counts and size changes and no lines, the cheap sweep for a recap.
+- A failed revision snapshot stops the content overwrite. System errors are not success receipts. A revision is taken before core content overwrites; `diff(noteId)` shows what the last write changed, and `diff(since="today")` reviews every note you changed today in one call — run it before closing. `summaryOnly=true` lists the changed notes with write counts and size changes and no lines, the cheap sweep for a recap.
 - **Check the receipt.** `matched: false` means a new section was written — `available[]` lists real headings and `didYouMean` catches typos; `strict=true` refuses instead. `headingCount > 1` means only the first match was touched. `replacedSubsections[]` names nested headings a section replace took with it. A record append (`remember`/`revise`/`closure`) names where it landed: `entryMarker` (the `Addendum — HH:mm` block heading written) and `runHeading` (the identity heading, when the body opened with one); a dated-thread append adds `previousRun`, the same author's previous block (`heading`, `date`, and `run` when it carries `Run N`), so the next run number needs no walk-back read.
 - **`find=` replaces text; it does not insert beside an anchor.** To insert, use `within=` with `mode="before"/"after"`, or `section=` with an insertion mode. **`find=` prefers stored HTML.** Plain text also matches through inline formatting (`<strong>`, `<code>`, `<em>`, entities), so a short anchor rarely needs its markup; a span that opens or closes formatting is widened to keep it balanced. Block tags still match literally; `outline()` gives the `raw` form of headings. On a miss the hint names the cause in every shape: drifted text shows the stored text nearby (`storedNearby`), `nth=` past the last occurrence says so, and an all-miss `edits=` returns a hint per edit.
 - A section replace swaps everything under the heading — use `find=` for anything smaller.
@@ -173,7 +173,7 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 ## Completing and lifecycle
 
 - `resolve(noteId, outcome)` closes a thread with a substantive outcome ("done" is not one) and archives it in place.
-- `withdraw(threadId)` reopens an archived or resolved thread; `recover(noteId)` restores any archived note; `forget(noteId)` archives (default) or hard-deletes when nothing links to it.
+- `withdraw(noteId)` reopens an archived or resolved thread; `recover(noteId)` restores any archived note; `forget(noteId)` archives (default) or hard-deletes when nothing links to it.
 - Threads age **active → dormant → archived** by idle time; `status=eternal` exempts one. Singletons don't age; records are never trimmed.
 - `label(noteId, name, value?)` fixes a stray label; it can type an untyped note (`noteType`) but never change a typed one.
 
@@ -188,13 +188,13 @@ Read `template(kind)` before your first write of a kind, then read a sibling.
 ## Verification — `consistency` and `claim`
 
 - **`consistency(pattern | subject)`** — does the brain agree with itself? A regex with one capture group (or a fact in prose) returns every asserting note grouped by value. Values one note asserts together — two true figures in one cell — are that note's **compound fact**, not a contradiction; only values no note co-asserts flag as a disagreement. **Run it after correcting any fact that could be recorded in more than one place.** `staleAfterDays=N` reports values held in only one note untouched N+ days. Records (sessions, diary, logs, dated thread entries) are skipped because they are never rewritten; `includeRecords=true` brings them back. Without a capture group the whole match is the value; matching ignores case unless `caseSensitive=true`; `patterns=[…]` checks several facts over one read of each note. The default examines up to 5,000 eligible notes from 10,000 candidates. Always read `coverage`: `complete=false`, `truncated` or `failed` means the scan cannot establish absence or unanimity. Narrow the scope, increase `limit` or retry failures. `fast=true` is explicitly lossy. Case-insensitive equality groups spelling variants while returning their original `spellings`. Backend search failures propagate instead of appearing empty.
-- **`claim(...)`** — does the brain still agree with the world? Register `assertion` + `check`; verify with `claimId` + `holds` + `evidence` (evidence required); read with `claimId`; list with no arguments. `retire=true` composes with a verification — `claim(id, holds=false, evidence=…, retire=true)` marks it broken with the evidence and archives it in one call (`retired: true`); alone it just retires. BrainLLM never runs the check — you do. Register claims that would be expensive to discover had gone stale.
+- **`claim(...)`** — does the brain still agree with the world? Register `assertion` + `check`; verify with `claimId` + `holds` + `evidence` (evidence required); read with `claimId`; list with no arguments. `retire=true` composes with a verification — `claim(claimId, holds=false, evidence=…, retire=true)` marks it broken with the evidence and archives it in one call (`retired: true`); alone it just retires. BrainLLM never runs the check — you do. Register claims that would be expensive to discover had gone stale.
 
 ---
 
 ## Maintenance — `maintain`
 
-Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=true)` adds:
+Lite runs inside `start()`, `session()` and `maintain()` (thread aging, label checks). `maintain(deep=true)` adds:
 
 | Finding | Action |
 |---|---|
@@ -218,7 +218,7 @@ Lite runs inside `start`/`close` (thread aging, label checks). `maintain(deep=tr
 
 ## Other tools
 
-`attach`/`detach` — raw artifacts on a note. `backup(name)` — milestone snapshot (close already backs up into a rolling weekday slot; every named backup is a full database copy kept on Trilium's volume, so name them sparingly; `health()` lists the named ones). `health()` — storage health: estimated database size, revision-heavy notes, named backups, with flags on growth. `bootstrap()` — create or refresh the structure. `template(kind)` — the canonical skeleton. **Full mode** (`BRAINLLM_MODE=full`) adds raw ETAPI tools with none of the server's guarantees. Read `references/fullmode.md` before any raw work.
+`attach`/`detach` — raw artifacts on a note. `backup(name)` — milestone snapshot (close already backs up into a rolling weekday slot; every named backup is a full database copy kept on Trilium's volume, so name them sparingly; `health()` lists the named ones). `health()` — storage health: estimated database size, revision-heavy notes, named backups, with flags on growth. `bootstrap()` — create or refresh the structure. `template(kind)` — the canonical skeleton. **Full mode** (`BRAINLLM_MODE=full`) adds raw ETAPI tools outside core placement, sanitising and revision policy; explicit delete safeguards and undelete label recovery are documented in the reference. Read `references/fullmode.md` before any raw work.
 
 ## Quick-fix
 

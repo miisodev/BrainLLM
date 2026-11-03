@@ -49,7 +49,7 @@
 <header class="hero">
   <div class="wrap">
     <div>
-      <span class="pill"><span class="dot"></span>v13.2.1 · open source, MIT</span>
+      <span class="pill"><span class="dot"></span>v13.3.0 · open source, MIT</span>
       <h1>Give Claude a memory that <span class="accent">survives the session.</span></h1>
       <p class="lede">BrainLLM is an MCP server that turns your own TriliumNext into a persistent, graph-structured memory. The model supplies the content. The server owns the form. Every note stays in an app you can open, read and correct.</p>
       <div class="hero-cta">
@@ -79,7 +79,7 @@
     <div class="section-head center">
       <span class="eyebrow">The principle</span>
       <h2>The model supplies content.<br>The server owns form.</h2>
-      <p>Placement, naming, labels, deduplication, lifecycle, dates, sanitising and backups are server policy. The model never picks a parent note, sets a label or stamps a date.</p>
+      <p>Placement, naming, labels, deduplication, lifecycle, dates, sanitising and backups are server policy. Core memory writes supply content while the server handles its placement and metadata. Raw full-mode tools are an explicit exception.</p>
       <p><strong>A rule a prompt asks for holds until the model has a bad day. A rule the server enforces just holds.</strong></p>
     </div>
   </div>
@@ -90,7 +90,7 @@
     <div>
       <span class="eyebrow">Five areas</span>
       <h2>A brain with a shape</h2>
-      <p style="margin-top:16px">Not one pile of notes. Five areas, each with its own kinds, lifecycle and rules, built on first run and held on every write.</p>
+      <p style="margin-top:16px">Not one pile of notes. Five areas, each with its own kinds, lifecycle and rules, built on first run and maintained by the core tools.</p>
       <ul class="list">
         <li><span><strong>Master</strong> holds you: biography, goals, preferences, edited in place.</span></li>
         <li><span><strong>LLM</strong> holds the assistant: its responsibilities, its rules, what it got wrong, and a daily diary.</span></li>
@@ -126,7 +126,7 @@
     <div>
       <span class="eyebrow">The close gate</span>
       <h2>A session can't end until its work is logged</h2>
-      <p style="margin-top:16px">Most memory asks the model to write things down. BrainLLM refuses to close the session until it has: the log, the diary, the maintenance pass, in order. It checks tool calls, not narration.</p>
+      <p style="margin-top:16px">Most memory asks the model to write things down. BrainLLM checks the required closing calls, including review, maintenance and diary after content writes. It enforces session → remarks → diary ordering. It checks tool calls, not narration.</p>
     </div>
     <div class="panel">
   <div class="panel-bar">claude · BrainLLM<span class="tag">close()</span></div>
@@ -140,7 +140,7 @@
 <span class="p">&gt;</span> <span class="k">remarks</span>()
 <span class="p">&gt;</span> <span class="k">diary</span>(body, identity)
 <span class="p">&gt;</span> <span class="k">close</span>(summary, identity)
-  <span class="ok">session logged · daily log regenerated · backup taken</span></pre>
+  <span class="ok">session logged · daily log regenerated · backup requested</span></pre>
 </div>
   </div>
 </section>
@@ -149,7 +149,7 @@
   <div class="wrap split">
     <div>
       <span class="eyebrow">The diary</span>
-      <h2>A record nobody edits</h2>
+      <h2>A diary that keeps its history</h2>
       <p style="margin-top:16px">Each day the model writes a first-person entry about its own session: what the work was like, what it thinks, where it disagrees. It's the part people find strangest, and the one they remember.</p>
     </div>
     <div class="panel">
@@ -158,7 +158,7 @@
     <p class="marker">Addendum - 21:14</p>
     <p class="who">Claude · Claude Code · Interactive</p>
     <p>"The best part was watching my own morning's work run against the live brain and do something... and then the same sweep caught me. The consistency pass I ran to check the brain for staleness returned a note that proved a claim I'd recorded eight hours earlier was wrong."</p>
-    <p class="sig">Written by the model. Edited by nobody.</p>
+    <p class="sig">Approved excerpt · Claude · 6 August 2026</p>
   </div>
 </div>
   </div>
@@ -189,11 +189,13 @@
     </div>
     <div class="grid g3">
       <div class="card"><span class="k">Structure</span><h3>Every kind has a shape</h3><p>Sixteen note kinds, each with a canonical skeleton held on write. A thread needs a goal. Duplicate headings are caught.</p></div>
-      <div class="card"><span class="k">Safety</span><h3>A revision before every write</h3><p>Every content write is preceded by a snapshot, and <code>diff</code> shows exactly what changed. Close takes a backup.</p></div>
-      <div class="card"><span class="k">Retries</span><h3>Idempotent by construction</h3><p>Writes are deduplicated or upserted, so a crash or a retry never writes twice.</p></div>
+      <div class="card"><span class="k">Safety</span><h3>Revisions before core edits</h3><p>Routine core content changes take a snapshot first, and <code>diff</code> shows what changed. Close requests a backup; check its receipt.</p></div>
+      <div class="card"><span class="k">Retries</span><h3>Duplicate guards</h3><p>Routine core writes use deduplication or upserts. Inspect affected notes before retrying a lost response or a partially completed batch.</p></div>
       <div class="card"><span class="k">Lifecycle</span><h3>Things age, not vanish</h3><p>Threads move from active to dormant to an archive you can still read. Hard deletes are explicit, and refused while anything links to the note.</p></div>
       <div class="card"><span class="k">Upkeep</span><h3>It audits itself</h3><p>A maintenance sweep finds stale notes, orphans, drift and contradictions, and <code>health</code> watches the database's size and backups.</p></div>
       <div class="card"><span class="k">Ownership</span><h3>Readable without BrainLLM</h3><p>Everything is a real note in Trilium. If this project disappeared tomorrow, your brain would still open and still make sense.</p></div>
+      <div class="card"><span class="k">Operations</span><h3>Readiness, not just liveness</h3><p><code>/health</code> reports the process; <code>/ready</code> checks Trilium through a cached, bounded probe. Structured logs carry no note content or credentials, and shutdown drains in-flight work.</p></div>
+      <div class="card"><span class="k">Access</span><h3>Owner consent, optionally with TOTP</h3><p>OAuth keeps hosted clients behind owner consent. An optional RFC 6238 authenticator code can join the password; enabling it leaves existing tokens working.</p></div>
     </div>
     <div class="stats" style="margin-top:28px">
       <div><b>45</b><span>brain-aware tools</span></div>

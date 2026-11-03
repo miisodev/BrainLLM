@@ -93,7 +93,7 @@
     </div>
     <div class="grid g3">
       <div class="card"><span class="k">Singletons</span><h3>One note, kept current</h3><p>Biography, goals, preferences, responsibilities, protocols and self-correction. Writes merge into their sections. They hold what is true now, with no history in them.</p></div>
-      <div class="card"><span class="k">Records</span><h3>One note per day</h3><p>Sessions, diary entries, logs and dated thread entries. Every write is a timestamped block, because the order of events is the point. Records are never rewritten.</p></div>
+      <div class="card"><span class="k">Records</span><h3>One note per day</h3><p>Sessions, diary entries and dated thread entries append timestamped blocks. Daily change logs are generated separately and regenerated in place.</p></div>
       <div class="card"><span class="k">Collections</span><h3>Titled and deduplicated</h3><p>Threads, domain notes and knowledge about the user. A second write with the same title updates the first instead of creating a twin.</p></div>
     </div>
   </div>
@@ -141,7 +141,7 @@
     <div>
       <span class="eyebrow">The gate</span>
       <h2>Ordered, durable, checked by tool call</h2>
-      <p style="margin-top:16px">A session commits only after every closing step has run, in order: <code>session</code> → <code>addendum</code> → <code>maintain</code> → <code>remarks</code> → <code>diary</code> → <code>close</code>. The diary comes after the remarks because it is the closing record and should be written with the reflection prompts in hand.</p>
+      <p style="margin-top:16px">After content writes, the operating sequence is: <code>session</code> → <code>addendum</code> → <code>maintain</code> → <code>remarks</code> → <code>diary</code> → <code>close</code>. The gate requires the calls and enforces session → remarks → diary ordering. A no-content session has a shorter close path.</p>
       <p>The gate's state lives on the day's session note, not in memory, so it survives a restart and behaves the same over stdio or behind a load balancer.</p>
     </div>
     <div class="panel">
@@ -156,7 +156,7 @@
 <span class="p">&gt;</span> <span class="k">remarks</span>()
 <span class="p">&gt;</span> <span class="k">diary</span>(body, identity)
 <span class="p">&gt;</span> <span class="k">close</span>(summary, identity)
-  <span class="ok">session logged · daily log regenerated · backup taken</span></pre>
+  <span class="ok">session logged · daily log regenerated · backup requested</span></pre>
 </div>
   </div>
 </section>

@@ -8,10 +8,10 @@
 
 ## Using full mode natively (against the BrainLLM structure)
 
-Full-mode tools place nothing, label nothing — so when you reach past the core surface you take on what it normally guarantees. Three things keep raw edits from silently corrupting the brain:
+Full-mode writes bypass core placement, sanitising, deduplication and revision snapshots, so you take on those guarantees yourself. Two explicit exceptions remain: `delete_note` checks backlinks and blast radius, and `undelete_note` attempts to restore BrainLLM labels from placement. Three things keep raw edits from silently corrupting the brain:
 
 - **A note is only a "memory" once it carries `#noteType`.** `recall` and every `<surface>` read filter out untyped notes, so a note you `create_note` without labelling is invisible to them. For a new memory, use core `remember` — it places the note, writes `#noteType` + `#created`/`#updated`, and dedups by title. Reach for `create_note` only for shapes core can't make (a `code` / `canvas` / `mermaid` note, a deliberate placement), then replicate the labels yourself: `add_label noteType <kind>`.
-- **Overwrites don't snapshot; labels don't dedup.** `update_note_content` replaces the body with no revision — `create_revision` first when the content matters. Binary writes use standard base64 with `encoding="base64"`; the client decodes and sends raw bytes. `add_label` always adds (it can leave you with two `#status` labels); change an existing one with `update_attribute`. `delete_note` deletes the whole subtree when it's the last branch — prefer core `forget`, which archives and checks backlinks.
+- **Overwrites don't snapshot; labels don't dedup.** `update_note_content` replaces the body with no revision — `create_revision` first when the content matters. Binary writes use standard base64 with `encoding="base64"`; the client decodes and sends raw bytes. `add_label` always adds (it can leave you with two `#status` labels); change an existing one with `update_attribute`. `delete_note` refuses backlinks, children and multiple parents, and blocks when its backlink check fails; prefer core `forget` for recoverable archival. Raw `delete_branch` can still delete a note when its last placement is removed.
 - **Find structure by its marker, not a hardcoded id.** There is no `get_brain_config`. To locate a container, `search_notes("#brainLlmRoot")` for the root, then `get_note` and walk `children` to the area / book you need; or lift a `parents` id from any note a surface read already returned.
 
 ### Raw artifacts (code, images, files)
@@ -31,7 +31,7 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | Attach, update, or read an artifact on a note | core `attach(noteId, title, content?)` — upsert by title; omit content to read. Remove with core `detach()` |
 | Store a code snippet, canvas, or mermaid diagram as a note | `create_note` (`type=code` / …) + label it |
 | Recover content clobbered by a bad write | `get_revisions` → `get_revision_content` |
-| Recover a Trilium-hard-deleted note | `note_history` (check `canBeUndeleted`) → `undelete_note` |
+| Recover a Trilium-hard-deleted note | `note_history` (find the deleted note id) → `undelete_note`; the feed does not report restore eligibility, so backend refusal remains possible |
 | Fix or remove a stray label | core `label(noteId, name, value?, remove?)` — guarded, validates `status`, slugs `domain`/`topic`, refuses on containers |
 | Retarget an existing relation | Delete and re-add it; relation targets are immutable through `update_attribute` |
 | Place one note under a second parent | `clone_note` (shared content, not a copy) |
@@ -49,9 +49,9 @@ Create a standalone `type=code` / `file` note only when you specifically need Tr
 | `create_note` | `(parentNoteId, title, content, type?, mime?, encoding?)` — `encoding` ∈ auto·text·base64; binary creation is an empty create followed by a raw PUT |
 | `update_note_content` | `(noteId, content, mime?, encoding?)` — full replace; binary uses standard base64 and raw bytes |
 | `patch_note` | `(noteId, title?, type?, mime?)` — metadata only |
-| `delete_note` | `(noteId)` — hard-delete (subtree if last branch) |
-| `undelete_note` | `(noteId)` — recover a Trilium-deleted note from Trilium's trash (`canBeUndeleted` must be true per `note_history`). Distinct from core `recover()` which restores BrainLLM-archived notes. |
-| `note_history` | `(ancestorNoteId?)` — recent changes feed (creations/modifications/deletions) |
+| `delete_note` | `(noteId)` — hard-delete a single note; refuses backlinks, children or multiple parents |
+| `undelete_note` | `(noteId)` — recover a Trilium-deleted note from Trilium's trash and attempt to restore its BrainLLM labels from placement; read `ok`, `labelsFailed` and `warning` on the receipt. The recent feed does not expose restore eligibility. Distinct from core `recover()` which restores BrainLLM-archived notes. |
+| `note_history` | `(ancestorNoteId?)` — recent changes feed (`id`, `title`, `deleted`, `date`); no restore-eligibility field |
 
 ## Attributes
 

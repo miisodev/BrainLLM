@@ -42,6 +42,11 @@ jobs:
       - name: HTTP authentication smoke
         run: bun run test:http
 
+      - name: HTTP owner MFA smoke
+        run: bun run test:http
+        env:
+          BRAINLLM_SMOKE_MFA: "1"
+
       # Every *.test.ts, discovered by Bun itself. This is deliberately not a
       # shell glob: the same command then works in PowerShell on Windows and in
       # the Ubuntu runner, instead of passing locally while matching no files.

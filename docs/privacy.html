@@ -72,7 +72,7 @@
   <p>Your AI client sends tool calls and receives their results. How that client handles your conversations is set by its own provider's policy; for Claude, see <a href="https://www.anthropic.com/legal/privacy">Anthropic's privacy policy</a>.</p>
 
   <h2>Logs</h2>
-  <p>A BrainLLM server writes start-up and error messages to its own console. They contain no note content, passwords or tokens. Where those logs go is decided by whoever runs the server and their host.</p>
+  <p>A BrainLLM server writes start-up and error messages, and, in HTTP mode, structured request, MCP and shutdown metadata to its own console. The structured log allowlist excludes request bodies, tool arguments and results, JSON-RPC error text, URLs, note ids and tokens; health, readiness and asset requests are not logged. Where those logs go is decided by whoever runs the server and their host.</p>
 
   <h2>This website</h2>
   <p>This site is hosted on GitHub Pages and loads its fonts from Google Fonts, so GitHub and Google receive your IP address and browser details when you visit, under their own privacy policies. The site sets no cookies and runs no analytics.</p>
@@ -80,7 +80,7 @@
   <h2>Your control</h2>
   <ul>
     <li>Read, correct or delete any note in Trilium directly.</li>
-    <li>Revoke a client by removing its connector, or every client at once by changing <code>BRAINLLM_OAUTH_SECRET</code>.</li>
+    <li>Disconnect a client by removing its connector. To invalidate issued tokens for every client, change <code>BRAINLLM_OAUTH_SECRET</code>; removing a connector does not invalidate a token copied elsewhere.</li>
     <li>Delete everything by deleting your Trilium data and your BrainLLM server's volume.</li>
   </ul>
 

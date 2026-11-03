@@ -1,6 +1,6 @@
 {
   "name": "brainllm",
-  "version": "13.2.1",
+  "version": "13.3.0",
   "mcpName": "io.github.miisodev/brainllm",
   "description": "Self-hosted memory for LLMs in TriliumNext, structured by the server and editable by you.",
   "author": "Kevin Miiso Novo <miisodev@gmail.com>",
@@ -45,7 +45,7 @@
     "LICENSE"
   ],
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.4.2"
   },
   "scripts": {
     "dev": "bun run --watch src/index.ts",
