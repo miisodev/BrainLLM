@@ -44,7 +44,7 @@ const dependency = Bun.serve({
           headers: { "Content-Type": "application/json" },
         });
       }
-      return Response.json({ appVersion: "13.3.0", dbVersion: 1, buildDate: "2026-01-01" });
+      return Response.json({ appVersion: "13.3.1", dbVersion: 1, buildDate: "2026-01-01" });
     }
     if (url.pathname === "/etapi/notes") return Response.json({ results: [] });
     return new Response("not found", { status: 404 });

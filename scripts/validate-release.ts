@@ -70,6 +70,7 @@ const init = readFileSync(new URL("../src/init.ts", import.meta.url), "utf8");
 const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8")) as {
   name?: string;
   version?: string;
+  packages?: Record<string, { engines?: { bun?: string } }>;
 };
 const sourceVersion = /McpServer\(\s*\{[\s\S]*?version:\s*"([^"]+)"/.exec(source)?.[1];
 const versions: Array<[string, string | undefined]> = [
@@ -83,6 +84,13 @@ const versions: Array<[string, string | undefined]> = [
   ["package-lock.json", lock.version],
   ["src/init.ts bootstrap banner", init.match(/BrainLLM \(v([0-9]+\.[0-9]+\.[0-9]+)\)/)?.[1]],
 ];
+// The contributor lockfile repeats the root runtime requirement; it must not
+// advertise an older unsupported runtime than the distributed manifest.
+if (lock.packages?.[""]?.engines?.bun !== pkg.engines.bun) {
+  problems.push(`package-lock.json root Bun requirement ${lock.packages?.[""]?.engines?.bun ?? "(missing)"} != package.json ${pkg.engines.bun}`);
+} else {
+  passed.push(`Bun runtime requirement agrees (${pkg.engines.bun})`);
+}
 const missing = versions.filter(([, value]) => !value).map(([name]) => name);
 if (missing.length) {
   problems.push(`version missing from: ${missing.join(", ")}`);
