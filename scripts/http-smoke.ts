@@ -138,6 +138,22 @@ try {
   if (readyBody !== '{"status":"ready"}') fail(`readiness returned an unexpected body: ${readyBody}`);
   expectSecretFree(readyBody, "ready readiness body");
 
+  // MCP 2025-11-25 Origin validation: invalid origins are refused before
+  // OPTIONS/auth on every transport, including the root alias.
+  const evilOrigin = { Origin: "https://evil.example" };
+  await expectStatus("/mcp", { headers: { ...evilOrigin, Accept: "text/event-stream" } }, 403, "invalid Origin on /mcp");
+  await expectStatus("/sse", { headers: { ...evilOrigin, Accept: "text/event-stream" } }, 403, "invalid Origin on /sse");
+  await expectStatus("/messages", { method: "POST", headers: evilOrigin, body: "{}" }, 403, "invalid Origin on /messages");
+  await expectStatus("/", {
+    method: "POST",
+    headers: { ...evilOrigin, Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
+    body: "{}",
+  }, 403, "invalid Origin on root MCP alias");
+  await expectStatus("/mcp", { method: "OPTIONS", headers: evilOrigin }, 403, "invalid Origin preflight");
+
+  const validPreflight = await expectStatus("/mcp", { method: "OPTIONS", headers: { Origin: base } }, 204, "configured-origin preflight");
+  if (validPreflight.headers.get("access-control-allow-origin") !== "*") fail("accepted MCP preflight lost its explicit CORS origin");
+
   const favicon = await expectStatus("/favicon.ico", {}, 200, "public connector favicon");
   if (!favicon.headers.get("content-type")?.includes("image/vnd.microsoft.icon")) fail("favicon has the wrong media type");
   const ico = Buffer.from(await favicon.arrayBuffer());
@@ -315,6 +331,7 @@ try {
       Accept: "application/json, text/event-stream",
       "Content-Type": "application/json",
       Authorization: `Bearer ${accessToken}`,
+      Origin: base,
     },
     body: JSON.stringify({
       jsonrpc: "2.0",

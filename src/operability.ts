@@ -515,6 +515,53 @@ export function instrumentTransport(transport: Transport, options: TransportObse
   };
 }
 
+// ── MCP Origin validation ─────────────────────────────────────────────────────
+
+export interface McpOriginValidatorOptions {
+  publicUrl?: string | null;
+  port: number;
+  allowedOrigins?: string | null;
+}
+
+function canonicalHttpOrigin(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
+  return url.origin === value ? value : null;
+}
+
+/**
+ * MCP 2025-11-25 transports require Origin validation to prevent DNS
+ * rebinding. The allowlist is built from trusted configuration and loopback
+ * only — never from Host or X-Forwarded-Host. An absent Origin stays valid for
+ * native/CLI clients; `null`, malformed and non-canonical origins do not.
+ */
+export function createMcpOriginValidator(options: McpOriginValidatorOptions): (origin: string | null) => boolean {
+  const allowed = new Set([
+    new URL(`http://localhost:${options.port}`).origin,
+    new URL(`http://127.0.0.1:${options.port}`).origin,
+    new URL(`http://[::1]:${options.port}`).origin,
+  ]);
+  if (options.publicUrl) {
+    try {
+      const url = new URL(options.publicUrl);
+      if (url.protocol === "http:" || url.protocol === "https:") allowed.add(url.origin);
+    } catch {
+      // A malformed configured public URL grants no origin.
+    }
+  }
+  for (const entry of (options.allowedOrigins ?? "").split(",")) {
+    const origin = canonicalHttpOrigin(entry.trim());
+    if (origin) allowed.add(origin);
+  }
+  return (origin) => origin === null || allowed.has(origin);
+}
+
 // ── HTTP route labels ─────────────────────────────────────────────────────────
 
 export type HttpRoute =

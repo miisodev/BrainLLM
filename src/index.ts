@@ -24,8 +24,8 @@ import {
   handleAuthorize, handleToken, handleRegister, validateAccessToken, wwwAuthenticate, landingPage,
 } from "./oauth.js";
 import {
-  InternalErrorSignal, ReadinessProbe, RequestTracker, classifyHttpRoute, createGracefulShutdown, createOperabilityLogger,
-  instrumentTransport, readinessResponse, readinessStateWithInternalError, shouldLogHttpRoute,
+  InternalErrorSignal, ReadinessProbe, RequestTracker, classifyHttpRoute, createGracefulShutdown, createMcpOriginValidator,
+  createOperabilityLogger, instrumentTransport, readinessResponse, readinessStateWithInternalError, shouldLogHttpRoute,
 } from "./operability.js";
 import packageJson from "../package.json" with { type: "json" };
 
@@ -214,6 +214,13 @@ if (port) {
   // A recent unexpected handler/tool failure keeps readiness unavailable for
   // its TTL even when Trilium itself is healthy. No error text is retained.
   const internalErrors = new InternalErrorSignal();
+  // Origin validation is scoped to MCP transports. Trusted config and the
+  // actual listening port build the allowlist; Host headers never do.
+  const originAllowed = createMcpOriginValidator({
+    publicUrl: process.env.BRAINLLM_PUBLIC_URL,
+    port,
+    allowedOrigins: process.env.BRAINLLM_ALLOWED_ORIGINS,
+  });
 
   // CORS for browser-based MCP clients (Inspector web, web-standard fetch
   // transports). Exposing mcp-session-id is load-bearing: without it a browser
@@ -355,6 +362,21 @@ if (port) {
       const url = new URL(req.url);
       const requestKey = clientKey(req, server);
 
+      const rootMcpRequest = url.pathname === "/" && (
+        req.method !== "GET" ||
+        req.headers.has("mcp-session-id") ||
+        req.headers.has("mcp-protocol-version") ||
+        (req.headers.get("accept") ?? "").includes("application/json") ||
+        (req.headers.get("accept") ?? "").includes("text/event-stream")
+      );
+      const mcpSurface = url.pathname === "/mcp" || url.pathname === "/sse" || url.pathname === "/messages" || rootMcpRequest;
+      if (mcpSurface && !originAllowed(req.headers.get("origin"))) {
+        return withCors(new Response(JSON.stringify({ error: "invalid_origin" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        }));
+      }
+
       if (req.method === "OPTIONS") {
         return withCors(new Response(null, { status: 204 }));
       }
@@ -476,13 +498,6 @@ if (port) {
       // connection error even though OAuth succeeded. Keep the human page for
       // ordinary browser GETs, but route protocol-shaped requests at the root
       // through the exact same authenticated streamable-HTTP handler as /mcp.
-      const rootMcpRequest = url.pathname === "/" && (
-        req.method !== "GET" ||
-        req.headers.has("mcp-session-id") ||
-        req.headers.has("mcp-protocol-version") ||
-        (req.headers.get("accept") ?? "").includes("application/json") ||
-        (req.headers.get("accept") ?? "").includes("text/event-stream")
-      );
       if (url.pathname === "/" && !rootMcpRequest) {
         return withCors(new Response(landingPage(base, oauthOn, true), {
           headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },

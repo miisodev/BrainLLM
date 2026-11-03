@@ -261,6 +261,8 @@ The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector (tw
 
 Unexpected HTTP exceptions, internal JSON-RPC errors and failed tool results hold `/ready` unavailable for 30 minutes, or until restart, so an external probe can alert even when Trilium is reachable. Ordinary authentication and protocol rejections do not trigger this signal. `/health` stays live and accepted MCP work remains available; inspect the safe error metadata before restarting.
 
+Browser MCP calls must carry an allowed `Origin`: the configured `BRAINLLM_PUBLIC_URL` origin, literal loopback origins at the listening port, or an exact entry in comma-separated `BRAINLLM_ALLOWED_ORIGINS`. Configure an Inspector/browser integration explicitly; wildcard, opaque `null` and malformed origins are refused with 403, including preflights. Native clients without `Origin` are unaffected. The server never builds this allowlist from an incoming Host header.
+
 ### Branding
 
 In HTTP mode BrainLLM serves its own icons — `/icon.png`, `/icon.svg`, sized variants, and `/favicon.ico` — and advertises them in the MCP handshake together with its title, a one-line description and its website, so clients show the BrainLLM mark in your connector list and beside its tool calls. The handshake also carries short server instructions describing the five areas and the session shape. Everything brand-shaped (name, tagline, description, the mark's geometry) is defined once in [`src/brand.ts`](./src/brand.ts), and a unit test holds `package.json`, `manifest.json` and `server.json` to the same description.
@@ -332,6 +334,7 @@ Without a volume, leave `BRAINLLM_CONFIG` unset — auto-discovery re-finds the 
 | `PORT` | — | Presence switches to HTTP-connector mode |
 | `MCP_AUTH_TOKEN` | — | Static bearer token accepted on `/mcp` — what Claude Code and `mcp-remote` send |
 | `BRAINLLM_OWNER_PASSWORD` | — | Enables the OAuth 2.1 / CIMD endpoints, required for claude.ai. The password you type on the consent screen |
+| `BRAINLLM_ALLOWED_ORIGINS` | No | Comma-separated exact HTTP(S) origins for browser MCP clients, in addition to the configured public origin and literal loopback origins at PORT. No wildcard, path, userinfo or opaque `null` |
 | `BRAINLLM_OWNER_TOTP_SECRET` | — | Optional RFC 6238 owner second factor: base32 seed of 128+ bits, six-digit/30-second codes. Requires `BRAINLLM_OWNER_PASSWORD` of 16+ characters; enroll before enabling |
 | `BRAINLLM_OAUTH_SECRET` | — | Optional 32+ character deployment signing secret; rotate it to invalidate old OAuth tokens |
 | `BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP` | `false` | Explicit trusted-network-only escape hatch when no HTTP credential is configured; never use on a public interface |

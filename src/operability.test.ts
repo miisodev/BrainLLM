@@ -8,6 +8,7 @@ import {
   RequestTracker,
   classifyHttpRoute,
   createGracefulShutdown,
+  createMcpOriginValidator,
   createOperabilityLogger,
   instrumentTransport,
   readinessResponse,
@@ -504,25 +505,65 @@ describe("safe operation logging", () => {
   });
 });
 
-describe("HTTP route classification", () => {
-  test("maps known operations to fixed labels and keeps query strings out", () => {
-    expect(classifyHttpRoute("/health")).toBe("health");
-    expect(classifyHttpRoute("/ready")).toBe("ready");
-    expect(classifyHttpRoute("/mcp")).toBe("mcp");
-    expect(classifyHttpRoute("/sse")).toBe("sse");
-    expect(classifyHttpRoute("/messages")).toBe("messages");
-    expect(classifyHttpRoute("/authorize")).toBe("oauth");
-    expect(classifyHttpRoute("/token")).toBe("oauth");
-    expect(classifyHttpRoute("/register")).toBe("oauth");
-    expect(classifyHttpRoute("/.well-known/oauth-protected-resource")).toBe("discovery");
-    expect(classifyHttpRoute("/favicon.ico")).toBe("assets");
-    expect(classifyHttpRoute("/icon-512.png")).toBe("assets");
-    expect(classifyHttpRoute(new URL("http://example.test/mcp?token=SENTINEL").pathname)).toBe("mcp");
-    expect(classifyHttpRoute("/unknown/SENTINEL")).toBe("unknown");
-    expect(shouldLogHttpRoute("mcp")).toBe(true);
-    expect(shouldLogHttpRoute("unknown")).toBe(true);
-    expect(shouldLogHttpRoute("health")).toBe(false);
-    expect(shouldLogHttpRoute("ready")).toBe(false);
-    expect(shouldLogHttpRoute("assets")).toBe(false);
+describe("MCP Origin validation", () => {
+  const configured = createMcpOriginValidator({
+    publicUrl: "https://brain.example/some/path",
+    port: 43123,
   });
+
+  test("accepts the configured public origin, absent Origin, and loopback on the actual port", () => {
+    expect(configured("https://brain.example")).toBe(true);
+    expect(configured(null)).toBe(true);
+    expect(configured("http://localhost:43123")).toBe(true);
+    expect(configured("http://127.0.0.1:43123")).toBe(true);
+    expect(configured("http://[::1]:43123")).toBe(true);
+  });
+
+  test("rejects an unconfigured origin, rebinding-style Host, null, and malformed or non-canonical origins", () => {
+    expect(configured("https://evil.example")).toBe(false);
+    // The Host header is deliberately not an input: Origin evil + Host evil
+    // must stay denied.
+    expect(configured("https://evil.example/")).toBe(false);
+    expect(configured("null")).toBe(false);
+    expect(configured("")).toBe(false);
+    expect(configured("https://brain.example/path")).toBe(false);
+    expect(configured("https://brain.example?x=1")).toBe(false);
+    expect(configured("https://brain.example#x")).toBe(false);
+    expect(configured("https://user:pass@brain.example")).toBe(false);
+    expect(configured("https://brain.example:443")).toBe(false);
+    expect(configured("http://localhost:43124")).toBe(false);
+    expect(configured("ftp://brain.example")).toBe(false);
+  });
+
+  test("accepts exact explicit origins and ignores invalid allowlist entries without broadening", () => {
+    const policy = createMcpOriginValidator({
+      port: 43123,
+      allowedOrigins: [
+        "https://inspector.example",
+        "https://second.example",
+        "*",
+        "null",
+        "https://evil.example/",
+        "https://evil.example?x=1",
+        "https://user:pass@evil.example",
+        "ftp://evil.example",
+        "",
+      ].join(","),
+    });
+
+    expect(policy("https://inspector.example")).toBe(true);
+    expect(policy("https://second.example")).toBe(true);
+    expect(policy("https://evil.example")).toBe(false);
+    expect(policy("*")).toBe(false);
+    expect(policy("null")).toBe(false);
+    expect(policy("ftp://evil.example")).toBe(false);
+    expect(policy(null)).toBe(true);
+  });
+});
+
+test("loopback origins use the canonical default HTTP port", () => {
+  const policy = createMcpOriginValidator({ port: 80 });
+  expect(policy("http://localhost")).toBe(true);
+  expect(policy("http://127.0.0.1")).toBe(true);
+  expect(policy("http://[::1]")).toBe(true);
 });

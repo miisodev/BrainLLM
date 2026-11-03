@@ -26,7 +26,7 @@
 
 | Symptom | Fix |
 |---|---|
-| BrainLLM tools time out or return connection errors | The backend is unreachable, not the tool — every ETAPI call is bounded at 30 s with one retry on idempotent reads, so a hang surfaces as a failed tool call rather than a stuck session. Check the instance `TRILIUM_BASE_URL` names: a hosted deploy should answer at its own URL, a local desktop install needs the Trilium app running. Then retry. |
+| BrainLLM tools time out or return connection errors | Check the MCP process and its Trilium dependency separately: `/health` is process liveness; `/ready` also checks Trilium and recent internal failures. Every ETAPI call is bounded at 30 s with one retry on idempotent reads. Check the instance `TRILIUM_BASE_URL` names: a hosted deploy should answer at its own URL, a local desktop install needs the Trilium app running. Then retry. |
 | `start` → `uninitialized` | `bootstrap` |
 | A result ends with `[BrainLLM: … cut at 140,000 to fit the client's limit]` | The result passed the server's size cap. Narrow it: `section=`, `block=`, `limit=`, or fewer `ids=` |
 | `revise` refuses `dryRun=` | Preview uses `find=`, `edits=`, `within=` or `moves=`; domain edits preview by default. Other modes refuse before writing. Do not combine title/icon changes with a preview |
@@ -54,7 +54,10 @@
 | `start()` did not give you the singleton content you expected | Preferences and Protocols arrive in full; the other singletons arrive as section headings. Pull one with `master(which)`/`llm(which)`, or re-run `start(depth="full")` if the session genuinely needs the whole self-model. |
 | A keyword search should have matched and did not | Try `recall(query, fuzzy=true)` for typo tolerance, or `recall(regex="…")` when the question is structural (a pattern in the stored HTML) rather than lexical. |
 | Items going dormant too fast / too slow | User edits `policy` in `brainllm.json` (`dormantAfterDays` / `archiveDormantAfterDays` / `staleAfterDays`) |
-| claude.ai says "Couldn't reach the MCP server" | OAuth discovery failed — it is almost never a network problem. Check BRAINLLM_OWNER_PASSWORD is set (no password, no OAuth endpoints), and that the `resource` in /.well-known/oauth-protected-resource matches the URL you typed EXACTLY, trailing slash included. |
+| HTTP `/ready` returns 503 while `/health` is OK | The process is alive but Trilium is unavailable, the instance is draining, or an unexpected internal failure occurred in the last 30 minutes. Inspect safe operation metadata and verify Trilium; do not keep retrying writes or treat liveness as proof the brain is ready. |
+| OAuth asks for a verification code | The owner enabled TOTP. The owner enters the current authenticator code on the consent page; never put the seed, password or code in memory notes. Existing access/refresh tokens are unaffected. A 503 consent page indicates invalid configuration or untrusted replay state; the deployment administrator must repair it. |
+| Browser MCP requests fail with 403 | Check the browser's exact Origin against `BRAINLLM_PUBLIC_URL` and the administrator's `BRAINLLM_ALLOWED_ORIGINS` list. Native clients without Origin are unaffected. Do not disable Origin protection or use a wildcard to fix a legitimate browser integration. |
+| claude.ai says "Couldn't reach the MCP server" | Check network reachability and OAuth discovery separately. Check BRAINLLM_OWNER_PASSWORD is set (no password, no OAuth endpoints), and that the `resource` in /.well-known/oauth-protected-resource matches the URL you typed EXACTLY, trailing slash included. |
 | Connected once, then every call 401s after an hour | Access tokens live 1 hour and Claude refreshes on 401. If refresh fails, the signing secret changed — BRAINLLM_CONFIG must point at a persistent volume, or a redeploy invalidates every issued token. |
 | Need raw Trilium access (attachments, calendar, custom queries) | Full-mode tools — see `references/fullmode.md` |
 | Config IDs stale after restructuring in Trilium | `bootstrap` re-discovers and rewrites `brainllm.json` |
