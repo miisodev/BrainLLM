@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.miisodev/brainllm",
   "description": "Self-hosted memory for LLMs in TriliumNext, structured by the server and editable by you.",
-  "version": "13.3.1",
-  "websiteUrl": "https://miisodev.github.io/BrainLLM/",
+  "version": "13.3.2",
+  "websiteUrl": "https://miiso.dev/brainllm",
   "repository": {
     "url": "https://github.com/miisodev/BrainLLM",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "npm",
       "identifier": "brainllm",
-"version": "13.3.1",
+"version": "13.3.2",
       "transport": {
         "type": "stdio"
       },

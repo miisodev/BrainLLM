@@ -254,6 +254,3 @@ jobs:
           verify "MCP Registry" \
             "curl -s 'https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.miisodev/brainllm'" \
             "\"version\":\"$TAG\""
-          verify "Pages" \
-            "curl -s 'https://miisodev.github.io/BrainLLM/'" \
-            "v$TAG · open source"

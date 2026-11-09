@@ -18,7 +18,7 @@ export const BRAND = {
   /** One sentence, at most 100 characters: the MCP registry's limit for
    *  server.json, and the same sentence everywhere else. */
   description: "Self-hosted memory for LLMs in TriliumNext, structured by the server and editable by you.",
-  website: "https://miisodev.github.io/BrainLLM/",
+  website: "https://miiso.dev/brainllm",
   repository: "https://github.com/miisodev/BrainLLM",
   publisher: "miisodev",
   colors: { ground: "#0a0a0f", accent: "#f59e0b", nodeOff: "#3f3f46" },
