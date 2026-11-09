@@ -251,6 +251,9 @@ jobs:
           }
 
           verify "npm" "npm view brainllm version" "$TAG"
+          # Ask for the latest entry directly: a search lists every published
+          # version oldest-first, 30 to a page, so a new release can fall on a
+          # page the check never reads (13.3.2 was the 31st).
           verify "MCP Registry" \
-            "curl -s 'https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.miisodev/brainllm'" \
+            "curl -s 'https://registry.modelcontextprotocol.io/v0.1/servers/io.github.miisodev%2Fbrainllm/versions/latest'" \
             "\"version\":\"$TAG\""
