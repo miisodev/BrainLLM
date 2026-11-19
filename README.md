@@ -410,7 +410,7 @@ Repo layout: runtime source in `src/`, the operational skill in `skills/brainllm
 
 ## Contributing
 
-Contributions are welcome — bug reports, fixes, docs, and ideas alike.
+BrainLLM is open-sourced as a gift and maintained by its author: forks are welcome, but pull requests are not accepted. Port improvements into your fork; issues and bug reports are read and appreciated.
 
 ### What we value
 
