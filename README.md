@@ -10,7 +10,7 @@ Self-hosted memory for LLMs in [TriliumNext Notes](https://github.com/TriliumNex
 
 [**Site**](https://miiso.dev/brainllm) · [Connect to Claude](docs/CONNECT.md) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Privacy](PRIVACY.md)
 
-[![Version](https://img.shields.io/badge/version-13.3.2-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-13.3.3-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.4.2-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
