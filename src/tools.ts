@@ -102,7 +102,7 @@ import { generateDailyLog, catchUpDeletions } from "./journal.js";
 import { sealDay, verifySeals } from "./seal.js";
 import { checkedDate, localToday, localNowTime, sinceCutoff, rollingBackupName } from "./time.js";
 import { blockDiff, firstRevisionSince, revisionsSince } from "./diffing.js";
-import { WITHIN_TAGS, editWithin, containingElement, pipeParagraphHint } from "./elements.js";
+import { WITHIN_TAGS, editWithin, containingElement, fitWithinBody, pipeParagraphHint } from "./elements.js";
 import { registerMasterTools } from "./tools-master.js";
 import { registerLlmTools } from "./tools-llm.js";
 import { registerMemoryTools } from "./tools-memory.js";
@@ -2613,7 +2613,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
 
   server.tool(
     "read",
-    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, chars, content, relations}]}. Every entry carries chars, the size of that note's body in characters, so follow-up reads can be planned from this response alone. Bodies are returned in order until about 80k characters; the rest come back under deferred[] with their sizes, to read in a second call. section="<heading>" reads one section of each note instead of its whole body (h2→h3→h4 by heading text, occurrence= among repeats) — the cheap read of a huge note; a section holding a table also reports tableRows, its row count. text=true returns readable plain text with the markup removed (headings, list items and table rows kept), smaller and easier to read — right for orienting, not for building a find= anchor. sizes=true returns no bodies at all: each note's chars and its h2–h4 headings with their section sizes, so a bulk read can be planned before it is made. For one note prefer the kinded read.`,
+    `Several note bodies in one round trip: ids=[…] (up to 10) → {notes:[{id, title, kind, chars, content, relations}]}. Every entry carries chars, the size of that note's body in characters, so follow-up reads can be planned from this response alone. Bodies are returned in order until about 80k characters; the rest come back under deferred[] with their sizes, to read in a second call. An empty body carries emptyContent: true and a verify hint — one fresh fetch already ran; a non-empty note never reads back empty. section="<heading>" reads one section of each note instead of its whole body (h2→h3→h4 by heading text, occurrence= among repeats) — the cheap read of a huge note; a section holding a table also reports tableRows, its row count. text=true returns readable plain text with the markup removed (headings, list items and table rows kept), smaller and easier to read — right for orienting, not for building a find= anchor. sizes=true returns no bodies at all: each note's chars and its h2–h4 headings with their section sizes, so a bulk read can be planned before it is made. For one note prefer the kinded read.`,
     {
       ids: z.array(z.string()).min(1).max(10).describe("Note ids to read — one body per id, one round trip (cap 10)"),
       section: z.string().optional().describe('Read only this heading\'s section of each note (h2/h3/h4, same matching as the singletons\' section=) instead of each whole body — the cheap read of a huge note; a miss returns the note\'s real headings under available[]'),
@@ -2668,9 +2668,17 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
               };
             }
             const content = text && typeof contentResult === "string" ? readableText(raw) : raw;
+            // An empty body is never returned silently: one retry already ran
+            // in the client, and the receipt says so, because an empty-body 200
+            // served a non-empty note before (2026-11-19). A note that is
+            // genuinely empty is legal — verify before trusting the empty read.
+            const emptyContent = typeof contentResult === "string" && raw === "";
             return {
               ...identity,
               content,
+              ...(emptyContent
+                ? { emptyContent: true as const, hint: "Read back empty after one retry. An empty note is legal, but verify with inspect(content=true) before trusting this if the note should hold content." }
+                : {}),
               ...(typeof contentResult === "string" ? {} : { contentEncoding: contentResult.encoding, mime: contentResult.mime }),
               ...(relations ? { relations } : {}),
             };
@@ -2774,7 +2782,7 @@ Collection kinds dedup by title — mustCreate=true refuses instead of adopting 
     "revise",
     `Edit a note by id. A revision is taken first; "Last updated" lines are bumped on content writes.
 
-Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" REPLACES the matched span; it is not an insertion anchor. Use within= with mode=before/after for element insertion, or section= with mode=prepend/before/after for section insertion. It replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup; all=true acts on every element the anchor sits in (preview with dryRun=true). within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. dryRun=true with find=, edits=, within= or moves= previews the change first — the element's full visible text and byte size, and for remove/replace the before/after shape — with nothing written and no revision taken. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). append={table, row} adds one row to the table under that heading with no anchor to locate first — pipes are cell boundaries, a lone placeholder row is replaced, and append= composes with nothing else. closure= with within="tr" and mode="remove" closes a register row in one call: {thread, body} removes the row and appends the closure (quoting it) to that thread's entry for today (needs identity=); {note, table?, row?} moves a row into another register. Destination cells must match exactly; row= supplies explicit plain-text cells. Ambiguous tables are refused. Destination content is written before source removal, and same-note moves use one write. Partial failures report recovery instructions; exact destination rows and identical thread blocks are deduplicated on retry. moves=[{find, nth?, row?}] batches closures to one target, preflights every row, and stops with per-row progress on failure. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
+Modes: default append (a dated addendum — right only for records; a dated thread's append lands in today's child), mode=replace (whole body), section="<heading>" (replace that section's whole body, h2→h3→h4, occurrence= for repeats), section= + mode=before|after (insert a sibling block around the whole section), mode=prepend (top of the section body), mode=remove (delete the section). find="<exact stored text>" REPLACES the matched span; it is not an insertion anchor. Use within= with mode=before/after for element insertion, or section= with mode=prepend/before/after for section insertion. It replaces every occurrence (nth= for one); edits=[{find, body}] applies several in one write. find= + within="tr" (or li, p, td, …) acts on the element containing a short anchor: replace it, insert a row before/after it, or remove it, so a table row never needs its full stored markup; all=true acts on every element the anchor sits in (preview with dryRun=true). within= names the element acted on: within="tr" replaces the whole row (body is a full <tr>…</tr>), within="td" one cell (body is a <td>…</td>), and a plain find= inside a cell replaces only that text. A plain-text within= body is wrapped in the element's own tag automatically — cell text becomes <td>…</td>, a run of bare cells gains <tr>…</tr>, bare row text becomes one <td> — so the written row is never malformed; a body that already opens with the right tag is written exactly as given. dryRun=true with find=, edits=, within= or moves= previews the change first — the element's full visible text and byte size, and for remove/replace the before/after shape — with nothing written and no revision taken. Keep anchors short; quotes match in any form, and within= also matches an element by its visible text ("Phase 2 | Claude | Open" for a row). append={table, row} adds one row to the table under that heading with no anchor to locate first — pipes are cell boundaries, a lone placeholder row is replaced, and append= composes with nothing else. closure= with within="tr" and mode="remove" closes a register row in one call: {thread, body} removes the row and appends the closure (quoting it) to that thread's entry for today (needs identity=); {note, table?, row?} moves a row into another register. Destination cells must match exactly; row= supplies explicit plain-text cells. Ambiguous tables are refused. Destination content is written before source removal, and same-note moves use one write. Partial failures report recovery instructions; exact destination rows and identical thread blocks are deduplicated on retry. moves=[{find, nth?, row?}] batches closures to one target, preflights every row, and stops with per-row progress on failure. "Last updated" lines are server-owned: every content write bumps them, so never find= on one. A replacement equal to its match writes nothing and reports unchanged. title= composes with every mode; retitling a domain book cascades its #domain slug.
 
 Check the receipt: matched=false means a NEW section was written (available= lists real headings; strict=true refuses instead). A section replace swaps everything under the heading — use find= for anything smaller. find= matches stored HTML (tags literal), not rendered text, and is taken literally: a Windows path's backslash is one backslash, never doubled. A find= or within= anchor that matches nothing always names the cause in hint=, and a miss shows the stored text nearby when part of the anchor is still there (matchedUpTo= / storedNearby=).`,
     {
@@ -3038,7 +3046,12 @@ Check the receipt: matched=false means a NEW section was written (available= lis
           // row's cells joined, "|" read as a cell boundary.
           const visibleHits = exact.length || tolerantHits.length || inlineHits.length ? [] : visibleTextSpans(current, find!, within);
           const hits = exact.length ? exact : tolerantHits.length ? tolerantHits : inlineHits.length ? inlineHits : visibleHits;
-          const res = editWithin(current, hits, within, action, body ?? "", nth, all === true);
+          // A plain-text body keeps the element's own tag: replacing a cell
+          // with "New value" stores <td>New value</td>, not a bare text node
+          // inside the row (2026-11-04 malformed-row defect). A body that
+          // already carries the tag is written exactly as given.
+          const withinBody = action === "remove" ? "" : fitWithinBody(body ?? "", within);
+          const res = editWithin(current, hits, within, action, withinBody, nth, all === true);
           if (!res.ok) {
             const hint =
               res.reason === "no_match" ? missHint(find!, current, false)
@@ -3141,8 +3154,8 @@ Check the receipt: matched=false means a NEW section was written (available= lis
                     ...(action === "remove"
                       ? { before: boundPreview(res.element), after: "(removed — the surrounding content closes up)" }
                       : action === "replace"
-                      ? { before: boundPreview(res.element), after: boundPreview(body ?? "") }
-                      : { inserts: { position: action, body: boundPreview(body ?? "") } }),
+                      ? { before: boundPreview(res.element), after: boundPreview(withinBody) }
+                      : { inserts: { position: action, body: boundPreview(withinBody) } }),
                     ...(closureThread
                       ? { closure: { threadId: closureThread.noteId, thread: closureThread.title, wouldAppend: toText(closureBlock, 300) } }
                       : {}),
@@ -4255,7 +4268,7 @@ calling twice is safe. Use remove=true to delete an edge.`,
 
   server.tool(
     "inspect",
-    `Everything about one note: every label, relation and attachment, type/mime, parent and child ids, dates. content=true adds the raw body (section= narrows it). find="<literal>" counts occurrences (total, per addendum block, per section), returns the stored element around each one (up to 10: its row, list item or paragraph, ready to anchor a revise), and on a miss shows the nearest stored text. Read-only, safe on any note.`,
+    `Everything about one note: every label, relation and attachment, type/mime, parent and child ids, dates. content=true adds the raw body (section= narrows it). find="<literal>" counts occurrences (total, per addendum block, per section), returns the stored element around each one (up to 10: its row, list item or paragraph, ready to anchor a revise — returned in full, up to 4,000 characters), and on a miss shows the nearest stored text. Read-only, safe on any note.`,
     {
       noteId: z.string().describe("Note to inspect"),
       content: z.boolean().optional().describe("Include the note's raw body content (default: false)"),
@@ -4353,7 +4366,18 @@ calling twice is safe. Use remove=true to delete an edge.`,
             else break;
           }
           const stored = rawBody.slice(start, end);
-          matches.push({ section: sectionName, element: tag || "text", stored: stored.length > 600 ? `${stored.slice(0, 600)}…` : stored });
+          // The full stored element, not a 600-character cut: a long row was
+          // shown truncated exactly when the caller needed to anchor or copy it
+          // (2026-11-04). A pathological element is still bounded, naming the
+          // cut instead of a silent ellipsis.
+          const STORED_CAP = 4_000;
+          matches.push({
+            section: sectionName,
+            element: tag || "text",
+            ...(stored.length > STORED_CAP
+              ? { stored: `${stored.slice(0, STORED_CAP)}…`, storedTruncated: true, storedBytes: stored.length }
+              : { stored }),
+          });
         }
         findReport = {
           find,

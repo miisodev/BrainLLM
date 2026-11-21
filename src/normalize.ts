@@ -176,6 +176,11 @@ export function normalizeIcon(raw: string): string {
 // ── Body markup ───────────────────────────────────────────────────────────────
 
 const HTML_TAG = /<\/?([a-z][a-z0-9-]*)(\s[^<>]*)?>/gi;
+/** A backtick inline code span on one line. Hoisted with its own sentinel
+ *  BEFORE the tag pass, so a tag-shaped placeholder inside backticks is never
+ *  lifted out of the span: `<ol start>` in backticks became a real <ol> and a
+ *  stray </ol> (2026-11-09). A span never crosses a line. */
+const INLINE_CODE_SPAN = /`[^`\n]+`/g;
 
 /** Every element name HTML defines. A tag-shaped token outside this set — a
  *  placeholder like <venture> or <id> — is prose, not markup: it decides
@@ -427,8 +432,14 @@ function mixedToHtml(body: string): { html: string; convertedRuns: number } {
  *  than escaped — the mixed-body path, where a run may carry <code> or <a>. */
 function markdownToHtml(body: string, inlineHtml = false): string {
   const kept: string[] = [];
+  // Code spans first: a span's content is literal by definition, so it is
+  // protected from the tag hoist below and restored as <code> with its
+  // content as text. Without this, `<ol start>` in a mixed body was hoisted
+  // out of the span and restored as a real element (2026-11-09).
   const source = inlineHtml
-    ? body.replace(HTML_TAG, (tag: string, name: string) => (isStructuralTag(name) ? `\u0000${kept.push(tag) - 1}\u0000` : tag))
+    ? body
+        .replace(INLINE_CODE_SPAN, (span: string) => `\u0001${kept.push(span) - 1}\u0001`)
+        .replace(HTML_TAG, (tag: string, name: string) => (isStructuralTag(name) ? `\u0000${kept.push(tag) - 1}\u0000` : tag))
     : body;
 
   const lines = source.replace(/\r\n/g, "\n").split("\n");
@@ -528,9 +539,18 @@ function markdownToHtml(body: string, inlineHtml = false): string {
   if (!kept.length) return html;
   const restore = (token: string) => kept[Number(token)] ?? "";
   return html.replace(
-    /(<pre><code>[\s\S]*?<\/code><\/pre>)|\u0000(\d+)\u0000/g,
-    (_m: string, pre: string | undefined, i: string | undefined) =>
-      pre ? pre.replace(/\u0000(\d+)\u0000/g, (_x: string, j: string) => escapeHtml(restore(j), false)) : restore(i!),
+    /(<pre><code>[\s\S]*?<\/code><\/pre>)|\u0000(\d+)\u0000|\u0001(\d+)\u0001/g,
+    (_m: string, pre: string | undefined, i: string | undefined, c: string | undefined) => {
+      if (pre)
+        // Inside a fence everything restores as literal text — code spans
+        // included, because the fence is literal by definition.
+        return pre.replace(/[\u0000\u0001](\d+)[\u0000\u0001]/g, (_x: string, j: string) => escapeHtml(restore(j), false));
+      if (i !== undefined) return restore(i);
+      // Outside a fence a protected span renders as inline code with its
+      // content as text: `<ol start>` stores <code>&lt;ol start&gt;</code>.
+      const span = restore(c!);
+      return `<code>${escapeHtml(span.slice(1, -1))}</code>`;
+    },
   );
 }
 

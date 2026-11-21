@@ -95,6 +95,29 @@ export function editWithin(
   return { ok: true, html: out, element: el, matches: elements.length };
 }
 
+/** Fit a within= body to the element it acts on, so a plain-text body keeps
+ *  the element's own tag instead of replacing it: replacing a cell with
+ *  "New value" must store <td>New value</td>, not a bare text node inside the
+ *  row (that malformed row is the 2026-11-04 defect this closes). A body that
+ *  already opens with the right tag passes through untouched — a full
+ *  <tr>…</tr> or <td>…</td> is still exactly what is written. */
+export function fitWithinBody(body: string, tag: string): string {
+  const b = body.trim();
+  if (!b) return body;
+  if (tag === "tr") {
+    if (/^<tr[\s>]/i.test(b)) return body;
+    // A row of cells missing its wrapper, or bare text: give the row its shape.
+    return /^<(?:td|th)[\s>]/i.test(b) ? `<tr>${b}</tr>` : `<tr><td>${b}</td></tr>`;
+  }
+  if (tag === "td" || tag === "th" || tag === "li" || tag === "p" || tag === "blockquote" || tag === "figure") {
+    if (new RegExp(`^<${tag}[\\s>]`, "i").test(b)) return body;
+    return `<${tag}>${b}</${tag}>`;
+  }
+  // table, ul, ol are full-markup elements by contract; the body is written
+  // as given.
+  return body;
+}
+
 /** When a within="tr"/"td" anchor lands only inside paragraphs written as
  *  "a | b | c", the note holds a pipe-delimited roster, not a table: say so,
  *  instead of the generic "check the tag" (a roster insert cost a retry,

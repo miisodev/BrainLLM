@@ -518,8 +518,21 @@ export class TriliumClient {
 
   async getNoteContentResult(noteId: string, noteType?: string): Promise<ContentResult> {
     const url = `${this.baseUrl}/etapi/notes/${pathSegment(noteId, "noteId")}/content`;
-    const res = await this.boundedFetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
-    return readContentResponse(res, "text/html", noteType);
+    const fetchOnce = () =>
+      this.boundedFetch(url, { headers: { Authorization: `Bearer ${this.token}` } }).then((res) =>
+        readContentResponse(res, "text/html", noteType)
+      );
+    const result = await fetchOnce();
+    // One fresh fetch when a text note reads back empty: a 200 with an empty
+    // body served a 3,022-character note as "" inside a 10-note batch read
+    // (2026-11-19) — a note with content must not read back empty, and a
+    // genuinely empty note stays empty on the retry. Reads are idempotent;
+    // the retry is bounded to the empty case and never re-fetched on failure.
+    if (result === "") {
+      const again = await fetchOnce().catch(() => result);
+      return again;
+    }
+    return result;
   }
 
   async getNoteContent(noteId: string, noteType?: string): Promise<string> {

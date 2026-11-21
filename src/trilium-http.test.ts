@@ -53,6 +53,28 @@ describe("Trilium content transport", () => {
     expect(calls[0].url).toBe("https://trilium.example/etapi/notes/note1234/content");
   });
 
+  test("retries once when a text note reads back empty, so a non-empty note never reads back empty", async () => {
+    const calls: FetchCall[] = [];
+    let first = true;
+    await withMockFetch(calls, () => {
+      if (first) { first = false; return new Response("", { headers: { "Content-Type": "text/html" } }); }
+      return new Response("<p>3,022 characters of method</p>", { headers: { "Content-Type": "text/html" } });
+    }, async () => {
+      const result = await new TriliumClient("https://trilium.example", "token").getNoteContentResult("note1234", "text");
+      expect(result).toBe("<p>3,022 characters of method</p>");
+    });
+    expect(calls.length).toBe(2);
+  });
+
+  test("a genuinely empty note stays empty after the retry", async () => {
+    const calls: FetchCall[] = [];
+    await withMockFetch(calls, () => new Response("", { headers: { "Content-Type": "text/html" } }), async () => {
+      const result = await new TriliumClient("https://trilium.example", "token").getNoteContentResult("note1234", "text");
+      expect(result).toBe("");
+    });
+    expect(calls.length).toBe(2);
+  });
+
   test("uploads binary bytes with octet-stream and does not replace empty content with a space", async () => {
     const calls: FetchCall[] = [];
     const bytes = decodeBase64Strict("AP/+gEE=");
