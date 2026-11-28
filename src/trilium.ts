@@ -212,7 +212,11 @@ async function readContentResponse(
 ): Promise<ContentResult> {
   if (!response.ok) throw new Error(`Trilium API error ${response.status}: ${await response.text()}`);
   const responseMime = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
-  const mime = responseMime || fallbackMime;
+  // Trilium serves a note with an empty mime (every book note) under the
+  // literal header "Content-Type: false". Anything that is not type/subtype
+  // is no mime at all: taking "false" at its word decoded every domain book
+  // as binary, and consistency() reported each one as a failed read.
+  const mime = responseMime && /^[\w.+-]+\/[\w.+-]+$/.test(responseMime) ? responseMime : fallbackMime;
   const bytes = await readBoundedResponseBytes(response);
   if (noteType === "text" || isTextMime(mime)) {
     try {

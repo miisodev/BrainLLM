@@ -21,7 +21,7 @@ BRAINLLM_CONFIG=/vol/brainllm.json            # a file on the volume
 PORT=8080
 ```
 
-Your server's MCP address is then `https://your-host/mcp`. Opening `https://your-host/` in a browser shows a page confirming it is running. Full reference: [configuration](../README.md#configuration-reference).
+Your server's MCP address is then `https://your-host/mcp`. Opening `https://your-host/` in a browser shows a page confirming it is running. Full reference: [configuration](../README.md#run-it-remotely).
 
 ## claude.ai, Claude mobile and Cowork
 
@@ -47,7 +47,7 @@ For a remote server, Claude Code opens the consent screen in your browser. It re
 
 ## Claude Desktop
 
-Add BrainLLM to the desktop app's MCP configuration as shown in [Configure your MCP client](../README.md#3-configure-your-mcp-client), or connect the remote server as a custom connector, the same way as on claude.ai.
+Add BrainLLM to the desktop app's MCP configuration as shown in [Configure your MCP client](../README.md#2-connect-your-client), or connect the remote server as a custom connector, the same way as on claude.ai.
 
 ## The first session
 

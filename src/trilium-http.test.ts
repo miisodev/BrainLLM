@@ -53,6 +53,17 @@ describe("Trilium content transport", () => {
     expect(calls[0].url).toBe("https://trilium.example/etapi/notes/note1234/content");
   });
 
+  test("reads a book note served as Content-Type: false as text, not binary", async () => {
+    const calls: FetchCall[] = [];
+    await withMockFetch(calls, () => new Response("<p>Domain book</p>", {
+      headers: { "Content-Type": "false" },
+    }), async () => {
+      const client = new TriliumClient("https://trilium.example", "token");
+      expect(await client.getNoteContentResult("note1234")).toBe("<p>Domain book</p>");
+      expect(await client.getNoteContent("note1234")).toBe("<p>Domain book</p>");
+    });
+  });
+
   test("retries once when a text note reads back empty, so a non-empty note never reads back empty", async () => {
     const calls: FetchCall[] = [];
     let first = true;

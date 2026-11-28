@@ -1,458 +1,29 @@
 <div align="center">
 
-<img src="./public/BrainLLM.png" alt="BrainLLM logo" width="128" />
-
 # BrainLLM
+
+<img src="./docs/assets/social-preview.png" alt="BrainLLM: the amber node-grid mark above the wordmark miiso.dev/BrainLLM" width="720" />
 
 **Give Claude a memory that survives the session.**
 
-Self-hosted memory for LLMs in [TriliumNext Notes](https://github.com/TriliumNext/Trilium), structured by the server and editable by you, served over the [Model Context Protocol](https://modelcontextprotocol.io).
-
-[**Site**](https://miiso.dev/brainllm) · [Connect to Claude](docs/CONNECT.md) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Privacy](PRIVACY.md)
-
-[![Version](https://img.shields.io/badge/version-13.3.4-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
+[![Version](https://img.shields.io/badge/version-13.3.5-f59e0b?style=flat-square)](https://github.com/miisodev/BrainLLM/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/miisodev/BrainLLM/ci.yml?branch=main&style=flat-square&label=CI&color=f59e0b)](https://github.com/miisodev/BrainLLM/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/brainllm?style=flat-square&label=npm&color=a1a1aa)](https://www.npmjs.com/package/brainllm)
 [![License: MIT](https://img.shields.io/badge/license-MIT-a1a1aa?style=flat-square)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.4.2-a1a1aa?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
 [![MCP](https://img.shields.io/badge/protocol-MCP-0a0a0f?style=flat-square)](https://modelcontextprotocol.io)
-[![Sponsor](https://img.shields.io/badge/❤-Sponsor-f59e0b?style=flat-square&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/miisodev)
 
-[![Brainllm MCP server](https://mcprush.com/badge/brainllm-mcp/card.svg)](https://mcprush.com/to/brainllm-mcp?ref=badge)
+[![BrainLLM MCP server](https://mcprush.com/badge/brainllm-mcp/card.svg)](https://mcprush.com/to/brainllm-mcp?ref=badge)
+
+[Site](https://miiso.dev/brainllm) · [Connect to Claude](docs/CONNECT.md) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Privacy](PRIVACY.md)
 
 </div>
 
 ---
 
-## What is BrainLLM?
+## Sponsorship
 
-LLMs forget. Every session starts from zero: who you are, what you're working on, what was decided yesterday, what went wrong last week. BrainLLM fixes that.
-
-**BrainLLM is an MCP server that gives an LLM a real, persistent memory** — stored in [TriliumNext Notes](https://github.com/TriliumNext/Trilium), a mature open-source knowledge base you self-host and own. The model opens each session by loading who you are and what's live, writes durable facts the moment they surface, wires knowledge together as a typed graph, and closes each session with a log, a diary entry, and a database backup. The next session picks up exactly where the last one ended.
-
-It's a single Bun/TypeScript service with two dependencies (the MCP SDK and Zod), speaking to Trilium exclusively through its public ETAPI. Your memory lives in *your* Trilium instance — inspectable, editable, and portable, never locked inside a vendor's black box.
-
-### Who it's for
-
-Anyone running an LLM as a long-running collaborator, not a one-shot Q&A tool — across coding, research, personal knowledge management, or day-to-day operational tracking — who wants that collaborator to actually remember: who you are, what's in flight, what was decided, without you re-explaining it every session. If you're comfortable self-hosting one small service and a Trilium instance, BrainLLM turns "the model forgot everything again" into a solved problem. It works with any MCP-capable client (Claude Desktop, Claude Code, or anything else speaking MCP), not just one product.
-
-### From experiment to open source
-
-BrainLLM began in February 2026 as a personal experiment: could an LLM operate a real, self-hosted memory reliably enough to be trusted as its own memory — orienting, writing, connecting, and closing sessions without a human doing the filing? Through sustained daily, production use the answer held. The design has settled, the failure modes have been found and fixed, and the project has graduated from experiment to something **efficient and stable enough to share** — so it's now open source. It still runs the author's own sessions every day; what you're reading is the same code, not a demo. It also still carries the shape of one person's daily use — see [Adapting to your environment](#adapting-to-your-environment) for exactly what that means and what to change.
-
-### The core principle
-
-> **The model supplies content. The server owns form.**
-
-Placement, naming, labels, deduplication, relation bookkeeping, lifecycle aging, archival, date stamping, HTML sanitization, backups — and **structure itself** — are all deterministic server policy, never delegated to the LLM. The model never chooses a parent note, never sets a label, never checks for duplicates, never stamps a date. That division is what makes the memory *reliable*: every guarantee is enforced at the tool layer, not requested via prompt.
-
-### Design highlights
-
-- **Structure is enforced, not requested** — every content kind has a canonical structure, served by `template()` and held on write: a new thread requires its goal, thread/diary/session entries open with an identification line (which LLM, which environment, which session type), threads carry exactly one Resolution (owned by `resolve()`), duplicate section headings are detected, and `Last updated` stamps are server-maintained.
-- **Domains born complete** — creating a knowledge domain creates its book *and* its canonical Sources note (marker legend, stamp, grouped source list, revision table), so every claim has a sourcing home from the first write.
-- **A visible graph** — `graph()` renders the whole relation graph (or any note's neighborhood) as a Mermaid flowchart, maintained as a native Trilium note.
-- **Byte-preserving artifacts** — text is UTF-8, while binary content uses strict standard base64 in the tool contract and raw bytes on the wire; binary reads return an explicit MIME/base64 envelope instead of replacement characters.
-- **One-call day orientation** — `day()` serves the previous session, its change log and everything touched since in a single call.
-- **Two thread shapes** — a thread is a dated journal (one child per active day) or a titled collection (one maintained note per item, e.g. an ideas list), chosen once with `shape=` at creation.
-- **Timeless notes, dated records** — knowledge, information and thread books hold no state or history (only a domain's *Current State* does); `maintain(deep=true)` flags dated prose that creeps in. Every note except a log carries an icon, set by kind and backfilled by the sweep.
-- **Resilient plumbing** — every backend call is timeout-bounded with retry on idempotent reads; routine core writes are idempotent or duplicate-guarded, while full-mode raw overwrites remain explicit; content surgery survives the editor's own HTML rewriting; renaming a domain cascades to everything inside it; the maintenance sweep heals drift it finds.
-- **Multi-agent by default** — all write-classified tools serialize behind a process-wide FIFO lock, so two agents (an interactive session and an automated run, say) writing through one hosted instance queue in arrival order instead of racing; reads stay fully parallel. Deletion catch-up in the daily log keeps a note deleted after its day's close from vanishing without a trace — and its window is configurable (`deletionCatchupDays` in the lifecycle policy), defaulting to Trilium's 7-day retention.
-- **Ask in prose, split on a seam** — `consistency(subject="…")` finds every note asserting about a fact however it is phrased, no regex guessing; `consistency(pattern, staleAfterDays=N)` surfaces figures held in exactly one untouched note, the ones that rot silently because nothing disagrees with them, and skips sessions and diaries, which are history rather than claims; `diff(since="today")` reviews every note a session changed in one call; `revise(find="Phase 2", within="tr")` edits, inserts or removes a table row named by a few words inside it; `read(ids=[…])` batches a multi-note orientation into one round trip — each note's size up front, or a single `section=` across them; and `split(noteId, sections=[…], into="…")` is the write half of the oversized-note problem — it lifts whole sections into a new note and leaves a pointer back. Information notes can carry a `#mandate` marker so a scoped session finds the one note it must obey without reading every note's prose.
-- **A distinct connector identity** — hosted instances advertise BrainLLM and their own origin, with same-origin PNG/SVG icons, explicit page favicon links and a real multi-size ICO. The canonical mark is shared across the connector, consent pages and public assets.
-- **Preview changes and measure coverage** — `revise(noteId, edits=[…], dryRun=true)` shows sequential match counts and sanitized before/after content with no revision, labels or gate writes. Revision failures stop content overwrites. `consistency()` reports read failures and scan coverage; case-insensitive comparisons retain spelling variants without false conflicts. Incomplete scans cannot establish absence or unanimity.
-- **Registers close in one call** — `revise(find, within="tr", mode="remove", closure={thread, body})` removes a register row and records its closure in that thread's entry for the day, `closure={note, table?, row?}` moves a row into an explicitly selected register table; destination cells must match the table's shape. Destination-first ordering preserves recoverability, and `moves=[{find, row?}]` batches closures with preflight and per-row progress, and `append={table, row}` adds a row with no anchor to find; `within=` also accepts a row as a reader sees it (`"Phase 2 | Claude | Open"`), and a table row whose cells disagree with its header is flagged at write time and by `maintain(deep)`.
-- **Bulk edits and lighter receipts** — `revise(find, within="tr", mode="remove", all=true)` removes every row an anchor sits in, in one write and previewable with `dryRun=true`; `remember(kind="sources", revision=[{source, from}])` renames a Sources key when a source moves instead of adding a second row; a dated-thread append returns `previousRun`, its author's previous block and run number; `read(ids, sizes=true)` plans a bulk read from sizes and section sizes alone; and `diff(since="today", summaryOnly=true)` lists what changed without the lines.
-- **Records you can prove** — sessions, diary entries and dated thread entries are append-only, and now verifiably so: every `close()` seals its day's records into a digest chained to the previous day's, and `maintain(deep)` reports any sealed record that was rewritten afterwards. Appends stay legal; edits to history do not go unnoticed.
-
----
-
-## How it works
-
-At bootstrap, BrainLLM builds a five-area tree in Trilium. Every note the tools create is typed, labeled, dated, and placed by server policy:
-
-```
-BrainLLM  (#brainLlmRoot)
-├── 👤 Master       Biography · Goals · Preferences               (the user — maintained singletons)
-├── 🤖 LLM          Responsibilities · Protocols · Self-correction · Diary/  (the assistant's self-model + daily diary)
-├── 🗂️ Memory       Sessions/ · Threads/                          (daily session logs + multi-session work)
-├── 📚 Knowledge    Master/ · Domains/<domain>/{ Sources, info }  (learned facts beyond/contra training)
-└── 💡 Insights     Logs/ · Graph · Claims                         (the brain's record of itself)
-```
-
-| Note class | Kinds | Behavior |
-|---|---|---|
-| **Singletons** | biography, goals, preferences, responsibilities, protocols, selfcorrection (+ each domain's Sources note) | Exactly one maintained note; edited in place; hold *current-state truth* |
-| **Authored records** | diary, session, dated threadEntry | One per calendar day and parent; every write lands as a timestamped addendum block — chronology is the point |
-| **Generated logs** | log | One per calendar day; regenerated in place from the change feed |
-| **Collections** | thread, user, information, domain | Titled notes, deduplicated by normalized title within their scope |
-
-A session follows an enforced protocol: `start()` orients (who you are, live threads, what changed since last time) → the model works, writing durable facts *as they surface* → `session()` → `addendum()` → `maintain()` → `remarks()` → `diary()` → `close()` commits the log, regenerates the daily change log, and triggers a DB backup. The pre-close gate is **enforced in code**: `close()` refuses until the required steps actually ran and the last `session()`, `remarks()` and `diary()` calls occurred in that order — narrating "I did the steps" doesn't count, only tool calls do. The gate is *durable*, written to the session note rather than held in memory, so it survives a restart mid-session and behaves the same on stdio and HTTP. A session that wrote no content gets a **light close**: nothing to fold or sweep, so `close()` asks only for `session()`, `remarks()` and a short `diary()`.
-
-`start()` returns Preferences and Protocols **in full**, so the model has the operating rules immediately. Biography, Goals, Responsibilities and Self-correction arrive as **section headings and previews**; pull the sections the work needs. `start(depth="full")` inlines all of them.
-
-Knowledge is a **typed graph**: a closed vocabulary of 16 relations (`extends`, `contradicts`, `supports`, `partOf`, `supersedes`, `corrects`, …), wired by `connect()` or at creation, traversed by `explore()` (links / backlinks / neighborhood / shortest path), rendered by `graph()`, and audited by `maintain(deep)`, which heals duplicate edges and flags what a note application would never think to look for: orphaned notes, stale content, duplicate titles, structural drift *inside* a note, bodies past the read ceiling, stubs that were labelled and never written, titles carrying a date (which defeats dedup-by-title), threads heavy enough to want consolidating, Sources notes whose verification table was never filled in, and bodies carrying doubly-escaped markup. Most of it is computed from note properties server-side rather than by reading bodies, so the report is complete rather than truncated. Findings can be acknowledged (`maintain(ack=[…])`) so a flag you have judged correct goes quiet until that note's content actually changes — a warning that reappears every run and is correctly ignored every run trains you to skim the list.
-
----
-
-## Quick start
-
-### Prerequisites
-
-- [Bun](https://bun.sh) v1.4.2+
-- A running [TriliumNext](https://github.com/TriliumNext/Trilium) instance (desktop app or server)
-
-### 1. Install and build
-
-```bash
-git clone https://github.com/miisodev/BrainLLM
-cd BrainLLM
-bun install
-bun run build
-```
-
-### 2. Get an ETAPI token
-
-**Or skip this step.** Set `TRILIUM_PASSWORD` instead of `TRILIUM_ETAPI_TOKEN` and BrainLLM mints a token itself on first start, caching it beside `brainllm.json` so restarts reuse it rather than creating a new one each time. This is the easiest path for a container deploy, where there's no terminal to run a setup command in.
-
-To do it explicitly instead, either let `init` mint one:
-
-```bash
-TRILIUM_BASE_URL=http://localhost:8080 TRILIUM_PASSWORD=your-trilium-password bun run init
-```
-
-It caches the token beside `brainllm.json` with owner-only permissions and does **not** print the secret. If you explicitly need a copy, run `bun run init -- --show-token`; the CLI is idempotent and adopts an existing `#brainLlmRoot` instead of creating a duplicate tree. Or create one by hand in Trilium: **Options → ETAPI → Create token**.
-
-### 3. Configure your MCP client
-
-For **Claude Desktop**, add to `claude_desktop_config.json` (see `config.example.json` for a complete example including remote):
-
-| Platform | Path |
-|----------|------|
-| Windows  | `%APPDATA%\Claude\claude_desktop_config.json` |
-| macOS    | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Linux    | `~/.config/Claude/claude_desktop_config.json` |
-
-```json
-{
-  "mcpServers": {
-    "BrainLLM": {
-      "command": "bun",
-      "args": ["run", "/absolute/path/to/BrainLLM/dist/index.js"],
-      "env": {
-        "TRILIUM_BASE_URL": "http://localhost:8080",
-        "TRILIUM_ETAPI_TOKEN": "your-etapi-token-here"
-      }
-    }
-  }
-}
-```
-
-For **Claude Code**, the same server block works in `.mcp.json`. A schema-valid MCPB manifest (`manifest.json`) is included for hosts that support custom Bun commands, but BrainLLM still requires Bun and this repository does not yet publish a `.mcpb` one-click artifact.
-
-### 4. Bootstrap the brain
-
-Restart your client and ask Claude to run `bootstrap` — it builds the five-area tree (each area engraved with its purpose), writes `brainllm.json`, and is active immediately. Or from the CLI:
-
-```bash
-TRILIUM_BASE_URL=http://localhost:8080 TRILIUM_ETAPI_TOKEN=your-token bun run init
-```
-
-### 5. Teach the model to operate it
-
-Install the **operational skill** — the document that teaches Claude to treat BrainLLM as its own mind rather than a filing cabinet:
-
-```bash
-# Claude Code / Cowork skills directory (macOS/Linux)
-cp -r skills/brainllm ~/.claude/skills/brainllm
-```
-
-```powershell
-# Windows PowerShell
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.agents\skills" | Out-Null
-Copy-Item skills\brainllm "$env:USERPROFILE\.agents\skills\brainllm" -Recurse -Force
-```
-
-For clients that take a skill upload (claude.ai), use `brainllm.zip` from the [latest release](https://github.com/miisodev/BrainLLM/releases/latest): it is the same `skills/brainllm/` folder, zipped.
-
-Then start a session. The model calls `start()`, orients, and operates the brain natively from there.
-
----
-
-## The tool surface
-
-All tool returns are structured JSON. User-input mistakes return informational errors (`{error, detail, hint}`) the model can read and self-correct from; core note reads, writes and searches include a free `relations` snippet; routine core writes use duplicate guards or upserts. A lost response can follow an accepted write; inspect the receipt and affected notes before retrying, especially raw full-mode mutations.
-
-### Why the tools are named the way they are
-
-**The naming is a readability feature for you, not a style choice.** Most MCP clients show you the name of each tool call as it happens. BrainLLM's tools are named as **plain-English verbs for what is happening to your memory** — `remember`, `recall`, `revise`, `resolve`, `forget`, `connect`, `maintain` — so that the call log reads as a description of what the model is doing in your brain, without you having to know the schema or open Trilium to find out.
-
-The alternative, which most servers pick, is to name tools after the API underneath: `create_note`, `patch_note`, `update_attribute`. That tells you a row changed. It doesn't tell you the model recorded a decision, corrected something it previously believed, or closed a line of work — and those are the things you actually want to see scroll past.
-
-Read this way, a session is legible at a glance:
-
-| You see | What it means |
-|---|---|
-| `start` → `day` | Orienting: loading who you are, what's open, what changed since last time |
-| `remember` · `diary` | Writing something down — a durable fact, or the model's own daily record |
-| `recall` · `domain` · `outline` | Looking something up before answering, rather than answering from training |
-| `revise` · `resolve` · `forget` | Changing, completing, or archiving something that already existed |
-| `connect` · `graph` | Wiring a relationship between two things it noticed |
-| `maintain` · `addendum` | Housekeeping — aging, structural drift, folding pending edits in |
-| `remarks` → `close` | Wrapping up: reflecting, then committing the session log |
-
-Three conventions keep that legible as the surface grows:
-
-- **Verbs for actions, nouns for surfaces.** `remember` writes; `knowledge` reads. The five surface nouns (`master`, `llm`, `memory`, `knowledge`, `insights`) only read; names such as `graph` and `session` also write.
-- **`<surface>` / `<surface>_recall` pairs.** The bare name reads a surface in full; the `_recall` suffix skims it. Seeing `memory_recall` rather than `memory` tells you the model chose the cheap read.
-- **Destructive verbs say so.** `forget`, `detach`, `delete_*` are never spelled as something softer, so an irreversible call is never disguised as a routine one.
-
-The **full mode** tools deliberately break this convention — they are named after the raw Trilium primitives (`create_note`, `patch_note`, `delete_attribute`) precisely so that a raw, guard-free operation is visibly different in the log from a brain-aware one.
-
-### Tool permissions
-
-Every tool declares whether it reads, writes, or destroys, so your client can group them and you can grant permission per group instead of per call. Every tool also carries a human-readable title ("Edit a note", "Search the brain") for permission prompts and directory listings. The current full-mode split is **34 read-only · 31 write · 13 destructive** (core mode is **23 read-only · 17 write · 5 destructive**); `revise`, `label` and `connect` count as destructive because they can overwrite or remove what was there, which lets reads run unattended while anything that touches your brain still asks.
-
-The classification lives in one reviewable table ([`src/annotations.ts`](./src/annotations.ts)) rather than scattered across registrations, and its default is deliberately unsafe-side: a tool missing from the table is treated as a **write**, never a read, and says so at startup. Three are worth knowing because they look like reads and aren't — `start()` creates today's diary and session stubs, `session()` runs the maintenance sweep, and `graph()` writes the rendered graph note.
-
-### Core — universal verbs (35)
-
-| Group | Tools |
-|---|---|
-| Session lifecycle | `start` · `day` · `session` · `remarks` · `close` · `backup` · `health` |
-| Writing | `remember` · `diary` · `revise` · `split` · `resolve` · `withdraw` · `recover` |
-| Reading & search | `read` · `recall` · `domain` · `brain` · `assembly` · `outline` · `inspect` · `diff` · `template` · `consistency` |
-| Graph | `connect` · `explore` · `graph` |
-| Attachments & labels | `attach` · `detach` · `label` |
-| Maintenance & system | `addendum` · `maintain` · `claim` · `forget` · `bootstrap` |
-
-### Core — surface reads (10, dual-mode)
-
-`master`/`master_recall` · `llm`/`llm_recall` · `memory`/`memory_recall` · `knowledge`/`knowledge_recall` · `insights`/`insights_recall` — each surface read in full, or skimmed as compact stubs.
-
-### Full mode (`BRAINLLM_MODE=full`, +33)
-
-The raw ETAPI, one tool per Trilium primitive — notes, attributes, branches, revisions, attachments, calendar, system. Outside core placement, sanitising and revision policy: an edge-case fallback for what core can't express (precise raw queries, code/canvas/mermaid notes, branch surgery, revision recovery).
-
-The complete operational reference is [`skills/brainllm/SKILL.md`](./skills/brainllm/SKILL.md); per-topic deep dives live in [`skills/brainllm/references/`](./skills/brainllm/references/). Beyond that, the **architecture reference** explains how BrainLLM is built and why — every module, every tool's behaviour, the sweep internals, the idempotency matrix — and is kept current with each release rather than published in this repo; see [Support the project](#support-the-project) for how to get a copy.
-
----
-
-## Deployment
-
-### Transport modes
-
-| Mode | When | Selected by |
-|------|------|-------------|
-| **stdio** | Local — Claude Desktop / Claude Code spawns BrainLLM as a child process | `PORT` unset (default) |
-| **HTTP connector** | Remote — clients reach BrainLLM over the network | `PORT` set (Railway injects it) |
-
-The HTTP connector serves a streamable-HTTP MCP endpoint at `/mcp` (one session per `mcp-session-id`, DELETE terminates, CORS-enabled with `mcp-session-id` exposed for browser clients), a **legacy SSE endpoint** at `/sse` (with `POST /messages`) for clients that predate streamable HTTP — older Cursor builds, Continue, and Python-SDK clients — and both `GET /health` and `GET /ready`. The server root serves a plain page for ordinary browser `GET` requests; MCP-shaped requests sent to `/` are also accepted as a compatibility alias, because some hosted Claude connector versions normalize the post-token MCP path to the origin root. The server itself speaks plain HTTP — TLS is expected to terminate in front of it (Railway's edge does this automatically for you; on a bare VPS or your own Docker host, put it behind a reverse proxy such as Caddy, nginx, or a Cloudflare Tunnel). **HTTP mode now fails closed unless `MCP_AUTH_TOKEN` or `BRAINLLM_OWNER_PASSWORD` is configured**; `BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP=true` is an explicit escape hatch for an isolated trusted network only. CORS defaults to `*`, so a reachable deployment must have a real authentication gate. Idle sessions are evicted after 1 hour; MCP request bodies are capped at 50 MiB by both the server and SDK transport. Both transports sit behind the same authentication gate.
-
-### Health, readiness and shutdown
-
-`GET /health` is liveness only: it returns `OK` once the HTTP listener can answer and never contacts Trilium. `GET /ready` is readiness: it calls Trilium's `app-info` (the cheapest authenticated read that proves reachability and token validity) and returns `{"status":"ready"}` with 200, or `{"status":"unavailable"}` or `{"status":"draining"}` with 503. A healthy result is cached for 10 seconds and a failure for 5; each check is bounded at 3 seconds, concurrent probes share one backend call, and a check that outlives its deadline is not abandoned and re-issued. The response carries only the state, never the Trilium URL, token, response body or error.
-
-Both endpoints are unauthenticated and excluded from request logging. In HTTP mode, `SIGTERM` and `SIGINT` mark the process draining: `/ready` reports `draining`, new work on every other route gets 503 with `Retry-After: 5`, and the listener stays open while in-flight requests finish. The whole drain is bounded at 20 seconds; transports and the HTTP server are then closed within the remaining grace and the process exits 0. Stdio installs attach no signal handler and keep their EOF behaviour.
-
-HTTP requests, MCP calls and shutdown phases are JSON lines on stderr (`[brainllm] {...}`) carrying `ts`, `event`, `release` and only allowlisted scalar metadata: HTTP method, fixed route label, tool name, status, duration, shutdown phase/signal and in-flight count. Request bodies, tool arguments and results, JSON-RPC error text, URLs, note ids and tokens never enter a log line; unregistered methods and tools are recorded as `unknown`, and `/health`, `/ready` and asset requests are not logged.
-
-### Docker / Railway
-
-The included [`Dockerfile`](./Dockerfile) builds and runs the HTTP connector (two-stage, digest-pinned `oven/bun`, drops privileges via `entrypoint.sh`). On **Railway**: `PORT` is auto-injected — set `MCP_AUTH_TOKEN`, `TRILIUM_BASE_URL`, `TRILIUM_ETAPI_TOKEN`, and `BRAINLLM_TZ` as service variables, deploy, and point your client at `https://<app>.up.railway.app/mcp` with the bearer token. Deploying elsewhere (a VPS, your own Docker host) works the same way — the container only needs those same env vars and a TLS-terminating proxy in front of it, per the transport note above.
-
-Unexpected HTTP exceptions, internal JSON-RPC errors and failed tool results hold `/ready` unavailable for 30 minutes, or until restart, so an external probe can alert even when Trilium is reachable. Ordinary authentication and protocol rejections do not trigger this signal. `/health` stays live and accepted MCP work remains available; inspect the safe error metadata before restarting.
-
-Browser MCP calls must carry an allowed `Origin`: the configured `BRAINLLM_PUBLIC_URL` origin, literal loopback origins at the listening port, or an exact entry in comma-separated `BRAINLLM_ALLOWED_ORIGINS`. Configure an Inspector/browser integration explicitly; wildcard, opaque `null` and malformed origins are refused with 403, including preflights. Native clients without `Origin` are unaffected. The server never builds this allowlist from an incoming Host header.
-
-### Branding
-
-In HTTP mode BrainLLM serves its own icons — `/icon.png`, `/icon.svg`, sized variants, and `/favicon.ico` — and advertises them in the MCP handshake together with its title, a one-line description and its website, so clients show the BrainLLM mark in your connector list and beside its tool calls. The handshake also carries short server instructions describing the five areas and the session shape. Everything brand-shaped (name, tagline, description, the mark's geometry) is defined once in [`src/brand.ts`](./src/brand.ts), and a unit test holds `package.json`, `manifest.json` and `server.json` to the same description.
-
-Both halves of that are load-bearing. The spec tells clients to **verify icon URIs share the server's origin**, so icons hosted anywhere else are silently dropped. And a host that serves no favicon makes clients fall back to the *registrable domain's* — a BrainLLM at `brain.yourdomain.com` would show `yourdomain.com`'s site logo, which is worse than nothing because it looks intentional.
-
-To use your own artwork, replace `public/BrainLLM.svg` and run `bun run icons` — it rasterises the vector at each size the server serves. Commit the results; the Docker image copies `public/` and has no image toolchain at runtime.
-
-### Connecting remote clients (OAuth)
-
-Claude Code and `mcp-remote` send `MCP_AUTH_TOKEN` as a header and need nothing further. **The hosted Claude surfaces — claude.ai, Claude mobile, Cowork — cannot.** Their custom-connector UI offers OAuth or nothing; there is no field for a bearer token. So BrainLLM ships its own OAuth 2.1 authorization server. It serves **both** registration mechanisms, so every OAuth-capable client works:
-
-- **Client ID Metadata Documents (CIMD)** — the registration-free mechanism adopted in the MCP `2025-11-25` specification; this is what Claude selects.
-- **Dynamic Client Registration (RFC 7591)** — for clients that never grew CIMD support. opencode (MCP TS SDK ≤1.29) is the forcing case: without a `registration_endpoint` it refuses to authenticate at all.
-
-Set one variable to turn it on:
-
-```bash
-BRAINLLM_OWNER_PASSWORD=<a strong password you choose>
-```
-
-That password is what you type on the consent screen. Without it the OAuth endpoints are disabled entirely and nothing else changes.
-
-#### Optional owner second factor (TOTP)
-
-Set `BRAINLLM_OWNER_TOTP_SECRET` as well to require a six-digit authenticator code alongside the owner password. It is RFC 6238 TOTP: HMAC-SHA1, six digits, 30-second steps, with one step of clock tolerance either way. The secret must be base32 and at least 128 bits (16 bytes); lowercase, spaces and hyphens are accepted. While it is set, `BRAINLLM_OWNER_PASSWORD` must be at least 16 characters. A configured but invalid or too-short secret, or an MFA password under 16 characters, fails closed with a 503 "misconfigured" page — it never silently falls back to password-only.
-
-**Enroll before enabling.** Add the secret to an authenticator app as a time-based, six-digit, 30-second entry, confirm it produces a current code, and keep an offline backup of the seed. Then set the variable, redeploy, and complete one consent sign-in to confirm the code field appears. Enabling the variable before the authenticator holds the seed locks you out of new approvals.
-
-A used code cannot be replayed. The last accepted step is persisted in the OAuth store beside `brainllm.json` with a SHA-256 fingerprint of the seed, never the seed itself; the store survives a process restart, and on a persistent-volume deployment a redeploy too. The second factor gates consent approval only: already-issued access and refresh tokens, and `MCP_AUTH_TOKEN`, keep working when it is enabled or removed.
-
-Recovery is deliberately administrative. If the authenticator is lost, restore the seed from the offline backup. If there is no backup, a deployment admin removes `BRAINLLM_OWNER_TOTP_SECRET` and redeploys, returning that deployment to password-only; there is no in-app bypass.
-
-Then in Claude: **Settings → Connectors → Add custom connector**, enter `https://<your-host>/mcp`, and leave the OAuth client fields blank — CIMD needs no client ID or secret. Claude discovers everything from the `401`, you approve once on a consent screen, and it stays connected.
-
-What that turns on:
-
-| Endpoint | Purpose |
-|---|---|
-| `/.well-known/oauth-protected-resource` (+ `/mcp` variant) | RFC 9728 — names the authorization server |
-| `/.well-known/oauth-authorization-server` (+ `/mcp` variant) | RFC 8414 — advertises CIMD support, DCR, and PKCE S256 |
-| `/authorize` | Validates the client (CIMD document or registered id), shows the consent screen |
-| `/token` | PKCE-verified code exchange, with rotating refresh tokens stored only as SHA-256 hashes |
-| `/register` | RFC 7591 dynamic client registration — how opencode and other DCR-only clients connect |
-
-The consent screen names the requesting client and the address it will return to, and warns when that address is your own computer (a loopback redirect, as Claude Code uses). MCP traffic is rate-limited per bearer token, with a looser per-IP bound, so clients that share an egress range (all of Claude's hosted traffic does) never exhaust each other's budget.
-
-Both credentials work simultaneously — a static token from Claude Code and an OAuth token from claude.ai, against the same brain. Access tokens are signed JWTs bound to your server's resource URI, so a token minted for a different MCP server is rejected; the signing secret and refresh tokens persist beside `brainllm.json`, which on a container deploy means **putting `BRAINLLM_CONFIG` on a volume** — otherwise every redeploy invalidates every token.
-
-For config persistence across redeploys, mount a volume on the **BrainLLM service** (not the Trilium service) and set `BRAINLLM_CONFIG` to a file path inside it:
-
-```bash
-railway volume -p <project-id> -s <brainllm-service-id> -e production add --mount-path /vol
-railway variables set BRAINLLM_CONFIG=/vol/brainllm.json
-```
-
-Without a volume, leave `BRAINLLM_CONFIG` unset — auto-discovery re-finds the brain from Trilium's `#brainLlmRoot` marker on each cold start (~1 s).
-
-### Configuration reference
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `TRILIUM_BASE_URL` | ✅ | URL of the TriliumNext instance (local, or an HTTPS reverse-proxy/tunnel URL) |
-| `TRILIUM_ETAPI_TOKEN` | ◐ | ETAPI bearer token. Required unless `TRILIUM_PASSWORD` is set |
-| `TRILIUM_PASSWORD` | ◐ | Alternative to the token: BrainLLM mints one on first start and caches it beside `brainllm.json`, reusing it across restarts. Also used by `bun run init` |
-| `BRAINLLM_MODE` | — | `core` (default) or `full` (adds the raw ETAPI surface) |
-| `BRAINLLM_TZ` | — | IANA timezone (e.g. `Africa/Johannesburg`) so dates stamp in *your* day on hosted deploys; unset = host clock |
-| `BRAINLLM_DELETION_CATCHUP_DAYS` | — | How many days your Trilium keeps deleted notes (Options → Other → "Erase notes after"). Deletions are reported only within this window, and ETAPI cannot read the option. Default `7`, Trilium's own default; overrides `policy.deletionCatchupDays` |
-| `PORT` | — | Presence switches to HTTP-connector mode |
-| `MCP_AUTH_TOKEN` | — | Static bearer token accepted on `/mcp` — what Claude Code and `mcp-remote` send |
-| `BRAINLLM_OWNER_PASSWORD` | — | Enables the OAuth 2.1 / CIMD endpoints, required for claude.ai. The password you type on the consent screen |
-| `BRAINLLM_ALLOWED_ORIGINS` | No | Comma-separated exact HTTP(S) origins for browser MCP clients, in addition to the configured public origin and literal loopback origins at PORT. No wildcard, path, userinfo or opaque `null` |
-| `BRAINLLM_OWNER_TOTP_SECRET` | — | Optional RFC 6238 owner second factor: base32 seed of 128+ bits, six-digit/30-second codes. Requires `BRAINLLM_OWNER_PASSWORD` of 16+ characters; enroll before enabling |
-| `BRAINLLM_OAUTH_SECRET` | — | Optional 32+ character deployment signing secret; rotate it to invalidate old OAuth tokens |
-| `BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP` | `false` | Explicit trusted-network-only escape hatch when no HTTP credential is configured; never use on a public interface |
-| `BRAINLLM_TRUST_PROXY` | `false` | Trust `x-forwarded-host`/`x-forwarded-proto` for OAuth discovery only when a trusted reverse proxy sets them; prefer `BRAINLLM_PUBLIC_URL` |
-| `BRAINLLM_PUBLIC_URL` | — | Override the derived public origin when a proxy rewrites `Host`. Must match the URL you enter in the client exactly |
-| `BRAINLLM_CONFIG` | — | Absolute file path for `brainllm.json` on persistent-volume deploys |
-
-Lifecycle timings live in `brainllm.json` and are yours to tune:
-
-```json
-"policy": { "dormantAfterDays": 21, "archiveDormantAfterDays": 45, "staleAfterDays": 7 }
-```
-
-Threads age `active → dormant → archived-in-place` on that timeline; nothing is ever deleted by aging, and `recover()` / `withdraw()` bring anything back.
-
----
-
-## Adapting to your environment
-
-A handful of values in this repo reflect the author's own machine. None are secrets, but if you clone or fork, review these and swap in your own:
-
-| What | Where | Make it yours |
-|---|---|---|
-| **Timezone** | `BRAINLLM_TZ` in `.env` | Your IANA zone — or unset for the host clock |
-| **Deleted-note retention** | `BRAINLLM_DELETION_CATCHUP_DAYS` in `.env` | Only if your Trilium erases deleted notes after something other than 7 days |
-| **Config path** | `BRAINLLM_CONFIG` env var | Only needed on persistent-volume deploys (see above) |
-| **Bundle path** | your MCP client config | The real absolute path to `dist/index.js` on your machine |
-| **Author · repo · funding** | `package.json`, `.github/FUNDING.yml`, the badges above | Your own details if you fork; the funding links support the original author |
-
----
-
-## Architecture
-
-```
-index.ts ─┬→ tools.ts ─┬→ trilium.ts     ETAPI client: bounded/retrying I/O, graph traversal
-          │            ├→ router.ts      placement policy: kind → parent, label plans, domains
-          │            ├→ templates.ts   canonical structures per kind + the template-tool rules
-          │            ├→ normalize.ts   titles, slugs, markdown→HTML, sanitization, surgery
-          │            ├→ elements.ts    the element (row, item, paragraph) an anchor sits in
-          │            ├→ diffing.ts     block and table-cell diffs, revision selection
-          │            ├→ lifecycle.ts   protection, sweep, aging, the start digest
-          │            ├→ journal.ts     daily Insights log generation (regenerate-in-place)
-          │            ├→ seal.ts        per-day record seals that maintain(deep) verifies
-          │            ├→ bootstrap.ts   five-area tree builder
-          │            └→ tools-{master,llm,memory,knowledge,insights}.ts → tools-surface.ts
-          ├→ tools-advanced.ts                           full-mode raw ETAPI
-          ├→ serialize.ts · coerce.ts · annotations.ts   wrap every tool: write lock, param coercion, hints and titles
-          ├→ cap.ts · brand.ts · config.ts               the 140k result cap · name, mark, instructions · brainllm.json
-          ├→ HTTP: sse.ts · rate-limit.ts · operability.ts   legacy SSE · public budgets · readiness, logs, drain
-          └→ OAuth: oauth.ts · totp.ts                   OAuth 2.1 (CIMD checks in network-security.ts) · optional owner TOTP
-```
-
-Shared modules: `types.ts` defines vocabularies, `time.ts` handles local dates, and `icons.ts` supplies note icons. The separate `init.ts` CLI bootstraps and saves configuration; the server entry point is `index.ts`. The tree and shared modules account for all 35 runtime modules under `src/`; the `*.test.ts` suites and the `test.ts` live harness are separate.
-
-Key properties: no tool result exceeds 140,000 characters (a larger one is cut with a note naming the narrower read); core text content is sanitized for Trilium/CKEditor 5 compatibility (mutations reported back as `sanitized[]`); a revision snapshot precedes routine content mutation; every request carries the user's local time so Trilium stamps dates in the right day; core writes are idempotent or duplicate-guarded, while raw full-mode overwrites are explicit.
-
-## Development
-
-```bash
-bun run dev    # hot-reload dev server
-bun run build  # bundle to dist/index.js
-bunx --bun tsc --noEmit   # typecheck (the bundler does not)
-bun run test:unit   # all unit tests (Bun discovery; works on Windows and CI)
-bun run test:http   # local auth/header smoke (no Trilium required)
-BRAINLLM_LIVE_TOKEN=... bun run test:live   # read-only smoke against a deployed server, over real MCP
-bun run test        # integration tests (requires a live Trilium instance)
-bun run validate:manifest # MCPB schema/icon validation
-bun run validate:release  # every version site, server.json schema, SECURITY.md line
-bun run init   # CLI bootstrap
-```
-
-Repo layout: runtime source in `src/`, the operational skill in `skills/brainllm/`, developer scripts in `scripts/`, schema-valid MCPB manifest in `manifest.json`, container build in `Dockerfile`.
-
-## Contributing
-
-BrainLLM is open-sourced as a gift and maintained by its author: forks are welcome, but pull requests are not accepted. Port improvements into your fork; issues and bug reports are read and appreciated.
-
-### What we value
-
-BrainLLM started as one person's daily-driver tool, so the code and docs still carry that person's assumptions in a few places (see [Adapting to your environment](#adapting-to-your-environment)). The contributions that matter most are the ones that generalize it beyond that:
-
-| Value | What that looks like in a PR |
-|---|---|
-| **Generalization** | Replacing an assumption baked in for one workflow with something that holds for any brain's content and conventions |
-| **Cross-user** | Nothing in `src/` should assume a specific person's ventures, schedule, or vocabulary — that belongs in *content* the model writes, never in the tool layer |
-| **Cross-device** | Behaves the same on Windows/macOS/Linux, over local stdio and remote HTTP, on a laptop and in a Railway container |
-| **Token efficiency** | Smaller responses, fewer round-trips, cheaper reads — e.g. `recall()`'s ranked snippets over `inspect(content=true)` for a plain yes/no check. This is a standing design bias, not a one-off optimization |
-| **Latency** | Bounded, retrying I/O; parallel reads over sequential ones; nothing that makes session start or a tool call slower than it needs to be |
-
-### How to contribute
-
-1. **Open an issue first** for anything non-trivial — bugs with reproduction steps, or proposals with the use case spelled out.
-2. **Fork and branch**, keep changes focused, and match the existing code style.
-3. **`bun run build` must pass clean** and unit tests must stay green (`bun run test:unit` — CI runs the same checks on every push and PR); add tests for new normalize/lifecycle logic.
-4. **Use conventional commits** (`fix:`, `feat:`, `docs:`, `refactor:`).
-5. **Update the docs that your change touches** — `README.md`, the skill package under `skills/brainllm/`, and `config.example.json`/`.env.example` where relevant. The skill is part of the product: a tool change without its skill update is half a change.
-
-Not sure where to start? Issues labeled `good first issue`, doc gaps, and the troubleshooting reference are all friendly entry points.
-
-## Security
-
-Please do not report suspected vulnerabilities in a public issue. Follow the private reporting process in [`SECURITY.md`](./SECURITY.md); never include ETAPI tokens, OAuth credentials, or private brain content in a report.
-
-If the OAuth store is unreadable or its replay state is corrupt, new MFA grants fail closed across restarts. Preserve the damaged file for diagnosis and restore a verified OAuth-store backup, or deliberately reset it through deployment administration after rotating the OAuth signing secret and arranging client reconnection. Do not repeatedly delete state to work around an unexplained error.
-
-### Verify a package
-
-Install the exact version in a disposable directory with `npm install --ignore-scripts brainllm@<version>`, then run `npm audit signatures`. This verifies registry signatures and available provenance attestations; it does not prove the code is safe. Open the package's Provenance link (also discoverable with `npm view brainllm@<version> dist.attestations --json`) and check the expected source repository `miisodev/BrainLLM`, workflow `.github/workflows/publish.yml`, tag `refs/tags/v<version>` and that tag's commit. Reject unexpected identities or verification failures. See [npm's provenance guidance](https://docs.npmjs.com/generating-provenance-statements/).
-
-## Privacy and support
-
-BrainLLM adds no analytics, telemetry or hosted account. Notes are stored in your Trilium, and sign-in records stay on your server. HTTP mode's structured request, MCP and shutdown logs are metadata only: no note content, tool arguments or results, URLs, note ids or tokens. Connected MCP clients receive the content their tools read, under those clients' own data policies. The full [privacy policy](PRIVACY.md) says what is stored where. For help, open a [GitHub issue](https://github.com/miisodev/BrainLLM/issues) or email miisodev@gmail.com.
-
----
-
-## Support the project
-
-BrainLLM is built and maintained by one person. If it's useful to you, sponsorship directly funds its continued development:
+BrainLLM is built and maintained by one person, and it's free. If it earns a place in your work, please consider sponsoring it. Sponsorship pays for the hours that keep it current with Trilium, the MCP specification and the clients that connect to it.
 
 <div align="center">
 
@@ -461,15 +32,389 @@ BrainLLM is built and maintained by one person. If it's useful to you, sponsorsh
 
 </div>
 
-Sponsors can request a copy of the **architecture reference** — the internal guide to the modules, tool behavior, content pipeline, lifecycle and deployment that isn't published in this repo. Message via GitHub Sponsors to ask for one.
+**What sponsors get:** a copy of the **architecture reference**, the from-source guide to every module, the tool behaviour, the content pipeline, the session gate, the lifecycle sweeps, deployment and the OAuth server. It isn't published in this repository and is kept current with each release. Ask for it through GitHub Sponsors or by email.
 
-Starring the repo, reporting bugs, and spreading the word help too.
+Starring the repository and telling one person who'd use it help too.
 
-## License
+---
+
+## What it is
+
+LLMs forget. Every session starts from zero: who you are, what you're building, what was decided yesterday, what went wrong last week. You end up re-explaining your own life to a collaborator who was there.
+
+**BrainLLM is the memory that fixes that.** It's an MCP server that gives the model a real, persistent memory inside [TriliumNext Notes](https://github.com/TriliumNext/Trilium), the open-source knowledge base you host yourself. The model opens each session by loading who you are and what's live, writes durable facts the moment they surface, links what it learns into a typed graph, and closes each session with a log, a diary entry and a database backup. The next session picks up where the last one ended.
+
+Every memory is an ordinary note you can open, read and correct by hand. Correct one, and the model reads your correction next session. Nothing is hidden in an embedding store or a vendor's account, and if this project disappeared tomorrow, your brain would still open and still make sense.
+
+> **The model supplies content. The server owns form.**
+
+Placement, labels, deduplication, dates, relations, lifecycle and backups are server policy, enforced at the tool layer. A rule the model is asked to follow holds until the model has a bad day. A rule the server enforces holds.
+
+## What it's for
+
+BrainLLM is for people who run an LLM as a long-running collaborator, not a one-shot answer box.
+
+| You want the model to... | BrainLLM gives it |
+|---|---|
+| **Know you without being told again** | Your biography, goals and preferences, loaded in full at the start of every session |
+| **Carry work across days** | Threads, one per line of work, with a dated entry for every day it moved and a resolution when it's done |
+| **Keep what it learned** | Knowledge domains where each claim traces to a source, plus a Current State note for what was last measured |
+| **Admit what changed** | A daily change log, a review of every note a session touched, and checks that catch notes disagreeing with each other |
+| **Not lose the session** | A close gate that refuses to end a session until it has been logged, reflected on and backed up |
+| **Work in every client** | One memory for Claude Code, Claude Desktop, claude.ai, Cowork, Claude mobile, Cursor and any other MCP client |
+
+It's a fit if you're comfortable hosting one small service and a Trilium instance. That's real setup, and it's why your data stays yours.
+
+---
+
+## How it's made
+
+### Where it came from
+
+BrainLLM began in February 2026 as a personal experiment by [Kevin Miiso Novo](https://github.com/miisodev): could an LLM run a real, self-hosted memory well enough to be trusted with it, orienting, writing, connecting and closing sessions without a human doing the filing? It became the memory behind his own ventures, used every day by Claude and the other models that work with him. Months of that daily use found the failure modes and shaped the fixes. What's in this repository is the same code, not a demo.
+
+### What it's built on
+
+| Layer | Choice | Why |
+|---|---|---|
+| Storage, editor and human interface | [TriliumNext Notes](https://github.com/TriliumNext/Trilium), reached only through its public ETAPI | A mature note application you already know how to back up, read and edit. BrainLLM never touches Trilium's internals, which is also what lets an MIT server sit beside AGPL Trilium |
+| Server | One Bun process in TypeScript | Two runtime dependencies: the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) and [Zod](https://zod.dev) |
+| Protocol | [Model Context Protocol](https://modelcontextprotocol.io) over stdio, Streamable HTTP and legacy SSE | One memory, every client |
+| Remote auth | A built-in OAuth 2.1 authorization server (CIMD and RFC 7591 registration), plus a static bearer token | Hosted Claude surfaces offer OAuth or nothing, and an external identity provider would put a third-party sign-up in front of every self-hoster |
+| Retrieval | Trilium's search plus the server's structure: areas, domains, labels and typed links | No model runs inside BrainLLM and no embeddings are computed |
+
+### The architecture
+
+```
+index.ts ─┬→ tools.ts ─┬→ trilium.ts     ETAPI client: bounded, retrying I/O and graph traversal
+          │            ├→ router.ts      placement policy: kind → parent, label plans, domains
+          │            ├→ templates.ts   the canonical structure of every kind
+          │            ├→ normalize.ts   titles, slugs, markdown → HTML, sanitising, section surgery
+          │            ├→ elements.ts    the element (row, item, paragraph) an anchor sits in
+          │            ├→ diffing.ts     block and table-cell diffs, revision selection
+          │            ├→ lifecycle.ts   protection, the sweeps, aging, the start digest
+          │            ├→ journal.ts     daily Insights logs, regenerated in place
+          │            ├→ seal.ts        per-day record seals that maintain(deep) verifies
+          │            ├→ bootstrap.ts   the five-area tree builder
+          │            └→ tools-{master,llm,memory,knowledge,insights}.ts → tools-surface.ts
+          ├→ tools-advanced.ts                             full-mode raw ETAPI
+          ├→ serialize.ts · coerce.ts · annotations.ts     the write lock, parameter coercion, permission hints and titles
+          ├→ cap.ts · brand.ts · config.ts                 the result cap · name, mark and instructions · brainllm.json
+          ├→ HTTP: sse.ts · rate-limit.ts · operability.ts legacy SSE · request budgets · readiness, logs and drain
+          └→ OAuth: oauth.ts · totp.ts                     the OAuth 2.1 server (CIMD checks in network-security.ts) · the optional owner TOTP
+```
+
+`types.ts` defines every vocabulary once (areas, kinds, statuses, relations, policy defaults), `time.ts` handles local dates and `icons.ts` supplies note icons. `init.ts` is the separate bootstrap CLI. The tool schemas, the router and the tree builder all derive from `types.ts`, so a vocabulary can't drift between them.
+
+### The engineering decisions
+
+- **Structure is enforced, not requested.** Every kind of note has a canonical skeleton (`template(kind)`), held on write. A new thread needs its goal. Records open with an identification line naming the model, the environment and the run. Duplicate headings, unbalanced tags and table rows that disagree with their header are caught at write time and by the deep sweep.
+- **Timeless notes, dated records.** Knowledge and thread books hold no state or history. Measured state lives in each domain's Current State note, and history lives in the records, where the date is native. The deep sweep flags dated prose that creeps into a timeless note.
+- **Records you can prove.** Sessions, diary entries and dated thread entries are append-only. Every `close()` seals its day's records into a digest chained to the previous day's, and `maintain(deep)` reports any sealed record that was rewritten afterwards.
+- **Every edit can be checked first.** A revision snapshot precedes every routine content overwrite, and a failed snapshot stops the write. `revise(..., dryRun=true)` previews a change with no write and no revision. `diff(since="today")` reviews every note a session changed.
+- **Safe for more than one agent.** Every write-classified tool runs behind one process-wide FIFO lock, so an interactive session and an automated run writing through one hosted instance queue in arrival order. Reads stay parallel.
+- **Resilient plumbing.** Every Trilium call is time-bounded, idempotent reads retry once, and writes never retry because Trilium doesn't deduplicate them. Core writes are idempotent or duplicate-guarded, and content surgery survives the editor's own HTML rewriting.
+- **Bounded results.** No tool result exceeds 140,000 characters. A larger one is cut with a note naming the narrower read to make instead.
+- **Honest operations.** `/health` is liveness and `/ready` is readiness against Trilium. Logs are allowlisted metadata only: no note content, tool arguments or results, URLs, note ids or tokens. HTTP mode drains in-flight work on shutdown and fails closed without a credential.
+- **Its own identity in your client.** Hosted instances serve same-origin icons and advertise BrainLLM's name, description and session shape in the MCP handshake, so the connector shows its own mark rather than your domain's.
+- **Privacy by construction.** No analytics, telemetry or hosted account. Notes live in your Trilium and sign-in records stay on your server. Tool results do reach your MCP client and its model provider, under their own policies. The [privacy policy](PRIVACY.md) says what's stored where.
+
+---
+
+## How it works
+
+### 1. The brain has five areas
+
+`bootstrap()` builds this tree in your Trilium. Every note the tools create is typed, labelled, dated and placed by the server.
+
+```
+BrainLLM  (#brainLlmRoot)
+├── Master       Biography · Goals · Preferences                      who you are
+├── LLM          Responsibilities · Protocols · Self-correction · Diary   who the model is here, and its daily diary
+├── Memory       Sessions · Threads                                    what happened, day by day and line by line
+├── Knowledge    Master · Domains/<domain>/{Sources, information}       what was learned, with its sources
+└── Insights     Logs · Graph · Claims                                 the brain's record of itself
+```
+
+| Note class | Kinds | Behaviour |
+|---|---|---|
+| **Singletons** | biography, goals, preferences, responsibilities, protocols, self-correction, and each domain's Sources | One maintained note each, edited in place |
+| **Records** | session, diary, dated thread entry | One per day and parent. Every write lands as a timestamped block, never a rewrite |
+| **Collections** | thread, user knowledge, domain, information | Titled notes, deduplicated by title within their scope |
+| **Generated logs** | log | One per day, regenerated in place from what changed |
+
+A thread takes one of two shapes, chosen at creation: **dated**, with one entry per day it moved, or **collection**, with one maintained entry per item, like an ideas list.
+
+### 2. A session has a shape the server enforces
+
+```
+start()                          load who you are, what's live and what changed since last time
+  [day()]                        on the first session of a day: yesterday's session and everything touched since
+  remember · revise · recall     work, writing durable facts the moment they surface
+session() → addendum() → maintain() → remarks() → diary() → close()
+```
+
+`close()` refuses until those steps actually ran, and until the last `session()`, `remarks()` and `diary()` happened in that order. A model saying it did the steps doesn't count; only tool calls do. The gate is written to the session note, so it survives a restart and behaves the same over stdio and HTTP. A session that wrote nothing gets a light close: `session()`, `remarks()`, a short `diary()` and `close()`.
+
+`close()` then writes the session log, regenerates the day's change log, seals the day's records and triggers a Trilium backup into a rolling weekday slot.
+
+### 3. Knowledge is a typed graph
+
+Notes link through a closed vocabulary of 16 relations: `extends`, `contradicts`, `supports`, `partOf`, `supersedes`, `corrects` and ten more. `connect()` wires them, `explore()` walks links, backlinks, neighbourhoods and shortest paths, and `graph()` renders the whole graph, or one note's neighbourhood, as a Mermaid diagram in a native Trilium note.
+
+### 4. The brain checks itself
+
+| Check | What it answers |
+|---|---|
+| `maintain(deep=true)` | What's drifted: orphans, stale notes, duplicate titles, oversized notes, dated prose in timeless notes, broken table shapes, unverified sources, rewritten sealed records |
+| `consistency(pattern \| subject)` | Does the brain agree with itself? Every note asserting a fact, grouped by value, with coverage that says whether the scan was complete |
+| `claim(...)` | Does the brain still agree with the world? An assertion and its check, re-verified with evidence |
+| `diff(since="today")` | What did this session actually change? |
+
+A finding you've reviewed and judged correct can be acknowledged, and it stays quiet until that note's content changes.
+
+### 5. The tools read like what they do
+
+Most MCP clients show each tool call as it happens, so BrainLLM names its tools as plain verbs for what's happening to your memory. The call log reads as a description of the session.
+
+| You see | What it means |
+|---|---|
+| `start` → `day` | Orienting: loading who you are, what's open, what changed |
+| `remember` · `diary` | Writing something down: a durable fact, or the model's own daily record |
+| `recall` · `domain` · `outline` | Looking something up before answering, rather than answering from training |
+| `revise` · `resolve` · `forget` | Changing, completing or archiving something that already existed |
+| `connect` · `graph` | Wiring a relationship between two things |
+| `maintain` · `addendum` | Housekeeping: aging, drift, folding pending edits in |
+| `remarks` → `close` | Wrapping up: reflecting, then committing the session log |
+
+**Core mode** serves 45 tools: 35 verbs and 10 surface reads (`master`, `llm`, `memory`, `knowledge`, `insights`, each with a `_recall` skim). **Full mode** (`BRAINLLM_MODE=full`) adds 33 raw Trilium primitives, deliberately named after Trilium (`create_note`, `patch_note`) so a guard-free operation is visibly different in the log.
+
+Every tool declares whether it reads, writes or destroys, so your client can grant permission by group. Core mode splits **23 read-only · 17 write · 5 destructive**; full mode splits **34 · 31 · 13**. `revise`, `label` and `connect` count as destructive because they can overwrite or remove. The classification lives in one table, [`src/annotations.ts`](./src/annotations.ts), and a tool missing from it is treated as a write.
+
+The model learns the protocol from the **operational skill** in [`skills/brainllm/`](./skills/brainllm/SKILL.md), with per-topic references beside it.
+
+---
+
+## Quick start
+
+### What you need
+
+- [Bun](https://bun.sh) 1.4.2 or later
+- A running [TriliumNext](https://github.com/TriliumNext/Trilium) instance, desktop or server
+- An MCP client
+
+### 1. Get an ETAPI token
+
+In Trilium, open **Options → ETAPI → Create token**. Or let BrainLLM mint one: set `TRILIUM_PASSWORD` in place of `TRILIUM_ETAPI_TOKEN` and it creates a token on first start and caches it beside `brainllm.json`, so restarts reuse it. That's the easiest path for a container, where there's no terminal to run setup in.
+
+### 2. Connect your client
+
+**Claude Code**, running BrainLLM locally from npm:
+
+```bash
+claude mcp add brainllm -e TRILIUM_BASE_URL=http://localhost:8080 -e TRILIUM_ETAPI_TOKEN=your-token -- npx -y brainllm
+```
+
+**Claude Desktop**, in `claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS, `~/.config/Claude/` on Linux):
+
+```json
+{
+  "mcpServers": {
+    "BrainLLM": {
+      "command": "npx",
+      "args": ["-y", "brainllm"],
+      "env": {
+        "TRILIUM_BASE_URL": "http://localhost:8080",
+        "TRILIUM_ETAPI_TOKEN": "your-etapi-token"
+      }
+    }
+  }
+}
+```
+
+**claude.ai, Claude mobile and Cowork** connect only to a hosted server over OAuth. See [Run it remotely](#run-it-remotely), then follow [`docs/CONNECT.md`](docs/CONNECT.md).
+
+The npm package runs on Bun, so Bun must be on your `PATH` (and Node.js, for `npx`). A schema-valid MCPB manifest (`manifest.json`) is included for hosts that support a custom Bun command; no one-click `.mcpb` file is published.
+
+### 3. Bootstrap the brain
+
+Restart your client and ask the model to run `bootstrap`. It builds the five-area tree, engraves each area with its purpose and writes `brainllm.json`. It adopts an existing brain rather than building a second one.
+
+### 4. Teach the model to operate it
+
+Install the operational skill, which teaches the model to treat BrainLLM as its own memory rather than a filing cabinet:
+
+```bash
+git clone https://github.com/miisodev/BrainLLM
+cp -r BrainLLM/skills/brainllm ~/.claude/skills/brainllm
+```
+
+```powershell
+git clone https://github.com/miisodev/BrainLLM
+Copy-Item BrainLLM\skills\brainllm "$env:USERPROFILE\.claude\skills\brainllm" -Recurse -Force
+```
+
+For clients that take a skill upload, such as claude.ai, use `brainllm.zip` from the [latest release](https://github.com/miisodev/BrainLLM/releases/latest): it's the same folder, zipped.
+
+Then start a session. The model calls `start()`, orients, and works from there.
+
+### Run it remotely
+
+The included [`Dockerfile`](./Dockerfile) builds the HTTP connector: two stages, a digest-pinned `oven/bun` image, and privileges dropped at start. Setting `PORT` selects HTTP mode, which serves:
+
+| Route | Purpose |
+|---|---|
+| `/mcp` | Streamable HTTP MCP, one session per `mcp-session-id`. MCP requests sent to `/` take the same path, for clients that post to the root after OAuth |
+| `/sse` + `POST /messages` | Legacy SSE for clients that predate Streamable HTTP |
+| `/health` · `/ready` | Liveness, and readiness against Trilium |
+| OAuth and icon routes | Discovery, consent, token exchange and same-origin icons |
+
+**On Railway**, `PORT` is injected. Set `MCP_AUTH_TOKEN`, `TRILIUM_BASE_URL`, `TRILIUM_ETAPI_TOKEN` and `BRAINLLM_TZ`, deploy, and point your client at `https://<app>.up.railway.app/mcp`. Anywhere else, the container needs the same variables and a TLS-terminating proxy in front (Caddy, nginx or a Cloudflare Tunnel), because the server speaks plain HTTP.
+
+**HTTP mode fails closed.** It refuses to start without `MCP_AUTH_TOKEN` or `BRAINLLM_OWNER_PASSWORD`. `BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP=true` exists only for an isolated, trusted network.
+
+**For claude.ai, Claude mobile and Cowork**, set `BRAINLLM_OWNER_PASSWORD`. That turns on the built-in OAuth 2.1 server, and the password is what you type on the consent screen. In Claude, open **Settings → Connectors → Add custom connector**, enter `https://<your-host>/mcp` and leave the client fields blank. Claude discovers the rest, you approve once, and it stays connected. A static token from Claude Code and an OAuth token from claude.ai work against the same brain at the same time.
+
+**Keep tokens across redeploys** by mounting a volume on the BrainLLM service (not the Trilium service) and pointing `BRAINLLM_CONFIG` at a file inside it. The OAuth signing secret and refresh tokens persist beside that file:
+
+```bash
+railway volume -p <project-id> -s <brainllm-service-id> -e production add --mount-path /vol
+railway variables set BRAINLLM_CONFIG=/vol/brainllm.json
+```
+
+Without a volume, leave `BRAINLLM_CONFIG` unset: auto-discovery finds the brain from Trilium's `#brainLlmRoot` label on each cold start.
+
+<details>
+<summary><strong>OAuth endpoints, owner second factor and browser origins</strong></summary>
+
+| Endpoint | Purpose |
+|---|---|
+| `/.well-known/oauth-protected-resource` (+ `/mcp` variant) | RFC 9728: names the authorization server |
+| `/.well-known/oauth-authorization-server` (+ `/mcp` variant) | RFC 8414: advertises CIMD, DCR and PKCE S256 |
+| `/authorize` | Validates the client (CIMD document or registered id) and shows the consent screen |
+| `/token` | PKCE-verified code exchange, with rotating refresh tokens stored only as SHA-256 hashes |
+| `/register` | RFC 7591 dynamic client registration, for DCR-only clients such as opencode |
+
+The consent screen names the requesting client and its return address, and warns when that address is your own computer. Access tokens are signed JWTs bound to your server's resource URI, so a token minted for another MCP server is refused. MCP traffic is rate-limited per bearer token with a looser per-IP bound, because hosted clients share an egress range.
+
+**Owner second factor.** Set `BRAINLLM_OWNER_TOTP_SECRET` to require a six-digit authenticator code with the owner password: RFC 6238, HMAC-SHA1, 30-second steps, one step of tolerance. The secret is base32 of at least 128 bits, and the owner password must then be at least 16 characters. A configured but invalid secret fails closed with a 503, never falling back to password-only. **Enrol before enabling:** add the secret to your authenticator, confirm it shows a code, keep an offline copy of the seed, then set the variable and redeploy. A used code can't be replayed, the seed itself is never stored, and existing tokens keep working. If the authenticator is lost, restore the seed, or have a deployment admin remove the variable and redeploy. There's no in-app bypass.
+
+**Browser origins.** A browser MCP call must carry an allowed `Origin`: the `BRAINLLM_PUBLIC_URL` origin, a literal loopback origin at the listening port, or an exact entry in `BRAINLLM_ALLOWED_ORIGINS`. Wildcard, `null` and malformed origins get a 403. Native clients send no `Origin` and are unaffected.
+
+**Limits.** CORS defaults to `*`, so a reachable deployment needs a real authentication gate. Idle MCP sessions are evicted after an hour, and request bodies are capped at 50 MiB.
+
+**Damaged OAuth state.** If the OAuth store is unreadable or its replay state is corrupt, new MFA grants fail closed across restarts. Keep the damaged file for diagnosis and restore a verified backup of the store, or reset it deliberately after rotating `BRAINLLM_OAUTH_SECRET` and arranging for clients to reconnect. Don't repeatedly delete state to get past an unexplained error.
+
+**Readiness.** `/ready` calls Trilium's `app-info`, caches success for 10 seconds and failure for 5, and bounds each check at 3 seconds. Unexpected server errors and failed tool results hold it unavailable for 30 minutes, so an external probe can alert even while Trilium is reachable. On `SIGTERM` or `SIGINT`, HTTP mode reports `draining`, finishes in-flight work for up to 20 seconds and exits 0.
+
+</details>
+
+<details>
+<summary><strong>Configuration reference</strong></summary>
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `TRILIUM_BASE_URL` | ✅ | The TriliumNext instance: local, or an HTTPS proxy or tunnel URL |
+| `TRILIUM_ETAPI_TOKEN` | ◐ | ETAPI bearer token. Required unless `TRILIUM_PASSWORD` is set |
+| `TRILIUM_PASSWORD` | ◐ | Mints a token on first start and caches it beside `brainllm.json`. Also used by `bun run init` |
+| `BRAINLLM_MODE` | - | `core` (default) or `full` (adds the raw ETAPI tools) |
+| `BRAINLLM_TZ` | - | IANA timezone, such as `Africa/Johannesburg`, so dates stamp in your day on a hosted deploy. Unset uses the host clock |
+| `BRAINLLM_DELETION_CATCHUP_DAYS` | - | How long your Trilium keeps deleted notes (Options → Other → "Erase notes after"). ETAPI can't read it. Default `7` |
+| `PORT` | - | Its presence selects HTTP mode |
+| `MCP_AUTH_TOKEN` | - | Static bearer token on `/mcp`, sent by Claude Code and `mcp-remote` |
+| `BRAINLLM_OWNER_PASSWORD` | - | Turns on OAuth 2.1, required for claude.ai. Typed on the consent screen |
+| `BRAINLLM_OWNER_TOTP_SECRET` | - | Optional owner second factor. Needs a 16+ character owner password. Enrol before enabling |
+| `BRAINLLM_OAUTH_SECRET` | - | Optional 32+ character signing secret. Rotate it to invalidate old OAuth tokens |
+| `BRAINLLM_PUBLIC_URL` | - | Public origin when a proxy rewrites `Host`. Must match the URL you enter in the client exactly |
+| `BRAINLLM_TRUST_PROXY` | `false` | Trust `x-forwarded-host` and `x-forwarded-proto` for OAuth discovery, only behind a trusted proxy |
+| `BRAINLLM_ALLOWED_ORIGINS` | - | Extra exact HTTP(S) origins for browser MCP clients, comma-separated |
+| `BRAINLLM_ALLOW_UNAUTHENTICATED_HTTP` | `false` | Trusted-network-only escape hatch. Never on a public interface |
+| `BRAINLLM_CONFIG` | - | Absolute path for `brainllm.json` on a persistent volume |
+
+Lifecycle timings live in `brainllm.json` and are yours to tune. Threads age `active → dormant → archived in place`. Nothing is deleted by aging, and `recover()` and `withdraw()` bring anything back.
+
+```json
+"policy": { "dormantAfterDays": 21, "archiveDormantAfterDays": 45, "staleAfterDays": 7 }
+```
+
+</details>
+
+### Develop it
+
+```bash
+git clone https://github.com/miisodev/BrainLLM
+cd BrainLLM
+bun install
+bun run dev                  # hot-reload dev server
+bun run build                # bundle to dist/index.js
+bunx --bun tsc --noEmit      # typecheck (the bundler doesn't)
+bun run test:unit            # every unit suite
+bun run test:http            # local auth and header smoke, no Trilium needed
+bun run test                 # integration tests against a live Trilium
+bun run validate:manifest    # MCPB schema and icons
+bun run validate:release     # every version site, server.json and SECURITY.md
+bun run init                 # bootstrap from the command line
+```
+
+Runtime source is in `src/`, the operational skill in `skills/brainllm/`, developer scripts in `scripts/`.
+
+**Verify a published package.** Install the exact version in a disposable directory with `npm install --ignore-scripts brainllm@<version>`, then run `npm audit signatures`. Check the package's provenance names the repository `miisodev/BrainLLM`, the workflow `.github/workflows/publish.yml` and the tag `refs/tags/v<version>`. That proves where the package came from, not that the code is safe. See [npm's provenance guidance](https://docs.npmjs.com/generating-provenance-statements/).
+
+---
+
+## Contributing
+
+BrainLLM is open source as a gift and maintained by its author in his own design. **Forks are welcome; pull requests are not accepted.** Issues are read, and they shape what gets built next.
+
+**What we want:**
+
+| | |
+|---|---|
+| **Bug reports** | What you ran, what you expected, what happened, and your client, transport and Trilium version |
+| **Generalising it** | Anything in the tool layer that assumes one person's workflow, vocabulary or schedule. That belongs in the content the model writes, never in `src/` |
+| **Cross-platform gaps** | Behaviour that differs between Windows, macOS and Linux, between stdio and HTTP, or between a laptop and a container |
+| **Leaner reads** | Smaller responses, fewer round trips, a faster `start()`. Every result is paid for in the model's context |
+| **Doc gaps** | Anything in this README, [`docs/CONNECT.md`](docs/CONNECT.md) or the skill that's wrong, missing or hard to follow |
+
+**How to contribute:**
+
+1. **Open an [issue](https://github.com/miisodev/BrainLLM/issues)** with the reproduction or the use case spelled out.
+2. **Fork it** to build your own version. Port what you like: it's MIT.
+3. **Report vulnerabilities privately**, never in a public issue, through the process in [`SECURITY.md`](./SECURITY.md). Leave ETAPI tokens, OAuth credentials and brain content out of every report.
+
+---
+
+## Support
+
+BrainLLM is made by [Kevin Miiso Novo](https://miiso.dev). Reach him on any of these.
+
+<div align="center">
+
+[![miiso.dev](https://img.shields.io/badge/miiso.dev-f59e0b?style=for-the-badge)](https://miiso.dev)
+[![X](https://img.shields.io/badge/@miisodev-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/miisodev)
+[![Contra](https://img.shields.io/badge/Contra-111111?style=for-the-badge)](https://contra.com/miisodev)
+[![GitHub](https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github)](https://github.com/miisodev)
+[![Email](https://img.shields.io/badge/miisodev@gmail.com-EA4335?style=for-the-badge&logo=gmail&logoColor=white)](mailto:miisodev@gmail.com)
+
+</div>
+
+| Reach out for | Where |
+|---|---|
+| **Help setting it up.** Miiso will help you get BrainLLM running: your Trilium, your host and your clients. Say what you use and where you want it to live | [Email](mailto:miisodev@gmail.com) |
+| A bug or a question about how something works | [GitHub issues](https://github.com/miisodev/BrainLLM/issues) |
+| A security concern | [`SECURITY.md`](./SECURITY.md), privately |
+| The architecture reference, as a sponsor | [GitHub Sponsors](https://github.com/sponsors/miisodev) or [email](mailto:miisodev@gmail.com) |
+| Building something on top of it, or custom work | [Contra](https://contra.com/miisodev) or [email](mailto:miisodev@gmail.com) |
+| Following what ships next | [X](https://x.com/miisodev) and [miiso.dev/brainllm](https://miiso.dev/brainllm) |
+
+---
+
+## Licence
 
 [MIT](./LICENSE) © [Kevin Miiso Novo](https://github.com/miisodev)
 
-## Credits
+**Credits**
 
-- [TriliumNext Notes](https://github.com/TriliumNext/Trilium) — the open-source, self-hosted knowledge base that powers this server's backend. BrainLLM would not exist without the TriliumNext team's work.
-- [Model Context Protocol](https://modelcontextprotocol.io) — the open standard that lets one memory serve every MCP-capable client.
+- [TriliumNext Notes](https://github.com/TriliumNext/Trilium), the open-source, self-hosted knowledge base BrainLLM stands on. It wouldn't exist without the TriliumNext team's work.
+- The [Model Context Protocol](https://modelcontextprotocol.io) and its [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk), which let one memory serve every client, and [Zod](https://zod.dev) and [Bun](https://bun.sh), which the server runs on.
+- Claude, which uses BrainLLM every day on Miiso's projects and wrote this README with him.

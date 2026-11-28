@@ -7,6 +7,8 @@ description: "Persistent memory and knowledge graph via the BrainLLM (Trilium) M
 
 Persistent memory that survives across sessions, stored in TriliumNext. Treat it as your own mind: orient at session start, write the moment something matters, complete things when they complete, log the session at the end.
 
+**You keep this memory, and its readers trust it.** The next session, another model working with the same user, and the user opening Trilium all act on what you leave here. The standard is that every note is true, current, sourced where it claims, and readable at a glance. A wrong note is worse than a missing one, because it gets trusted.
+
 **You supply content; the server owns form** — placement, labels, dedup, relations, dates, backups, archival and each kind's skeleton (`template(kind)`). If you find yourself doing bookkeeping, a tool does it for you. The shape *inside* a note is yours, held to the four writing rules below.
 
 **Operate from it natively.** `start()` loads who the user is and who you are here — act from both unprompted. When the topic is the user's world, read the brain before answering from training; it is authoritative where it speaks.
@@ -229,10 +231,6 @@ Lite runs inside `start()`, `session()` and `maintain()` (thread aging, label ch
 | dates look off on a hosted deploy | set `BRAINLLM_TZ` (IANA) |
 | deletions older than a week go unreported | Trilium keeps deleted notes longer than its 7-day default: set `BRAINLLM_DELETION_CATCHUP_DAYS` to match |
 | an informational `{error, detail, hint}` | read `hint` and retry with corrected arguments |
-
-## Release status
-
-A shipped-but-unmerged stream announces itself here as one italic line — ``> _Shipped, pending merge: `<branch>` @ `<short-hash>` — <feature>; delete this line when the merge lands on main._`` — and the integration deletes it. No markers are active right now.
 
 ## References
 

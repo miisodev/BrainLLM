@@ -91,7 +91,7 @@ if (discovered) {
   process.exit(0);
 }
 
-console.log("\n🧠 Bootstrapping BrainLLM (v13.3.4)...\n");
+console.log("\n🧠 Bootstrapping BrainLLM (v13.3.5)...\n");
 
 const config = await createBrainLLMStructure(trilium);
 const savedPath = saveConfig(config);
